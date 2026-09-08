@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 wasmparser = "0.258"
+inkwell = { version = "0.10", features = ["llvm18-1-prefer-dynamic"] }
 
 [build-dependencies]
 serde_json = "1"
