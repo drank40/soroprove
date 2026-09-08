@@ -199,16 +199,48 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
         self.ctx.append_basic_block(self.f, &format!("{tag}{}", self.n))
     }
 
+    /// The block the builder sits in can be reached: it is the entry, or a
+    /// live block branches to it. Branches are only ever emitted from live
+    /// blocks, so by induction "has a use" is exactly "reachable" -- LLVM's
+    /// use-list answers it, no reachability pass needed.
+    fn live(&self) -> bool {
+        match self.b.get_insert_block() {
+            Some(bb) => Some(bb) == self.f.get_first_basic_block() || bb.get_first_use().is_some(),
+            None => false,
+        }
+    }
+
+    /// Nothing more may be emitted here: the block already ends, or no path
+    /// reaches it. wasm permits dead code after `br`/`return`/`unreachable`;
+    /// writing it out would fill blocks the prune then removes.
     fn terminated(&self) -> bool {
-        self.b
-            .get_insert_block()
-            .and_then(|bb| bb.get_terminator())
-            .is_some()
+        !self.live()
+            || self
+                .b
+                .get_insert_block()
+                .and_then(|bb| bb.get_terminator())
+                .is_some()
     }
 
     fn br(&mut self, to: BasicBlock<'ctx>) {
         if !self.terminated() {
             self.b.build_unconditional_branch(to).expect("br");
+        }
+    }
+
+    /// A wasm `return`. Also what the body's final `end` and a `br` to the
+    /// function's own label are: the top of stack, typed by the ABI, handed
+    /// back. Soroban functions have at most one result.
+    fn ret(&mut self, n_results: usize, val_abi: bool) {
+        if self.terminated() {
+            return;
+        }
+        if n_results == 0 {
+            self.b.build_return(None).expect("ret");
+        } else {
+            let v = self.pop();
+            let rv = self.use_as(v, if val_abi { VT::Val } else { VT::Raw64 });
+            self.b.build_return(Some(&rv)).expect("ret");
         }
     }
 
@@ -391,6 +423,15 @@ fn lower<'ctx>(
     });
 
     for (i, op) in ops.iter().enumerate() {
+        // Dead code only needs its labels kept balanced; nothing in it runs.
+        if fun.terminated()
+            && !matches!(
+                op,
+                Operator::Block { .. } | Operator::Loop { .. } | Operator::If { .. } | Operator::Else | Operator::End
+            )
+        {
+            continue;
+        }
         match op {
             Operator::Block { .. } => {
                 let cont = fun.blk("c");
@@ -404,16 +445,16 @@ fn lower<'ctx>(
                 fun.labels.push(Lbl { target: h, cont, else_bb: None });
             }
             Operator::If { .. } => {
-                let c = fun.pop();
-                let ci = fun.use_int(c);
-                let nz = fun
-                    .b
-                    .build_int_compare(IntPredicate::NE, ci, rt.i64t.const_zero(), "if")
-                    .expect("icmp");
                 let then_bb = fun.blk("then");
                 let else_bb = fun.blk("else");
                 let cont = fun.blk("ic");
                 if !fun.terminated() {
+                    let c = fun.pop();
+                    let ci = fun.use_int(c);
+                    let nz = fun
+                        .b
+                        .build_int_compare(IntPredicate::NE, ci, rt.i64t.const_zero(), "if")
+                        .expect("icmp");
                     fun.b
                         .build_conditional_branch(nz, then_bb, else_bb)
                         .expect("condbr");
@@ -428,19 +469,19 @@ fn lower<'ctx>(
                     None => return Err("else with no frame".into()),
                 };
                 fun.br(cont);
-                match eb {
-                    Some(bb) => fun.b.position_at_end(bb),
-                    None => {
-                        let d = fun.blk("dead");
-                        fun.b.position_at_end(d);
-                    }
+                if let Some(bb) = eb {
+                    fun.b.position_at_end(bb);
                 }
                 fun.stack.clear();
             }
             Operator::End => {
                 let Some(fr) = fun.labels.pop() else { continue };
                 if fr.cont == exit {
+                    // The body's own `end`: falling off it returns the top of
+                    // stack. Not doing so made every fall-through export
+                    // return bottom while the wasm plainly said `i64.const 2`.
                     fun.labels.push(fr);
+                    fun.ret(n_results, val_abi);
                     continue;
                 }
                 fun.br(fr.cont);
@@ -457,10 +498,11 @@ fn lower<'ctx>(
             }
             Operator::Br { relative_depth } => {
                 let t = fun.target(*relative_depth)?;
-                fun.br(t);
-                let d = fun.blk("dead");
-                fun.b.position_at_end(d);
-            }
+                if t == exit {
+                    fun.ret(n_results, val_abi);
+                } else {
+                    fun.br(t);
+                }            }
             Operator::BrIf { relative_depth } => {
                 let t = fun.target(*relative_depth)?;
                 let c = fun.pop();
@@ -494,30 +536,13 @@ fn lower<'ctx>(
                 }
                 if !fun.terminated() {
                     fun.b.build_switch(s32, deflt, &cases).expect("switch");
-                }
-                let dead = fun.blk("dead");
-                fun.b.position_at_end(dead);
-            }
+                }            }
             Operator::Return => {
-                if !fun.terminated() {
-                    if n_results == 0 {
-                        fun.b.build_return(None).expect("ret");
-                    } else {
-                        let v = fun.pop();
-                        let rv = fun.use_as(v, if val_abi { VT::Val } else { VT::Raw64 });
-                        fun.b.build_return(Some(&rv)).expect("ret");
-                    }
-                }
-                let d = fun.blk("dead");
-                fun.b.position_at_end(d);
-            }
+                fun.ret(n_results, val_abi);            }
             Operator::Unreachable => {
                 if !fun.terminated() {
                     fun.b.build_unreachable().expect("unreachable");
-                }
-                let d = fun.blk("dead");
-                fun.b.position_at_end(d);
-            }
+                }            }
             Operator::I32Const { value } => fun.stack.push(SV::Const(*value as i64)),
             Operator::I64Const { value } => fun.stack.push(SV::Const(*value)),
             Operator::LocalGet { local_index } => {
@@ -632,13 +657,11 @@ fn lower<'ctx>(
         }
     }
 
-    // Drop blocks nothing can reach. wasm permits dead code after a br, so the
-    // lowering opens a block there just to have somewhere to write; if nothing
-    // branches to it, it is not a code path. Leaving them in would inflate the
-    // bottom count with returns no execution reaches -- the same dishonest
-    // metric this tool is a reaction to. A block's uses ARE its predecessors,
-    // so LLVM answers this for us; iterate, because deleting one can orphan
-    // the next.
+    // Drop blocks nothing can reach: continuations every path left early, and
+    // labels opened inside dead code. Leaving them in would inflate the bottom
+    // count with returns no execution reaches -- the same dishonest metric this
+    // tool is a reaction to. A block's uses ARE its predecessors, so LLVM
+    // answers this for us; iterate, because deleting one can orphan the next.
     loop {
         let mut dropped = false;
         for bb in f.get_basic_blocks() {
@@ -654,8 +677,11 @@ fn lower<'ctx>(
         }
     }
 
-    // Every surviving block must end in a terminator. A block that is reachable
-    // but never terminated genuinely falls off the end, so bottom is honest.
+    // Every surviving block must end in a terminator. The body's own `end`
+    // returns its value above, so the one candidate left is `exit`, reached by
+    // a `br_if`/`br_table` aimed at the function's own label.
+    // ponytail: that value is not threaded to `exit`, so a conditional return
+    // is bottom -- honest; thread it through an alloca if a corpus shows one.
     let blocks = f.get_basic_blocks();
     for bb in blocks {
         if bb.get_terminator().is_some() {
@@ -859,6 +885,47 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
         }
     }
 
+    // In exports mode a helper is only a declaration, and the syscalls hide
+    // behind it: the SDK outlines `storage().set` at every opt level. Say what
+    // each declared helper reaches, so `call void @f17()` reads as the
+    // put_contract_data it is. A footprint -- a set, not a sequence.
+    let mut reach: Vec<std::collections::BTreeSet<&str>> = vec![Default::default(); bodies.len()];
+    loop {
+        let mut grew = false;
+        for i in 0..bodies.len() {
+            for op in &bodies[i].1 {
+                let Operator::Call { function_index } = op else { continue };
+                let add: Vec<&str> = match (imports.get(function_index), function_index.checked_sub(n_imports)) {
+                    (Some(h), _) => vec![h.name],
+                    (None, Some(l)) => reach.get(l as usize).map(|s| s.iter().copied().collect()).unwrap_or_default(),
+                    _ => vec![],
+                };
+                for a in add {
+                    grew |= reach[i].insert(a);
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    for f in m.get_functions() {
+        if f.count_basic_blocks() > 0 {
+            continue;
+        }
+        let name = f.get_name().to_string_lossy().into_owned();
+        let Some(set) = name
+            .strip_prefix('f')
+            .and_then(|n| n.parse::<u32>().ok())
+            .and_then(|i| i.checked_sub(n_imports))
+            .and_then(|l| reach.get(l as usize))
+        else {
+            continue;
+        };
+        let s: Vec<&str> = set.iter().copied().collect();
+        f.add_attribute(AttributeLoc::Function, ctx.create_string_attribute("soroban.calls", &s.join(",")));
+    }
+
     // The real check, and the reason for inkwell: a Val/i64 confusion at a call
     // site is a verifier error here. In hand-written text it never can be.
     m.verify().map_err(|e| e.to_string())?;
@@ -921,6 +988,24 @@ mod tests {
     /// Every sample must lower and verify, in both modes. This is the gate that
     /// would have caught the `--all` ABI mismatch inkwell found, and it needs no
     /// external corpus.
+    #[test]
+    fn falling_off_the_end_returns_the_value_not_bottom() {
+        let ir = build(vec![Operator::I64Const { value: 2 }, Operator::End], 1).unwrap();
+        assert!(ir.contains("ret %Val %v_void"), "{ir}");
+        assert!(!ir.contains("bottom"), "{ir}");
+    }
+
+    #[test]
+    fn helper_declarations_say_what_they_reach() {
+        let wasm = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/three_bugs.wasm")).unwrap();
+        let ir = lower_module(&wasm, Some("set_flag")).unwrap();
+        // set_flag: `call 33; call 17; i64.const 2` -- the void is right there.
+        assert!(ir.contains("ret %Val %v_void"), "{ir}");
+        // f17 is the outlined storage().set; its declaration must say so.
+        let calls = ir.lines().find(|l| l.contains("soroban.calls") && l.contains("ledger.put_contract_data"));
+        assert!(calls.is_some(), "{ir}");
+    }
+
     #[test]
     fn syscalls_read_as_syscalls() {
         let wasm = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/errors.wasm")).unwrap();

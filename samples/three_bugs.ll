@@ -33,8 +33,8 @@ entry:
   call void @f33()
   %get = load i64, ptr %l0, align 4
   %lc = call i64 @f11(i64 %get)
-  %bottom = call %Val @ponytail.unknown()
-  ret %Val %bottom
+  %to_val = call %Val @soroban.val.from_payload(i64 %lc)
+  ret %Val %to_val
 }
 
 define %Val @read(%Val %0, %Val %1) {
@@ -49,16 +49,16 @@ entry:
   %get = load i64, ptr %l0, align 4
   %get2 = load i64, ptr %l1, align 4
   %lc = call i64 @f14(i64 %get, i64 %get2)
-  %bottom = call %Val @ponytail.unknown()
-  ret %Val %bottom
+  %to_val = call %Val @soroban.val.from_payload(i64 %lc)
+  ret %Val %to_val
 }
 
 define %Val @set_flag() {
 entry:
   call void @f33()
   call void @f17()
-  %bottom = call %Val @ponytail.unknown()
-  ret %Val %bottom
+  %v_void = call %Val @soroban.val.from_payload(i64 2)
+  ret %Val %v_void
 }
 
 define i64 @f6(i64 %0, i64 %1) {
@@ -72,8 +72,7 @@ entry:
   %get2 = load i64, ptr %l1, align 4
   %lc = call i64 @f7(i64 %get1, i64 %get2)
   %lc3 = call i64 @f27(i64 %get, i64 %lc, i64 1)
-  %bottom = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom
+  ret i64 %lc3
 }
 
 define i64 @f7(i64 %0, i64 %1) {
@@ -96,17 +95,16 @@ entry:
   %brif = icmp ne i64 %zext, 0
   br i1 %brif, label %c4, label %fall5
 
-c1:                                               ; preds = %dead12, %c3
+c1:                                               ; preds = %c3
   %get62 = load i64, ptr %l2, align 4
   %add63 = add i64 %get62, 48
   %get64 = load i64, ptr %l3, align 4
-  %bottom65 = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom65
+  ret i64 %get64
 
-c2:                                               ; preds = %fall11, %fall9, %c4, %fall6, %fall5
+c2:                                               ; preds = %fall10, %fall8, %c4, %fall6, %fall5
   unreachable
 
-c3:                                               ; preds = %fall10, %fall7
+c3:                                               ; preds = %fall9, %fall7
   %get56 = load i64, ptr %l2, align 4
   %bottom57 = call i64 @ponytail.unknown.i64()
   store i64 %bottom57, ptr %l3, align 4
@@ -115,9 +113,9 @@ c3:                                               ; preds = %fall10, %fall7
   %eqz = icmp eq i64 %bottom59, 0
   %zext60 = zext i1 %eqz to i64
   %brif61 = icmp ne i64 %zext60, 0
-  br i1 %brif61, label %c1, label %fall11
+  br i1 %brif61, label %c1, label %fall10
 
-c4:                                               ; preds = %dead8, %entry
+c4:                                               ; preds = %entry
   %get28 = load i64, ptr %l2, align 4
   %add29 = add i64 %get28, 32
   %get30 = load i64, ptr %l0, align 4
@@ -125,7 +123,7 @@ c4:                                               ; preds = %dead8, %entry
   %get31 = load i64, ptr %l2, align 4
   %bottom32 = call i64 @ponytail.unknown.i64()
   %brif33 = icmp ne i64 %bottom32, 0
-  br i1 %brif33, label %c2, label %fall9
+  br i1 %brif33, label %c2, label %fall8
 
 fall5:                                            ; preds = %entry
   %get2 = load i64, ptr %l2, align 4
@@ -168,7 +166,7 @@ fall7:                                            ; preds = %fall6
   call void @f31(i64 %add24, i64 %add26, i64 %get27)
   br label %c3
 
-fall9:                                            ; preds = %c4
+fall8:                                            ; preds = %c4
   %get34 = load i64, ptr %l2, align 4
   %get35 = load i64, ptr %l2, align 4
   %get36 = load i64, ptr %l2, align 4
@@ -184,9 +182,9 @@ fall9:                                            ; preds = %c4
   %get44 = load i64, ptr %l2, align 4
   %bottom45 = call i64 @ponytail.unknown.i64()
   %brif46 = icmp ne i64 %bottom45, 0
-  br i1 %brif46, label %c2, label %fall10
+  br i1 %brif46, label %c2, label %fall9
 
-fall10:                                           ; preds = %fall9
+fall9:                                            ; preds = %fall8
   %get47 = load i64, ptr %l2, align 4
   %get48 = load i64, ptr %l2, align 4
   %get49 = load i64, ptr %l2, align 4
@@ -199,7 +197,7 @@ fall10:                                           ; preds = %fall9
   call void @f31(i64 %add52, i64 %add54, i64 %get55)
   br label %c3
 
-fall11:                                           ; preds = %c3
+fall10:                                           ; preds = %c3
   br label %c2
 }
 
@@ -264,15 +262,14 @@ entry:
   %brif = icmp ne i64 %zext, 0
   br i1 %brif, label %c1, label %fall2
 
-c1:                                               ; preds = %dead3, %entry
+c1:                                               ; preds = %entry
   %get5 = load i64, ptr %l2, align 4
   %bottom6 = call i64 @ponytail.unknown.i64()
   store i64 %bottom6, ptr %l3, align 4
   %get7 = load i64, ptr %l2, align 4
   %add = add i64 %get7, 16
   %get8 = load i64, ptr %l3, align 4
-  %bottom9 = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom9
+  ret i64 %get8
 
 fall2:                                            ; preds = %entry
   unreachable
@@ -295,7 +292,7 @@ entry:
   %brif = icmp ne i64 %zext, 0
   br i1 %brif, label %c2, label %fall3
 
-c1:                                               ; preds = %dead6, %fall4
+c1:                                               ; preds = %fall4
   %get10 = load i64, ptr %l1, align 4
   %add = add i64 %get10, 8
   %get11 = load i64, ptr %l2, align 4
@@ -310,8 +307,7 @@ c1:                                               ; preds = %dead6, %fall4
   %get17 = load i64, ptr %l1, align 4
   %add18 = add i64 %get17, 32
   %get19 = load i64, ptr %l0, align 4
-  %bottom20 = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom20
+  ret i64 %get19
 
 c2:                                               ; preds = %fall5, %fall3, %entry
   unreachable
@@ -364,27 +360,27 @@ c1:                                               ; preds = %c2, %c4, %c6
   %add8 = add i64 %get7, 16
   ret void
 
-c2:                                               ; preds = %dead11, %entry
+c2:                                               ; preds = %entry
   %get5 = load i64, ptr %l0, align 4
   %get6 = load i64, ptr %l0, align 4
   br label %c1
 
-c3:                                               ; preds = %dead10, %entry
+c3:                                               ; preds = %entry
   call void @f50(i64 1048577, i64 14, i64 1048604)
   unreachable
 
-c4:                                               ; preds = %dead9, %entry
+c4:                                               ; preds = %entry
   %get3 = load i64, ptr %l0, align 4
   %get4 = load i64, ptr %l0, align 4
   br label %c1
 
-c5:                                               ; preds = %dead8, %entry
+c5:                                               ; preds = %entry
   %get2 = load i64, ptr %l2, align 4
   %add = add i64 %get2, 15
   %lc = call i64 @f37(i64 %add, i64 4294967299)
   unreachable
 
-c6:                                               ; preds = %dead7, %entry
+c6:                                               ; preds = %entry
   %get1 = load i64, ptr %l0, align 4
   br label %c1
 }
@@ -413,8 +409,7 @@ entry:
   %get6 = load i64, ptr %l3, align 4
   %add = add i64 %get6, 16
   %get7 = load i64, ptr %l1, align 4
-  %bottom8 = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom8
+  ret i64 %get7
 }
 
 define i64 @f14(i64 %0, i64 %1) {
@@ -446,7 +441,7 @@ entry:
   %brif = icmp ne i64 %zext, 0
   br i1 %brif, label %c1, label %fall2
 
-c1:                                               ; preds = %dead4, %fall2, %entry
+c1:                                               ; preds = %fall2, %entry
   unreachable
 
 fall2:                                            ; preds = %entry
@@ -511,8 +506,7 @@ entry:
   %get9 = load i64, ptr %l2, align 4
   %add10 = add i64 %get9, 32
   %get11 = load i64, ptr %l3, align 4
-  %bottom12 = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom12
+  ret i64 %get11
 }
 
 define i64 @f16(i64 %0, i64 %1) {
@@ -538,8 +532,7 @@ entry:
   %get4 = load i64, ptr %l2, align 4
   %add5 = add i64 %get4, 16
   %get6 = load i64, ptr %l3, align 4
-  %bottom7 = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom7
+  ret i64 %get6
 }
 
 define void @f17() {
@@ -640,7 +633,7 @@ entry:
   %brif = icmp ne i64 %bottom1, 0
   br i1 %brif, label %c2, label %fall3
 
-c1:                                               ; preds = %dead5, %fall3
+c1:                                               ; preds = %fall3
   %lc = call i64 @f49()
   unreachable
 
@@ -731,8 +724,7 @@ entry:
   %get2 = load i64, ptr %l2, align 4
   %lc = call i64 @f44(i64 %get, i64 %get1, i64 %get2)
   %lc3 = call i64 @f48(i64 %lc)
-  %bottom = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom
+  ret i64 %lc3
 }
 
 define void @f28(i64 %0, i64 %1, i64 %2) {
@@ -874,7 +866,7 @@ c1:                                               ; preds = %c2, %fall3
   %add = add i64 %get15, 16
   ret void
 
-c2:                                               ; preds = %dead4, %entry
+c2:                                               ; preds = %entry
   %get10 = load i64, ptr %l3, align 4
   %bottom11 = call i64 @ponytail.unknown.i64()
   store i64 %bottom11, ptr %l5, align 4
@@ -960,8 +952,7 @@ entry:
   %get3 = load i64, ptr %l3, align 4
   %get4 = load i64, ptr %l4, align 4
   %lc = call i64 @f41(i64 %get, i64 %get1, i64 %get2, i64 %get3, i64 %get4)
-  %bottom = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom
+  ret i64 %lc
 }
 
 define i64 @f37(i64 %0, i64 %1) {
@@ -973,8 +964,7 @@ entry:
   %get = load i64, ptr %l0, align 4
   %get1 = load i64, ptr %l1, align 4
   %lc = call i64 @f43(i64 %get, i64 %get1)
-  %bottom = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom
+  ret i64 %lc
 }
 
 define i64 @f38(i64 %0, i64 %1, i64 %2, i64 %3) {
@@ -992,8 +982,7 @@ entry:
   %get2 = load i64, ptr %l2, align 4
   %get3 = load i64, ptr %l3, align 4
   %lc = call i64 @f45(i64 %get, i64 %get1, i64 %get2, i64 %get3)
-  %bottom = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom
+  ret i64 %lc
 }
 
 define i64 @f39(i64 %0, i64 %1) {
@@ -1024,8 +1013,8 @@ entry:
   %to_val = call %Val @soroban.val.from_payload(i64 %or)
   %to_val4 = call %Val @soroban.val.from_payload(i64 %or3)
   %vec_new_from_linear_memory = call %Val @vec.vec_new_from_linear_memory(%Val %to_val, %Val %to_val4)
-  %bottom = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom
+  %payload = call i64 @soroban.val.payload(%Val %vec_new_from_linear_memory)
+  ret i64 %payload
 }
 
 define i64 @f41(i64 %0, i64 %1, i64 %2, i64 %3, i64 %4) {
@@ -1047,7 +1036,7 @@ entry:
   %brif = icmp ne i64 %zext, 0
   br i1 %brif, label %c1, label %fall2
 
-c1:                                               ; preds = %dead3, %entry
+c1:                                               ; preds = %entry
   %get2 = load i64, ptr %l1, align 4
   %shl = shl i64 %get2, 32
   %or = or i64 %shl, 4
@@ -1061,8 +1050,8 @@ c1:                                               ; preds = %dead3, %entry
   %to_val9 = call %Val @soroban.val.from_payload(i64 %or5)
   %to_val10 = call %Val @soroban.val.from_payload(i64 %or8)
   %map_new_from_linear_memory = call %Val @map.map_new_from_linear_memory(%Val %to_val, %Val %to_val9, %Val %to_val10)
-  %bottom = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom
+  %payload = call i64 @soroban.val.payload(%Val %map_new_from_linear_memory)
+  ret i64 %payload
 
 fall2:                                            ; preds = %entry
   unreachable
@@ -1085,8 +1074,8 @@ entry:
   %to_val = call %Val @soroban.val.from_payload(i64 %or)
   %to_val4 = call %Val @soroban.val.from_payload(i64 %or3)
   %symbol_new_from_linear_memory = call %Val @buf.symbol_new_from_linear_memory(%Val %to_val, %Val %to_val4)
-  %bottom = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom
+  %payload = call i64 @soroban.val.payload(%Val %symbol_new_from_linear_memory)
+  ret i64 %payload
 }
 
 define i64 @f43(i64 %0, i64 %1) {
@@ -1098,8 +1087,8 @@ entry:
   %get = load i64, ptr %l1, align 4
   %to_val = call %Val @soroban.val.from_payload(i64 %get)
   %fail_with_error = call %Val @context.fail_with_error(%Val %to_val)
-  %bottom = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom
+  %payload = call i64 @soroban.val.payload(%Val %fail_with_error)
+  ret i64 %payload
 }
 
 define i64 @f44(i64 %0, i64 %1, i64 %2) {
@@ -1114,8 +1103,8 @@ entry:
   %get1 = load i64, ptr %l2, align 4
   %to_val = call %Val @soroban.val.from_payload(i64 %get)
   %has_contract_data = call %Val @ledger.has_contract_data(%Val %to_val, i64 %get1)
-  %bottom = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom
+  %payload = call i64 @soroban.val.payload(%Val %has_contract_data)
+  ret i64 %payload
 }
 
 define i64 @f45(i64 %0, i64 %1, i64 %2, i64 %3) {
@@ -1134,8 +1123,8 @@ entry:
   %to_val = call %Val @soroban.val.from_payload(i64 %get)
   %to_val3 = call %Val @soroban.val.from_payload(i64 %get1)
   %put_contract_data = call %Val @ledger.put_contract_data(%Val %to_val, %Val %to_val3, i64 %get2)
-  %bottom = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom
+  %payload = call i64 @soroban.val.payload(%Val %put_contract_data)
+  ret i64 %payload
 }
 
 define void @f46(i64 %0, i64 %1, i64 %2) {
@@ -1159,12 +1148,12 @@ entry:
   %brif = icmp ne i64 %zext, 0
   br i1 %brif, label %c2, label %fall3
 
-c1:                                               ; preds = %c2, %fall10, %fall7
+c1:                                               ; preds = %c2, %fall9, %fall7
   %get30 = load i64, ptr %l3, align 4
   %add31 = add i64 %get30, 16
   ret void
 
-c2:                                               ; preds = %lc5, %entry
+c2:                                               ; preds = %entry
   %get26 = load i64, ptr %l0, align 4
   %get27 = load i64, ptr %l2, align 4
   %get28 = load i64, ptr %l0, align 4
@@ -1175,15 +1164,12 @@ fall3:                                            ; preds = %entry
   store i64 0, ptr %l4, align 4
   br label %h4
 
-h4:                                               ; preds = %c9, %fall3
+h4:                                               ; preds = %c8, %fall3
   %get1 = load i64, ptr %l2, align 4
   %brif2 = icmp ne i64 %get1, 0
   br i1 %brif2, label %c6, label %fall7
 
-lc5:                                              ; preds = %dead12
-  br label %c2
-
-c6:                                               ; preds = %dead8, %h4
+c6:                                               ; preds = %h4
   %get6 = load i64, ptr %l3, align 4
   %add = add i64 %get6, 8
   %get7 = load i64, ptr %l1, align 4
@@ -1194,7 +1180,7 @@ c6:                                               ; preds = %dead8, %h4
   %cmp11 = icmp eq i64 %bottom10, 255
   %zext12 = zext i1 %cmp11 to i64
   %brif13 = icmp ne i64 %zext12, 0
-  br i1 %brif13, label %c9, label %fall10
+  br i1 %brif13, label %c8, label %fall9
 
 fall7:                                            ; preds = %h4
   %get3 = load i64, ptr %l0, align 4
@@ -1204,7 +1190,7 @@ fall7:                                            ; preds = %h4
   %or = or i64 %shl, 14
   br label %c1
 
-c9:                                               ; preds = %dead11, %c6
+c8:                                               ; preds = %c6
   %get17 = load i64, ptr %l2, align 4
   %add18 = add i64 %get17, -1
   store i64 %add18, ptr %l2, align 4
@@ -1219,7 +1205,7 @@ c9:                                               ; preds = %dead11, %c6
   store i64 %or25, ptr %l4, align 4
   br label %h4
 
-fall10:                                           ; preds = %c6
+fall9:                                            ; preds = %c6
   %get14 = load i64, ptr %l0, align 4
   %get15 = load i64, ptr %l3, align 4
   %get16 = load i64, ptr %l0, align 4
@@ -1257,13 +1243,13 @@ fall2:                                            ; preds = %entry
   %brif5 = icmp ne i64 %zext4, 0
   br i1 %brif5, label %c4, label %fall5
 
-c3:                                               ; preds = %dead11, %fall5
+c3:                                               ; preds = %fall5
   %get25 = load i64, ptr %l1, align 4
   %add26 = add i64 %get25, -53
   store i64 %add26, ptr %l2, align 4
   br label %c1
 
-c4:                                               ; preds = %dead10, %fall2
+c4:                                               ; preds = %fall2
   %get23 = load i64, ptr %l1, align 4
   %add24 = add i64 %get23, -46
   store i64 %add24, ptr %l2, align 4
@@ -1287,7 +1273,7 @@ fall6:                                            ; preds = %fall5
   %brif17 = icmp ne i64 %zext16, 0
   br i1 %brif17, label %c7, label %fall8
 
-c7:                                               ; preds = %dead9, %fall6
+c7:                                               ; preds = %fall6
   %get21 = load i64, ptr %l1, align 4
   %add22 = add i64 %get21, -59
   store i64 %add22, ptr %l2, align 4
@@ -1307,14 +1293,12 @@ entry:
   %get = load i64, ptr %l0, align 4
   %cmp = icmp eq i64 %get, 1
   %zext = zext i1 %cmp to i64
-  %bottom = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom
+  ret i64 %zext
 }
 
 define i64 @f49() {
 entry:
-  %bottom = call i64 @ponytail.unknown.i64()
-  ret i64 %bottom
+  ret i64 34359740419
 }
 
 define void @f50(i64 %0, i64 %1, i64 %2) {

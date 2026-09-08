@@ -30,7 +30,7 @@ entry:
   %brif = icmp ne i64 %zext, 0
   br i1 %brif, label %c1, label %fall2
 
-c1:                                               ; preds = %dead14, %fall3, %fall2, %entry
+c1:                                               ; preds = %fall3, %fall2, %entry
   unreachable
 
 fall2:                                            ; preds = %entry
@@ -71,19 +71,19 @@ c5:                                               ; preds = %c6, %fall4
   %to_val = call %Val @soroban.val.from_payload(i64 %get11)
   ret %Val %to_val
 
-c6:                                               ; preds = %dead13, %fall4
+c6:                                               ; preds = %fall4
   store i64 196144296974, ptr %l0, align 4
   br label %c5
 
-c7:                                               ; preds = %dead12, %fall4
+c7:                                               ; preds = %fall4
   call void @f3(i64 38654705667)
   unreachable
 
-c8:                                               ; preds = %dead11, %fall4
+c8:                                               ; preds = %fall4
   call void @f4()
   unreachable
 
-c9:                                               ; preds = %dead10, %fall4
+c9:                                               ; preds = %fall4
   call void @f3(i64 4294967299)
   unreachable
 }

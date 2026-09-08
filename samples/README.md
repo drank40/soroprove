@@ -29,6 +29,26 @@ shape should be tested against more than one:
 function. So this sample does *not* exhibit the constant-at-a-Val-position
 shape, which is why `errors.wasm` is vendored below.
 
+That outlining is also why the default (exports-only) view of `set_flag` is two
+opaque helper calls. Release wasm has no name section, so helpers are `f<index>`,
+and each declared helper carries the set of host functions it reaches -- so the
+reader can see the `put_contract_data` behind `f17` without `--all`:
+
+```llvm
+define %Val @set_flag() {
+entry:
+  call void @f33()
+  call void @f17()
+  %v_void = call %Val @soroban.val.from_payload(i64 2)
+  ret %Val %v_void
+}
+declare void @f33() #6      ; attributes #6 = { "soroban.calls" }            -- reaches nothing (empty fn)
+declare void @f17() #9      ; attributes #9 = { "soroban.calls"="ledger.put_contract_data" }
+```
+
+`f33` really is an empty function in the wasm (`(func (;33;) (type 10))`); the
+call is faithful, not a decoding gap. `--all` defines every helper instead.
+
 ## `errors.wasm` — vendored, 796 bytes
 
 The canonical case: it exhibits all three shapes in one exported function, and
@@ -82,4 +102,12 @@ for f in <soroban-ret>/benchmark-data/mainnet/*.wasm; do
 done
 ```
 
-68/68 verified in both `exports` and `--all` mode at the time of writing.
+67 binaries, 134 runs (both modes), all verify.
+
+In exports mode 519 of the 716 export returns carry a value; 197 are bottom.
+A bottom return means the returned value was one the model does not carry: it
+came from an operator that is not modelled (a linear-memory load, a global), or
+it was the result of a typed `block`/`if`, which the operand stack does not
+thread across `end` (549 such labels in the corpus). No `exit` block survives
+in any output, so a conditional `br_if` to the function's own label -- the one
+return shape still lowered as bottom -- does not occur here.
