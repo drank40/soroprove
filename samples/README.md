@@ -1,13 +1,15 @@
 # Samples
 
-Each `.wasm` here has two checked-in goldens next to it: `.ll` is `--all`,
+Each `.wasm` here has four checked-in goldens next to it: `.ll` is `--all`,
 every function as lowered; `.inline.ll` is `--inline`, the exports after LLVM
-has folded the SDK plumbing into them. `./build.sh` regenerates all of it;
-`git diff samples/` is then the regression gate.
+has folded the SDK plumbing into them; `.rs` is `--rust`, the same as Rust;
+`.mir` is what rustc makes of that Rust through `../ponytail-mir`. `./build.sh`
+regenerates all of it; `git diff samples/` is then the regression gate.
 
-`cargo test` lowers every `.wasm` in this directory in all three modes and
-asserts the module passes `module.verify()`, so a sample that stops verifying
-fails the build.
+`cargo test` lowers every `.wasm` in this directory in all three IR modes and
+asserts the module passes `module.verify()`, and compiles the `--rust` output
+of `three_bugs.wasm` with rustc, so a sample that stops verifying or
+type-checking fails the build.
 
 ## `three_bugs/` — source, built here
 
@@ -86,6 +88,64 @@ lowered bare, O1 turned the SDK's argument checks into `llvm.assume` and they
 vanished. Helpers the cost model leaves outlined stay in the file as `define
 internal`. Forcing `alwaysinline` on all of them was tried first: 5.7 GB and
 no result on a 187-function contract.
+
+## `--rust` and `ponytail-mir`: back to MIR
+
+`--rust` prints the same inlined module as Rust: one typed `let` per SSA value,
+one `match` arm per basic block when there is more than one, one typed
+`extern "C"` declaration per host function; `Val` is a newtype, `StorageType`
+an enum. It is the IR in another syntax, and rustc's type checker is the second
+verifier: a `Val` where an integer belongs is a compile error here, exactly as
+it is a `module.verify()` error one stage earlier. From `three_bugs.rs`:
+
+```rust
+pub fn set_flag() -> Val {
+    unsafe {
+        let v_Symbol__f__: Val = Val::from_payload(11022u64);
+        let v_true: Val = Val::from_payload(1u64);
+        let Persistent: StorageType = StorageType::Persistent;
+        let put_contract_data_3: Val = put_contract_data(v_Symbol__f__, v_true, Persistent);
+        let v_void: Val = Val::from_payload(2u64);
+        return v_void;
+    }
+}
+```
+
+`../ponytail-mir` (a nightly crate on `rustc_private`) hands that file to rustc
+in-process through `rustc_driver`, lets it type-check and optimize it
+(`-Zmir-opt-level=3`), and prints `optimized_mir` for every function with
+rustc's own printer, the one behind `-Zunpretty=mir`. No MIR is built by hand:
+constructing `mir::Body` directly would be the same rustc internals, redone
+worse. The decoded names survive as `debug` entries. From `three_bugs.mir`,
+scopes trimmed:
+
+```
+fn set_flag() -> Val {
+    debug v_Symbol__f__ => const Val(11022_u64);
+    debug v_true => const Val(1_u64);
+    debug Persistent => const StorageType::Persistent;
+    bb0: {
+        _1 = put_contract_data(const Val(11022_u64), const Val(1_u64), const StorageType::Persistent) -> [return: bb1, unwind unreachable];
+    }
+    bb1: {
+        _0 = const Val(2_u64);
+        return;
+    }
+}
+```
+
+    ponytail-wasm contract.wasm --rust > contract.rs
+    cd ponytail-mir && cargo run --release -- ../contract.rs
+
+Across the corpus below, 67 of 67 binaries give Rust that rustc accepts
+(244k lines, 12 s) and 67 of 67 give MIR (1.7M lines, 2104 functions, 19 s).
+
+Ceiling: a function with more than one block is a `loop { match __bb { .. } }`
+state machine, and rustc's jump threading does not collapse it, so its MIR
+dispatches on `__bb` where the LLVM CFG had direct edges. A relooper over the
+CFG, which inlining keeps reducible, would give `if`/`loop`/labeled `break`
+instead; add it when someone reads the MIR of a branchy function rather than
+of a syscall wrapper.
 
 ## `errors.wasm` — vendored, 796 bytes
 

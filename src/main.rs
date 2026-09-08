@@ -39,6 +39,8 @@ use inkwell::values::{
 use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 use wasmparser::{ExternalKind, Operator, Parser, Payload};
 
+mod rust;
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum VT {
     /// A tagged 64-bit Soroban value. Lowers to `%Val`.
@@ -1046,7 +1048,7 @@ fn lower<'ctx>(
 fn main() {
     let mut args = std::env::args().skip(1);
     let Some(path) = args.next() else {
-        eprintln!("usage: ponytail-wasm <contract.wasm> [export|--all|--inline]");
+        eprintln!("usage: ponytail-wasm <contract.wasm> [export|--all|--inline|--rust]");
         std::process::exit(2);
     };
     let only = args.next();
@@ -1563,7 +1565,8 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
 
     // The interesting code is usually NOT in an export: the SDK dispatch
     // wrapper delegates, and constants and jump tables live in helpers.
-    let inline = only == Some("--inline");
+    let rust = only == Some("--rust");
+    let inline = only == Some("--inline") || rust;
     let all = only == Some("--all") || inline;
     let mut targets: Vec<(String, u32)> = exports.clone();
     if all {
@@ -1690,6 +1693,9 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
     // The real check, and the reason for inkwell: a Val/i64 confusion at a call
     // site is a verifier error here. In hand-written text it never can be.
     m.verify().map_err(|e| e.to_string())?;
+    if rust {
+        return rust::emit(&m).map(|s| format!("{}{}", notes.replace("; ", "// "), s));
+    }
     Ok(format!("{}{}", notes, m.print_to_string().to_string()))
 }
 
@@ -1811,6 +1817,28 @@ mod tests {
         // stack-pointer traffic or dead stores behind.
         assert!(body.contains("%put_contract_data = "), "{body}");
         assert!(!body.contains("@g0") && !body.contains(" store "), "{body}");
+    }
+
+    #[test]
+    fn rust_output_typechecks() {
+        let wasm = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/three_bugs.wasm")).unwrap();
+        let src = lower_module(&wasm, Some("--rust")).unwrap();
+        assert!(src.contains("pub fn set_flag() -> Val"), "{src}");
+        assert!(src.contains("let Persistent: StorageType = StorageType::Persistent;"), "{src}");
+        assert!(src.contains("put_contract_data(v_Symbol__f__, v_true, Persistent)"), "{src}");
+        // rustc is the second verifier: a Val where an integer belongs, or the
+        // reverse, is a type error here exactly as it is in module.verify().
+        let dir = std::env::temp_dir().join(format!("ponytail-rust-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("three_bugs.rs");
+        std::fs::write(&path, &src).unwrap();
+        let out = std::process::Command::new("rustc")
+            .args(["--crate-type", "lib", "--edition", "2021", "--emit", "metadata", "-o"])
+            .arg(dir.join("three_bugs.rmeta"))
+            .arg(&path)
+            .output()
+            .expect("rustc on PATH");
+        assert!(out.status.success(), "{}\n{src}", String::from_utf8_lossy(&out.stderr));
     }
 
     #[test]

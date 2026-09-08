@@ -1,0 +1,1337 @@
+// WARNING: This output format is intended for human consumers only
+// and is subject to change without notice. Knock yourself out.
+// HINT: See also -Z dump-mir for MIR at specific points during compilation.
+fn <impl at ../samples/three_bugs-fat.rs:9:10: 9:15>::clone(_1: &Val) -> Val {
+    debug self => _1;
+    let mut _0: Val;
+    scope 1 {
+    }
+
+    bb0: {
+        _0 = copy (*_1);
+        return;
+    }
+}
+
+fn <impl at ../samples/three_bugs-fat.rs:11:1: 11:9>::from_payload(_1: u64) -> Val {
+    debug p => _1;
+    let mut _0: Val;
+
+    bb0: {
+        _0 = Val(copy _1);
+        return;
+    }
+}
+
+// MIR FOR CTFE
+fn <impl at ../samples/three_bugs-fat.rs:11:1: 11:9>::from_payload(_1: u64) -> Val {
+    debug p => _1;
+    let mut _0: Val;
+    let mut _2: u64;
+
+    bb0: {
+        StorageLive(_2);
+        _2 = copy _1;
+        _0 = Val(move _2);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn <impl at ../samples/three_bugs-fat.rs:11:1: 11:9>::payload(_1: Val) -> u64 {
+    debug self => _1;
+    let mut _0: u64;
+
+    bb0: {
+        _0 = copy (_1.0: u64);
+        return;
+    }
+}
+
+// MIR FOR CTFE
+fn <impl at ../samples/three_bugs-fat.rs:11:1: 11:9>::payload(_1: Val) -> u64 {
+    debug self => _1;
+    let mut _0: u64;
+
+    bb0: {
+        _0 = copy (_1.0: u64);
+        return;
+    }
+}
+
+const StorageType::Temporary::{constant#0}: u64 = const 0_u64;
+
+const StorageType::Persistent::{constant#0}: u64 = const 1_u64;
+
+const StorageType::Instance::{constant#0}: u64 = const 2_u64;
+
+fn <impl at ../samples/three_bugs-fat.rs:18:10: 18:15>::clone(_1: &StorageType) -> StorageType {
+    debug self => _1;
+    let mut _0: StorageType;
+
+    bb0: {
+        _0 = copy (*_1);
+        return;
+    }
+}
+
+static mut G0: u64 = {
+    let mut _0: u64;
+
+    bb0: {
+        _0 = const 1048576_u64;
+        return;
+    }
+}
+
+static mut G1: u64 = {
+    let mut _0: u64;
+
+    bb0: {
+        _0 = const 1048652_u64;
+        return;
+    }
+}
+
+fn read(_1: Val, _2: Val) -> Val {
+    debug t0 => _1;
+    debug t1 => _2;
+    let mut _0: Val;
+    let mut _3: [u8; 32];
+    let mut _5: &mut [u8];
+    let mut _6: &mut [u8; 32];
+    let mut _13: u64;
+    let mut _16: u64;
+    let _18: !;
+    let mut _20: u64;
+    let mut _22: usize;
+    let mut _23: u64;
+    let mut _25: *const u8;
+    let mut _28: u64;
+    let mut _30: u64;
+    let mut _32: u64;
+    let mut _34: u64;
+    let mut _38: u64;
+    let mut _42: u64;
+    let mut _43: u64;
+    let mut _45: u64;
+    let mut _50: u64;
+    let mut _55: usize;
+    let mut _56: u64;
+    let mut _57: u64;
+    let mut _62: u64;
+    let mut _63: u64;
+    let mut _68: !;
+    let mut _87: u64;
+    let mut _88: u64;
+    let mut _89: u64;
+    let mut _90: u64;
+    let mut _91: u64;
+    let mut _92: u64;
+    scope 1 {
+        debug frame_buf => _3;
+        let _4: *mut u8;
+        scope 2 {
+            debug frame => _4;
+            scope 3 {
+                debug arg_payload => _87;
+                scope 4 {
+                    debug arg_payload1 => _88;
+                    let mut _7: u64;
+                    scope 5 {
+                        debug l1_0 => _7;
+                        let mut _8: u64;
+                        scope 6 {
+                            debug l2_0 => _8;
+                            scope 7 {
+                                debug l3_1 => _36;
+                                let mut _9: u64;
+                                scope 8 {
+                                    debug zx => _9;
+                                    scope 9 {
+                                        debug l4_0 => _41;
+                                        let mut _10: u64;
+                                        scope 10 {
+                                            debug or33 => _10;
+                                            scope 11 {
+                                                debug ld11 => _89;
+                                                let mut _11: u32;
+                                                scope 12 {
+                                                    debug __bb => _11;
+                                                    let _12: u64;
+                                                    let _19: u64;
+                                                    let _21: *mut u8;
+                                                    let _27: u64;
+                                                    let _37: u64;
+                                                    let _41: u64;
+                                                    let _44: u64;
+                                                    let _48: u64;
+                                                    let _52: *mut u8;
+                                                    scope 13 {
+                                                        debug and => _12;
+                                                        let _14: bool;
+                                                        scope 14 {
+                                                            debug cmp_not => _14;
+                                                            let _15: u64;
+                                                            scope 15 {
+                                                                debug and2 => _15;
+                                                                let _17: bool;
+                                                                scope 16 {
+                                                                    debug cmp3_not => _17;
+                                                                    scope 17 {
+                                                                        debug or_cond => _17;
+                                                                        scope 18 {
+                                                                            debug __p0 => const 1048640_u64;
+                                                                            scope 19 {
+                                                                                debug __p1 => const 4_u64;
+                                                                                scope 20 {
+                                                                                    debug __p2 => const 0_u64;
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    scope 21 {
+                                                        debug shl47 => _19;
+                                                        scope 22 {
+                                                            debug or48 => _89;
+                                                            scope 23 {
+                                                                debug __p0 => _89;
+                                                            }
+                                                        }
+                                                    }
+                                                    scope 24 {
+                                                        debug p => _21;
+                                                        let _24: u8;
+                                                        scope 25 {
+                                                            debug v => _24;
+                                                            let _26: bool;
+                                                            scope 26 {
+                                                                debug cmp4 => _26;
+                                                                scope 27 {
+                                                                    debug __p0 => const 1_u64;
+                                                                }
+                                                            }
+                                                        }
+                                                        scope 86 (inlined #[track_caller] core::ptr::read_unaligned::<u8>) {
+                                                            let mut _72: core::mem::MaybeUninit<u8>;
+                                                            let mut _73: *mut u8;
+                                                            let mut _74: core::mem::MaybeUninit<u8>;
+                                                            scope 87 {
+                                                                scope 89 (inlined core::mem::MaybeUninit::<u8>::as_mut_ptr) {
+                                                                    let mut _75: *mut core::mem::MaybeUninit<u8>;
+                                                                }
+                                                                scope 90 (inlined core::mem::size_of::<u8>) {
+                                                                }
+                                                                scope 91 (inlined core::ptr::copy_nonoverlapping::<u8>) {
+                                                                    scope 92 (inlined core::ub_checks::check_language_ub) {
+                                                                        scope 93 (inlined core::ub_checks::check_language_ub::runtime) {
+                                                                        }
+                                                                    }
+                                                                    scope 94 (inlined core::mem::size_of::<u8>) {
+                                                                    }
+                                                                    scope 95 (inlined core::mem::align_of::<u8>) {
+                                                                    }
+                                                                }
+                                                                scope 96 (inlined #[track_caller] core::mem::MaybeUninit::<u8>::assume_init) {
+                                                                    let mut _76: *const u8;
+                                                                    let mut _77: *const core::mem::ManuallyDrop<u8>;
+                                                                    scope 97 (inlined core::ptr::const_ptr::<impl *const core::mem::ManuallyDrop<u8>>::cast::<u8>) {
+                                                                    }
+                                                                    scope 98 (inlined #[track_caller] core::ptr::const_ptr::<impl *const u8>::read) {
+                                                                        scope 99 (inlined #[track_caller] core::ptr::read::<u8>) {
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            scope 88 (inlined core::mem::MaybeUninit::<u8>::uninit) {
+                                                            }
+                                                        }
+                                                    }
+                                                    scope 28 {
+                                                        debug shl30 => _27;
+                                                        let _29: u64;
+                                                        scope 29 {
+                                                            debug and32 => _29;
+                                                            let _31: u64;
+                                                            scope 30 {
+                                                                debug add35 => _31;
+                                                                let _33: u64;
+                                                                scope 31 {
+                                                                    debug add37 => _33;
+                                                                    let _35: bool;
+                                                                    scope 32 {
+                                                                        debug eqz => _35;
+                                                                        scope 33 {
+                                                                            debug __p0 => _31;
+                                                                            scope 34 {
+                                                                                debug __p1 => _33;
+                                                                                let _36: u64;
+                                                                                scope 35 {
+                                                                                    debug __p2 => _36;
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                                scope 107 (inlined core::num::<impl u64>::wrapping_add) {
+                                                                }
+                                                            }
+                                                            scope 106 (inlined core::num::<impl u64>::wrapping_add) {
+                                                            }
+                                                        }
+                                                    }
+                                                    scope 36 {
+                                                        debug add => _37;
+                                                        let _39: u64;
+                                                        scope 37 {
+                                                            debug and12 => _39;
+                                                            let _40: bool;
+                                                            scope 38 {
+                                                                debug cmp8 => _40;
+                                                            }
+                                                        }
+                                                    }
+                                                    scope 39 {
+                                                        debug add28 => _41;
+                                                        scope 40 {
+                                                            debug __p0 => _41;
+                                                        }
+                                                    }
+                                                    scope 41 {
+                                                        debug add26 => _41;
+                                                        scope 42 {
+                                                            debug __p0 => _41;
+                                                        }
+                                                    }
+                                                    scope 43 {
+                                                        debug add12 => _44;
+                                                        let _46: u64;
+                                                        scope 44 {
+                                                            debug and13 => _46;
+                                                            let _47: bool;
+                                                            scope 45 {
+                                                                debug cmp14 => _47;
+                                                            }
+                                                        }
+                                                    }
+                                                    scope 46 {
+                                                        debug bottom => _48;
+                                                        let _49: bool;
+                                                        scope 47 {
+                                                            debug brif20_not => _49;
+                                                        }
+                                                    }
+                                                    scope 48 {
+                                                        debug add22 => _41;
+                                                        scope 49 {
+                                                            debug __p0 => _41;
+                                                        }
+                                                    }
+                                                    scope 50 {
+                                                        debug v_u32_1048640 => const Val(4503874505277444_u64);
+                                                        scope 51 {
+                                                            debug v_u32_4 => const Val(17179869188_u64);
+                                                            let _51: Val;
+                                                            scope 52 {
+                                                                debug Symbol__Pair__ => _51;
+                                                                scope 53 {
+                                                                    debug payload_38 => _89;
+                                                                    scope 54 {
+                                                                        debug __p0 => _89;
+                                                                    }
+                                                                }
+                                                                scope 109 (inlined Val::payload) {
+                                                                }
+                                                            }
+                                                        }
+                                                        scope 108 (inlined Val::from_payload) {
+                                                        }
+                                                    }
+                                                    scope 55 {
+                                                        debug slot8 => _52;
+                                                        let _53: *mut u8;
+                                                        scope 56 {
+                                                            debug fp11 => _53;
+                                                            let _54: u64;
+                                                            scope 57 {
+                                                                debug fp => _54;
+                                                                let _58: u64;
+                                                                scope 58 {
+                                                                    debug shl4 => _58;
+                                                                    let _59: u64;
+                                                                    scope 59 {
+                                                                        debug or5 => _59;
+                                                                        scope 60 {
+                                                                            debug v_u32_1048624 => const Val(4503805785800708_u64);
+                                                                            let _60: Val;
+                                                                            scope 61 {
+                                                                                debug to_val9 => _60;
+                                                                                scope 62 {
+                                                                                    debug v_u32_2 => const Val(8589934596_u64);
+                                                                                    let _61: Val;
+                                                                                    scope 63 {
+                                                                                        debug Map_BAD_tag_44__BAD_tag_45_ => _61;
+                                                                                        scope 64 {
+                                                                                            debug payload15 => _90;
+                                                                                            let _64: Val;
+                                                                                            scope 65 {
+                                                                                                debug vec_new_from_linear_memory_50 => _64;
+                                                                                                scope 66 {
+                                                                                                    debug payload16 => _91;
+                                                                                                    scope 67 {
+                                                                                                        debug to_val17 => _64;
+                                                                                                        scope 68 {
+                                                                                                            debug Persistent => const StorageType::Persistent;
+                                                                                                            let _65: Val;
+                                                                                                            scope 69 {
+                                                                                                                debug has_contract_data_54 => _65;
+                                                                                                                scope 70 {
+                                                                                                                    debug payload18 => _92;
+                                                                                                                    let _66: bool;
+                                                                                                                    scope 71 {
+                                                                                                                        debug cmp => _66;
+                                                                                                                        let _67: u64;
+                                                                                                                        scope 72 {
+                                                                                                                            debug zext => _67;
+                                                                                                                            scope 73 {
+                                                                                                                                debug to_val => _0;
+                                                                                                                            }
+                                                                                                                            scope 150 (inlined Val::from_payload) {
+                                                                                                                            }
+                                                                                                                        }
+                                                                                                                    }
+                                                                                                                }
+                                                                                                                scope 149 (inlined Val::payload) {
+                                                                                                                }
+                                                                                                            }
+                                                                                                        }
+                                                                                                    }
+                                                                                                    scope 148 (inlined Val::from_payload) {
+                                                                                                    }
+                                                                                                }
+                                                                                                scope 147 (inlined Val::payload) {
+                                                                                                }
+                                                                                            }
+                                                                                            scope 133 (inlined #[track_caller] core::ptr::write_unaligned::<u64>) {
+                                                                                                let mut _83: *const u8;
+                                                                                                let mut _84: *const u64;
+                                                                                                scope 134 (inlined core::mem::size_of::<u64>) {
+                                                                                                }
+                                                                                                scope 135 (inlined core::ptr::copy_nonoverlapping::<u8>) {
+                                                                                                    scope 136 (inlined core::ub_checks::check_language_ub) {
+                                                                                                        scope 137 (inlined core::ub_checks::check_language_ub::runtime) {
+                                                                                                        }
+                                                                                                    }
+                                                                                                    scope 138 (inlined core::mem::size_of::<u8>) {
+                                                                                                    }
+                                                                                                    scope 139 (inlined core::mem::align_of::<u8>) {
+                                                                                                    }
+                                                                                                }
+                                                                                            }
+                                                                                            scope 140 (inlined #[track_caller] core::ptr::write_unaligned::<u64>) {
+                                                                                                let mut _85: *const u8;
+                                                                                                let mut _86: *const u64;
+                                                                                                scope 141 (inlined core::mem::size_of::<u64>) {
+                                                                                                }
+                                                                                                scope 142 (inlined core::ptr::copy_nonoverlapping::<u8>) {
+                                                                                                    scope 143 (inlined core::ub_checks::check_language_ub) {
+                                                                                                        scope 144 (inlined core::ub_checks::check_language_ub::runtime) {
+                                                                                                        }
+                                                                                                    }
+                                                                                                    scope 145 (inlined core::mem::size_of::<u8>) {
+                                                                                                    }
+                                                                                                    scope 146 (inlined core::mem::align_of::<u8>) {
+                                                                                                    }
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                        scope 132 (inlined Val::payload) {
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                                scope 131 (inlined Val::from_payload) {
+                                                                                }
+                                                                            }
+                                                                            scope 130 (inlined Val::from_payload) {
+                                                                            }
+                                                                        }
+                                                                        scope 129 (inlined Val::from_payload) {
+                                                                        }
+                                                                    }
+                                                                }
+                                                                scope 111 (inlined #[track_caller] core::ptr::write_unaligned::<u64>) {
+                                                                    let mut _79: *const u8;
+                                                                    let mut _80: *const u64;
+                                                                    scope 112 (inlined core::mem::size_of::<u64>) {
+                                                                    }
+                                                                    scope 113 (inlined core::ptr::copy_nonoverlapping::<u8>) {
+                                                                        scope 114 (inlined core::ub_checks::check_language_ub) {
+                                                                            scope 115 (inlined core::ub_checks::check_language_ub::runtime) {
+                                                                            }
+                                                                        }
+                                                                        scope 116 (inlined core::mem::size_of::<u8>) {
+                                                                        }
+                                                                        scope 117 (inlined core::mem::align_of::<u8>) {
+                                                                        }
+                                                                    }
+                                                                }
+                                                                scope 118 (inlined #[track_caller] core::ptr::write_unaligned::<u64>) {
+                                                                    let mut _81: *const u8;
+                                                                    let mut _82: *const u64;
+                                                                    scope 119 (inlined core::mem::size_of::<u64>) {
+                                                                    }
+                                                                    scope 120 (inlined core::ptr::copy_nonoverlapping::<u8>) {
+                                                                        scope 121 (inlined core::ub_checks::check_language_ub) {
+                                                                            scope 122 (inlined core::ub_checks::check_language_ub::runtime) {
+                                                                            }
+                                                                        }
+                                                                        scope 123 (inlined core::mem::size_of::<u8>) {
+                                                                        }
+                                                                        scope 124 (inlined core::mem::align_of::<u8>) {
+                                                                        }
+                                                                    }
+                                                                }
+                                                                scope 125 (inlined core::num::<impl u64>::wrapping_shl) {
+                                                                    scope 126 (inlined #[track_caller] core::num::<impl u64>::unchecked_shl) {
+                                                                        scope 127 (inlined core::ub_checks::check_language_ub) {
+                                                                            scope 128 (inlined core::ub_checks::check_language_ub::runtime) {
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        scope 110 (inlined core::ptr::mut_ptr::<impl *mut u8>::wrapping_offset) {
+                                                            let mut _78: *const u8;
+                                                        }
+                                                    }
+                                                    scope 75 (inlined core::ptr::mut_ptr::<impl *mut u8>::wrapping_offset) {
+                                                        let mut _70: *const u8;
+                                                        let mut _71: *const u8;
+                                                    }
+                                                    scope 76 (inlined Val::from_payload) {
+                                                    }
+                                                    scope 77 (inlined core::num::<impl u64>::wrapping_add) {
+                                                    }
+                                                    scope 78 (inlined core::num::<impl u64>::wrapping_add) {
+                                                    }
+                                                    scope 79 (inlined core::num::<impl u64>::wrapping_add) {
+                                                    }
+                                                    scope 80 (inlined core::num::<impl u64>::wrapping_add) {
+                                                    }
+                                                    scope 81 (inlined core::num::<impl u64>::wrapping_add) {
+                                                    }
+                                                    scope 82 (inlined core::num::<impl u64>::wrapping_shl) {
+                                                        scope 83 (inlined #[track_caller] core::num::<impl u64>::unchecked_shl) {
+                                                            scope 84 (inlined core::ub_checks::check_language_ub) {
+                                                                scope 85 (inlined core::ub_checks::check_language_ub::runtime) {
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    scope 100 (inlined core::num::<impl u64>::wrapping_shl) {
+                                                        scope 101 (inlined #[track_caller] core::num::<impl u64>::unchecked_shl) {
+                                                            scope 102 (inlined core::ub_checks::check_language_ub) {
+                                                                scope 103 (inlined core::ub_checks::check_language_ub::runtime) {
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    scope 104 (inlined Val::payload) {
+                                                    }
+                                                    scope 105 (inlined Val::payload) {
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        scope 74 (inlined core::slice::<impl [u8]>::as_mut_ptr) {
+            let mut _69: *mut [u8];
+        }
+    }
+
+    bb0: {
+        _3 = [const 0_u8; 32];
+        _6 = &mut _3;
+        _5 = copy _6 as &mut [u8] (PointerCoercion(Unsize, Implicit));
+        _69 = &raw mut (*_5);
+        _4 = copy _69 as *mut u8 (PtrToPtr);
+        _87 = const 0_u64;
+        _88 = const 0_u64;
+        _7 = const 0_u64;
+        _8 = const 0_u64;
+        _36 = const 0_u64;
+        _9 = const 0_u64;
+        _41 = const 0_u64;
+        _10 = const 0_u64;
+        _89 = const 0_u64;
+        _11 = const 0_u32;
+        goto -> bb1;
+    }
+
+    bb1: {
+        switchInt(copy _11) -> [0: bb15, 1: bb14, 2: bb13, 3: bb12, 4: bb11, 5: bb10, 6: bb9, 7: bb8, 8: bb7, 9: bb6, 10: bb5, 11: bb4, 12: bb3, otherwise: bb2];
+    }
+
+    bb2: {
+        _68 = core::panicking::panic(const "internal error: entered unreachable code") -> unwind continue;
+    }
+
+    bb3: {
+        _71 = copy _69 as *const u8 (PtrToPtr);
+        _70 = core::intrinsics::arith_offset::<u8>(copy _71, const 8_isize) -> [return: bb35, unwind unreachable];
+    }
+
+    bb4: {
+        _51 = symbol_new_from_linear_memory(const Val(4503874505277444_u64), const Val(17179869188_u64)) -> [return: bb31, unwind unreachable];
+    }
+
+    bb5: {
+        _50 = copy _9;
+        _41 = Add(copy _50, const 18446744073709551557_u64);
+        _11 = const 4_u32;
+        goto -> bb1;
+    }
+
+    bb6: {
+        _48 = unknown_i64() -> [return: bb28, unwind unreachable];
+    }
+
+    bb7: {
+        _45 = copy _9;
+        _44 = Add(copy _45, const 191_u64);
+        _46 = BitAnd(copy _44, const 254_u64);
+        _47 = Lt(copy _46, const 26_u64);
+        switchInt(copy _47) -> [0: bb27, otherwise: bb26];
+    }
+
+    bb8: {
+        _43 = copy _9;
+        _41 = Add(copy _43, const 18446744073709551570_u64);
+        _11 = const 4_u32;
+        goto -> bb1;
+    }
+
+    bb9: {
+        _42 = copy _9;
+        _41 = Add(copy _42, const 18446744073709551563_u64);
+        _11 = const 4_u32;
+        goto -> bb1;
+    }
+
+    bb10: {
+        _38 = copy _9;
+        _37 = Add(copy _38, const 208_u64);
+        _39 = BitAnd(copy _37, const 254_u64);
+        _40 = Lt(copy _39, const 10_u64);
+        switchInt(copy _40) -> [0: bb25, otherwise: bb24];
+    }
+
+    bb11: {
+        _28 = copy _36;
+        _27 = ShlUnchecked(copy _28, const 6_u32);
+        _30 = copy _41;
+        _29 = BitAnd(move _30, const 255_u64);
+        _10 = BitOr(copy _29, copy _27);
+        _32 = copy _7;
+        _31 = Add(copy _32, const 1_u64);
+        _34 = copy _8;
+        _33 = Add(copy _34, const u64::MAX);
+        _35 = Eq(copy _33, const 0_u64);
+        switchInt(copy _33) -> [0: bb22, otherwise: bb23];
+    }
+
+    bb12: {
+        _23 = copy _7;
+        _22 = move _23 as usize (IntToInt);
+        _21 = move _22 as *mut u8 (PointerWithExposedProvenance);
+        _25 = copy _21 as *const u8 (PtrToPtr);
+        _72 = const <uninit>;
+        _75 = &raw mut _72;
+        _73 = copy _75 as *mut u8 (PtrToPtr);
+        copy_nonoverlapping(dst = copy _73, src = copy _25, count = const 1_usize);
+        _74 = move _72;
+        _77 = &raw const (_74.1: core::mem::ManuallyDrop<u8>);
+        _76 = copy _77 as *const u8 (PtrToPtr);
+        _24 = copy (*_76);
+        _9 = copy _24 as u64 (IntToInt);
+        _26 = Eq(copy _24, const 95_u8);
+        switchInt(copy _24) -> [95: bb20, otherwise: bb21];
+    }
+
+    bb13: {
+        _20 = copy _10;
+        _19 = ShlUnchecked(copy _20, const 8_u32);
+        _89 = BitOr(copy _19, const 14_u64);
+        _11 = const 12_u32;
+        goto -> bb1;
+    }
+
+    bb14: {
+        _18 = trap() -> unwind unreachable;
+    }
+
+    bb15: {
+        _87 = copy (_1.0: u64);
+        _88 = copy (_2.0: u64);
+        _13 = copy _87;
+        _12 = BitAnd(move _13, const 255_u64);
+        _14 = Eq(copy _12, const 77_u64);
+        _16 = copy _88;
+        _15 = BitAnd(move _16, const 255_u64);
+        _17 = Eq(copy _15, const 77_u64);
+        switchInt(copy _12) -> [77: bb16, otherwise: bb17];
+    }
+
+    bb16: {
+        switchInt(move _17) -> [0: bb19, otherwise: bb18];
+    }
+
+    bb17: {
+        _17 = const false;
+        goto -> bb19;
+    }
+
+    bb18: {
+        _7 = const 1048640_u64;
+        _8 = const 4_u64;
+        _36 = const 0_u64;
+        _11 = const 3_u32;
+        goto -> bb1;
+    }
+
+    bb19: {
+        _11 = const 1_u32;
+        goto -> bb1;
+    }
+
+    bb20: {
+        _41 = const 1_u64;
+        _11 = const 4_u32;
+        goto -> bb1;
+    }
+
+    bb21: {
+        _11 = const 5_u32;
+        goto -> bb1;
+    }
+
+    bb22: {
+        _11 = const 2_u32;
+        goto -> bb1;
+    }
+
+    bb23: {
+        _36 = copy _10;
+        _7 = copy _31;
+        _8 = copy _33;
+        _11 = const 3_u32;
+        goto -> bb1;
+    }
+
+    bb24: {
+        _11 = const 7_u32;
+        goto -> bb1;
+    }
+
+    bb25: {
+        _11 = const 8_u32;
+        goto -> bb1;
+    }
+
+    bb26: {
+        _11 = const 6_u32;
+        goto -> bb1;
+    }
+
+    bb27: {
+        _11 = const 9_u32;
+        goto -> bb1;
+    }
+
+    bb28: {
+        _49 = Eq(copy _48, const 0_u64);
+        switchInt(copy _48) -> [0: bb29, otherwise: bb30];
+    }
+
+    bb29: {
+        _11 = const 10_u32;
+        goto -> bb1;
+    }
+
+    bb30: {
+        _11 = const 11_u32;
+        goto -> bb1;
+    }
+
+    bb31: {
+        _89 = copy (_51.0: u64);
+        _11 = const 12_u32;
+        goto -> bb1;
+    }
+
+    bb32: {
+        _90 = copy (_61.0: u64);
+        _62 = copy _90;
+        _84 = &raw const _62;
+        _83 = copy _84 as *const u8 (PtrToPtr);
+        copy_nonoverlapping(dst = copy _53, src = copy _83, count = const 8_usize);
+        _63 = copy _89;
+        _86 = &raw const _63;
+        _85 = copy _86 as *const u8 (PtrToPtr);
+        copy_nonoverlapping(dst = copy _52, src = copy _85, count = const 8_usize);
+        _64 = vec_new_from_linear_memory(move _60, const Val(8589934596_u64)) -> [return: bb33, unwind unreachable];
+    }
+
+    bb33: {
+        _91 = copy (_64.0: u64);
+        _65 = has_contract_data(move _64, const StorageType::Persistent) -> [return: bb34, unwind unreachable];
+    }
+
+    bb34: {
+        _92 = copy (_65.0: u64);
+        _66 = Eq(copy _92, const 1_u64);
+        _67 = copy _66 as u64 (IntToInt);
+        _0 = Val(copy _67);
+        return;
+    }
+
+    bb35: {
+        _52 = copy _70 as *mut u8 (PtrToPtr);
+        _78 = core::intrinsics::arith_offset::<u8>(move _71, const 16_isize) -> [return: bb36, unwind unreachable];
+    }
+
+    bb36: {
+        _53 = copy _78 as *mut u8 (PtrToPtr);
+        _55 = copy _52 as usize (PointerExposeProvenance);
+        _54 = move _55 as u64 (IntToInt);
+        _56 = copy _88;
+        _80 = &raw const _56;
+        _79 = copy _80 as *const u8 (PtrToPtr);
+        copy_nonoverlapping(dst = copy _53, src = copy _79, count = const 8_usize);
+        _57 = copy _87;
+        _82 = &raw const _57;
+        _81 = copy _82 as *const u8 (PtrToPtr);
+        copy_nonoverlapping(dst = copy _52, src = copy _81, count = const 8_usize);
+        _58 = ShlUnchecked(copy _54, const 32_u32);
+        _59 = BitOr(copy _58, const 4_u64);
+        _60 = Val(copy _59);
+        _61 = map_new_from_linear_memory(const Val(4503805785800708_u64), copy _60, const Val(8589934596_u64)) -> [return: bb32, unwind unreachable];
+    }
+}
+
+alloc14 (size: 1, align: 1) {
+    __                                              │ ░
+}
+
+alloc3 (size: 40, align: 1) {
+    0x00 │ 69 6e 74 65 72 6e 61 6c 20 65 72 72 6f 72 3a 20 │ internal error: 
+    0x10 │ 65 6e 74 65 72 65 64 20 75 6e 72 65 61 63 68 61 │ entered unreacha
+    0x20 │ 62 6c 65 20 63 6f 64 65                         │ ble code
+}
+
+const read::{constant#1}: usize = const 32_usize;
+
+const read::{constant#0}: usize = const 32_usize;
+
+fn pick(_1: Val) -> Val {
+    debug t0 => _1;
+    let mut _0: Val;
+    let mut _5: u64;
+    let mut _8: u64;
+    let _10: ();
+    let _11: !;
+    let _12: ();
+    let _13: !;
+    let _14: !;
+    let mut _16: u64;
+    let mut _18: !;
+    let mut _19: u64;
+    scope 1 {
+        debug arg_payload => _19;
+        let mut _2: u64;
+        scope 2 {
+            debug l0_0 => _2;
+            let mut _3: u32;
+            scope 3 {
+                debug __bb => _3;
+                let _4: u64;
+                let _15: u64;
+                scope 4 {
+                    debug and => _4;
+                    let _6: bool;
+                    scope 5 {
+                        debug cmp_not => _6;
+                        let _7: bool;
+                        scope 6 {
+                            debug cmp2 => _7;
+                            let _9: bool;
+                            scope 7 {
+                                debug or_cond => _9;
+                            }
+                        }
+                    }
+                }
+                scope 8 {
+                    debug to_val => _0;
+                }
+                scope 9 {
+                    debug __p0 => const 9742_u64;
+                }
+                scope 10 {
+                    debug __p0 => const 10766_u64;
+                }
+                scope 11 {
+                    debug lshr => _15;
+                    let _17: u32;
+                    scope 12 {
+                        debug sel => _17;
+                        scope 13 {
+                            debug __p0 => const 4294967299_u64;
+                        }
+                    }
+                }
+                scope 14 (inlined core::num::<impl u64>::wrapping_shr) {
+                    scope 15 (inlined #[track_caller] core::num::<impl u64>::unchecked_shr) {
+                        scope 16 (inlined core::ub_checks::check_language_ub) {
+                            scope 17 (inlined core::ub_checks::check_language_ub::runtime) {
+                            }
+                        }
+                    }
+                }
+                scope 18 (inlined Val::from_payload) {
+                }
+                scope 19 (inlined Val::payload) {
+                }
+            }
+        }
+    }
+
+    bb0: {
+        _19 = const 0_u64;
+        _2 = const 0_u64;
+        _3 = const 0_u32;
+        goto -> bb1;
+    }
+
+    bb1: {
+        switchInt(copy _3) -> [0: bb10, 1: bb9, 2: bb8, 3: bb7, 4: bb6, 5: bb5, 6: bb4, 7: bb3, otherwise: bb2];
+    }
+
+    bb2: {
+        _18 = core::panicking::panic(const "internal error: entered unreachable code") -> unwind continue;
+    }
+
+    bb3: {
+        _16 = copy _19;
+        _15 = ShrUnchecked(copy _16, const 32_u32);
+        _17 = copy _15 as u32 (IntToInt);
+        switchInt(copy _17) -> [4: bb19, 1: bb18, 2: bb17, 3: bb16, otherwise: bb15];
+    }
+
+    bb4: {
+        _14 = trap() -> unwind unreachable;
+    }
+
+    bb5: {
+        _12 = f15() -> [return: bb14, unwind continue];
+    }
+
+    bb6: {
+        _10 = f24() -> [return: bb13, unwind continue];
+    }
+
+    bb7: {
+        _2 = const 10766_u64;
+        _3 = const 1_u32;
+        goto -> bb1;
+    }
+
+    bb8: {
+        _2 = const 9742_u64;
+        _3 = const 1_u32;
+        goto -> bb1;
+    }
+
+    bb9: {
+        _0 = Val(copy _2);
+        return;
+    }
+
+    bb10: {
+        _19 = copy (_1.0: u64);
+        _5 = copy _19;
+        _4 = BitAnd(move _5, const 255_u64);
+        _6 = Ne(copy _4, const 4_u64);
+        _8 = copy _19;
+        _7 = Gt(move _8, const 21474836479_u64);
+        _9 = BitOr(copy _7, copy _6);
+        switchInt(copy _9) -> [0: bb12, otherwise: bb11];
+    }
+
+    bb11: {
+        _3 = const 6_u32;
+        goto -> bb1;
+    }
+
+    bb12: {
+        _3 = const 7_u32;
+        goto -> bb1;
+    }
+
+    bb13: {
+        _11 = core::panicking::panic(const "internal error: entered unreachable code") -> unwind continue;
+    }
+
+    bb14: {
+        _13 = trap() -> unwind unreachable;
+    }
+
+    bb15: {
+        _3 = const 2_u32;
+        goto -> bb1;
+    }
+
+    bb16: {
+        _3 = const 4_u32;
+        goto -> bb1;
+    }
+
+    bb17: {
+        _3 = const 5_u32;
+        goto -> bb1;
+    }
+
+    bb18: {
+        _2 = const 4294967299_u64;
+        _3 = const 1_u32;
+        goto -> bb1;
+    }
+
+    bb19: {
+        _3 = const 3_u32;
+        goto -> bb1;
+    }
+}
+
+alloc3 (size: 40, align: 1) {
+    0x00 │ 69 6e 74 65 72 6e 61 6c 20 65 72 72 6f 72 3a 20 │ internal error: 
+    0x10 │ 65 6e 74 65 72 65 64 20 75 6e 72 65 61 63 68 61 │ entered unreacha
+    0x20 │ 62 6c 65 20 63 6f 64 65                         │ ble code
+}
+
+fn set_flag() -> Val {
+    let mut _0: Val;
+    scope 1 {
+        debug v_Symbol__f__ => const Val(11022_u64);
+        scope 2 {
+            debug v_true => const Val(1_u64);
+            scope 3 {
+                debug Persistent => const StorageType::Persistent;
+                let _1: Val;
+                scope 4 {
+                    debug put_contract_data_3 => _1;
+                    scope 5 {
+                        debug v_void => const Val(2_u64);
+                    }
+                    scope 8 (inlined Val::from_payload) {
+                    }
+                }
+            }
+        }
+        scope 7 (inlined Val::from_payload) {
+        }
+    }
+    scope 6 (inlined Val::from_payload) {
+    }
+
+    bb0: {
+        _1 = put_contract_data(const Val(11022_u64), const Val(1_u64), const StorageType::Persistent) -> [return: bb1, unwind unreachable];
+    }
+
+    bb1: {
+        _0 = const Val(2_u64);
+        return;
+    }
+}
+
+fn f15() -> () {
+    let mut _0: ();
+    scope 1 {
+        debug v_Error_type_0__code_1_ => const Val(4294967299_u64);
+        let _1: Val;
+        scope 2 {
+            debug fail_with_error_1 => _1;
+        }
+    }
+    scope 3 (inlined Val::from_payload) {
+    }
+
+    bb0: {
+        _1 = fail_with_error(const Val(4294967299_u64)) -> [return: bb1, unwind unreachable];
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn f24() -> () {
+    let mut _0: ();
+    let _1: ();
+    let _2: !;
+
+    bb0: {
+        _1 = f25() -> [return: bb1, unwind continue];
+    }
+
+    bb1: {
+        _2 = core::panicking::panic(const "internal error: entered unreachable code") -> unwind continue;
+    }
+}
+
+alloc3 (size: 40, align: 1) {
+    0x00 │ 69 6e 74 65 72 6e 61 6c 20 65 72 72 6f 72 3a 20 │ internal error: 
+    0x10 │ 65 6e 74 65 72 65 64 20 75 6e 72 65 61 63 68 61 │ entered unreacha
+    0x20 │ 62 6c 65 20 63 6f 64 65                         │ ble code
+}
+
+fn f25() -> () {
+    let mut _0: ();
+    let mut _1: [u8; 32];
+    let mut _3: &mut [u8];
+    let mut _4: &mut [u8; 32];
+    let mut _10: usize;
+    let mut _13: u32;
+    let _14: !;
+    let mut _18: u32;
+    let mut _22: u32;
+    let mut _26: u16;
+    let mut _30: u32;
+    scope 1 {
+        debug frame_buf => _1;
+        let _2: *mut u8;
+        scope 2 {
+            debug frame => _2;
+            let _5: *mut u8;
+            scope 3 {
+                debug slot16 => _5;
+                let _6: *mut u8;
+                scope 4 {
+                    debug slot12 => _6;
+                    let _7: *mut u8;
+                    scope 5 {
+                        debug slot28 => _7;
+                        let _8: *mut u8;
+                        scope 6 {
+                            debug slot24 => _8;
+                            let _9: u64;
+                            scope 7 {
+                                debug fp => _9;
+                                let _11: *mut u8;
+                                scope 8 {
+                                    debug slot20 => _11;
+                                    let _12: u32;
+                                    scope 9 {
+                                        debug t6 => _12;
+                                        scope 44 (inlined #[track_caller] core::ptr::write_unaligned::<u32>) {
+                                            let mut _34: *const u8;
+                                            let mut _35: *const u32;
+                                            scope 45 (inlined core::mem::size_of::<u32>) {
+                                            }
+                                            scope 46 (inlined core::ptr::copy_nonoverlapping::<u8>) {
+                                                scope 47 (inlined core::ub_checks::check_language_ub) {
+                                                    scope 48 (inlined core::ub_checks::check_language_ub::runtime) {
+                                                    }
+                                                }
+                                                scope 49 (inlined core::mem::size_of::<u8>) {
+                                                }
+                                                scope 50 (inlined core::mem::align_of::<u8>) {
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                scope 43 (inlined core::ptr::mut_ptr::<impl *mut u8>::wrapping_offset) {
+                                    let mut _33: *const u8;
+                                }
+                            }
+                            scope 36 (inlined #[track_caller] core::ptr::write_unaligned::<u32>) {
+                                let mut _31: *const u8;
+                                let mut _32: *const u32;
+                                scope 37 (inlined core::mem::size_of::<u32>) {
+                                }
+                                scope 38 (inlined core::ptr::copy_nonoverlapping::<u8>) {
+                                    scope 39 (inlined core::ub_checks::check_language_ub) {
+                                        scope 40 (inlined core::ub_checks::check_language_ub::runtime) {
+                                        }
+                                    }
+                                    scope 41 (inlined core::mem::size_of::<u8>) {
+                                    }
+                                    scope 42 (inlined core::mem::align_of::<u8>) {
+                                    }
+                                }
+                            }
+                        }
+                        scope 28 (inlined #[track_caller] core::ptr::write_unaligned::<u16>) {
+                            let mut _27: *const u8;
+                            let mut _28: *const u16;
+                            scope 29 (inlined core::mem::size_of::<u16>) {
+                            }
+                            scope 30 (inlined core::ptr::copy_nonoverlapping::<u8>) {
+                                scope 31 (inlined core::ub_checks::check_language_ub) {
+                                    scope 32 (inlined core::ub_checks::check_language_ub::runtime) {
+                                    }
+                                }
+                                scope 33 (inlined core::mem::size_of::<u8>) {
+                                }
+                                scope 34 (inlined core::mem::align_of::<u8>) {
+                                }
+                            }
+                        }
+                        scope 35 (inlined core::ptr::mut_ptr::<impl *mut u8>::wrapping_offset) {
+                            let mut _29: *const u8;
+                        }
+                    }
+                    scope 20 (inlined #[track_caller] core::ptr::write_unaligned::<u32>) {
+                        let mut _23: *const u8;
+                        let mut _24: *const u32;
+                        scope 21 (inlined core::mem::size_of::<u32>) {
+                        }
+                        scope 22 (inlined core::ptr::copy_nonoverlapping::<u8>) {
+                            scope 23 (inlined core::ub_checks::check_language_ub) {
+                                scope 24 (inlined core::ub_checks::check_language_ub::runtime) {
+                                }
+                            }
+                            scope 25 (inlined core::mem::size_of::<u8>) {
+                            }
+                            scope 26 (inlined core::mem::align_of::<u8>) {
+                            }
+                        }
+                    }
+                    scope 27 (inlined core::ptr::mut_ptr::<impl *mut u8>::wrapping_offset) {
+                        let mut _25: *const u8;
+                    }
+                }
+                scope 12 (inlined #[track_caller] core::ptr::write_unaligned::<u32>) {
+                    let mut _19: *const u8;
+                    let mut _20: *const u32;
+                    scope 13 (inlined core::mem::size_of::<u32>) {
+                    }
+                    scope 14 (inlined core::ptr::copy_nonoverlapping::<u8>) {
+                        scope 15 (inlined core::ub_checks::check_language_ub) {
+                            scope 16 (inlined core::ub_checks::check_language_ub::runtime) {
+                            }
+                        }
+                        scope 17 (inlined core::mem::size_of::<u8>) {
+                        }
+                        scope 18 (inlined core::mem::align_of::<u8>) {
+                        }
+                    }
+                }
+                scope 19 (inlined core::ptr::mut_ptr::<impl *mut u8>::wrapping_offset) {
+                    let mut _21: *const u8;
+                }
+            }
+            scope 11 (inlined core::ptr::mut_ptr::<impl *mut u8>::wrapping_offset) {
+                let mut _16: *const u8;
+                let mut _17: *const u8;
+            }
+        }
+        scope 10 (inlined core::slice::<impl [u8]>::as_mut_ptr) {
+            let mut _15: *mut [u8];
+        }
+    }
+
+    bb0: {
+        _1 = [const 0_u8; 32];
+        _4 = &mut _1;
+        _3 = copy _4 as &mut [u8] (PointerCoercion(Unsize, Implicit));
+        _15 = &raw mut (*_3);
+        _2 = copy _15 as *mut u8 (PtrToPtr);
+        _17 = copy _15 as *const u8 (PtrToPtr);
+        _16 = core::intrinsics::arith_offset::<u8>(copy _17, const 16_isize) -> [return: bb1, unwind unreachable];
+    }
+
+    bb1: {
+        _5 = copy _16 as *mut u8 (PtrToPtr);
+        _18 = const 29_u32;
+        _20 = &raw const _18;
+        _19 = copy _20 as *const u8 (PtrToPtr);
+        copy_nonoverlapping(dst = copy _5, src = copy _19, count = const 4_usize);
+        _21 = core::intrinsics::arith_offset::<u8>(copy _17, const 12_isize) -> [return: bb2, unwind unreachable];
+    }
+
+    bb2: {
+        _6 = copy _21 as *mut u8 (PtrToPtr);
+        _22 = const 1048576_u32;
+        _24 = &raw const _22;
+        _23 = copy _24 as *const u8 (PtrToPtr);
+        copy_nonoverlapping(dst = copy _6, src = copy _23, count = const 4_usize);
+        _25 = core::intrinsics::arith_offset::<u8>(copy _17, const 28_isize) -> [return: bb3, unwind unreachable];
+    }
+
+    bb3: {
+        _7 = copy _25 as *mut u8 (PtrToPtr);
+        _26 = const 1_u16;
+        _28 = &raw const _26;
+        _27 = copy _28 as *const u8 (PtrToPtr);
+        copy_nonoverlapping(dst = copy _7, src = copy _27, count = const 2_usize);
+        _29 = core::intrinsics::arith_offset::<u8>(copy _17, const 24_isize) -> [return: bb4, unwind unreachable];
+    }
+
+    bb4: {
+        _8 = copy _29 as *mut u8 (PtrToPtr);
+        _30 = const 1048604_u32;
+        _32 = &raw const _30;
+        _31 = copy _32 as *const u8 (PtrToPtr);
+        copy_nonoverlapping(dst = copy _8, src = copy _31, count = const 4_usize);
+        _10 = copy _6 as usize (PointerExposeProvenance);
+        _9 = move _10 as u64 (IntToInt);
+        _33 = core::intrinsics::arith_offset::<u8>(move _17, const 20_isize) -> [return: bb5, unwind unreachable];
+    }
+
+    bb5: {
+        _11 = copy _33 as *mut u8 (PtrToPtr);
+        _12 = copy _9 as u32 (IntToInt);
+        _13 = copy _12;
+        _35 = &raw const _13;
+        _34 = copy _35 as *const u8 (PtrToPtr);
+        copy_nonoverlapping(dst = copy _11, src = copy _34, count = const 4_usize);
+        _14 = trap() -> unwind unreachable;
+    }
+}
+
+const f25::{constant#1}: usize = const 32_usize;
+
+const f25::{constant#0}: usize = const 32_usize;
+
+fn Val(_1: u64) -> Val {
+    let mut _0: Val;
+
+    bb0: {
+        _0 = Val(move _1);
+        return;
+    }
+}
+
+// MIR FOR CTFE
+fn Val(_1: u64) -> Val {
+    let mut _0: Val;
+
+    bb0: {
+        _0 = Val(move _1);
+        return;
+    }
+}

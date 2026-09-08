@@ -1,0 +1,7 @@
+[package]
+name = "ponytail-mir"
+version = "0.1.0"
+edition = "2021"
+
+# No dependencies: everything is rustc itself, linked through rustc_private.
+[dependencies]

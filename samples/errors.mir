@@ -1,0 +1,372 @@
+// WARNING: This output format is intended for human consumers only
+// and is subject to change without notice. Knock yourself out.
+// HINT: See also -Z dump-mir for MIR at specific points during compilation.
+fn <impl at ../samples/errors.rs:9:10: 9:15>::clone(_1: &Val) -> Val {
+    debug self => _1;
+    let mut _0: Val;
+    scope 1 {
+    }
+
+    bb0: {
+        _0 = copy (*_1);
+        return;
+    }
+}
+
+fn <impl at ../samples/errors.rs:11:1: 11:9>::from_payload(_1: u64) -> Val {
+    debug p => _1;
+    let mut _0: Val;
+
+    bb0: {
+        _0 = Val(copy _1);
+        return;
+    }
+}
+
+// MIR FOR CTFE
+fn <impl at ../samples/errors.rs:11:1: 11:9>::from_payload(_1: u64) -> Val {
+    debug p => _1;
+    let mut _0: Val;
+    let mut _2: u64;
+
+    bb0: {
+        StorageLive(_2);
+        _2 = copy _1;
+        _0 = Val(move _2);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn <impl at ../samples/errors.rs:11:1: 11:9>::payload(_1: Val) -> u64 {
+    debug self => _1;
+    let mut _0: u64;
+
+    bb0: {
+        _0 = copy (_1.0: u64);
+        return;
+    }
+}
+
+// MIR FOR CTFE
+fn <impl at ../samples/errors.rs:11:1: 11:9>::payload(_1: Val) -> u64 {
+    debug self => _1;
+    let mut _0: u64;
+
+    bb0: {
+        _0 = copy (_1.0: u64);
+        return;
+    }
+}
+
+const StorageType::Temporary::{constant#0}: u64 = const 0_u64;
+
+const StorageType::Persistent::{constant#0}: u64 = const 1_u64;
+
+const StorageType::Instance::{constant#0}: u64 = const 2_u64;
+
+fn <impl at ../samples/errors.rs:18:10: 18:15>::clone(_1: &StorageType) -> StorageType {
+    debug self => _1;
+    let mut _0: StorageType;
+
+    bb0: {
+        _0 = copy (*_1);
+        return;
+    }
+}
+
+static mut G0: u64 = {
+    let mut _0: u64;
+
+    bb0: {
+        _0 = const 1048576_u64;
+        return;
+    }
+}
+
+static mut G1: u64 = {
+    let mut _0: u64;
+
+    bb0: {
+        _0 = const 1048604_u64;
+        return;
+    }
+}
+
+static mut G2: u64 = {
+    let mut _0: u64;
+
+    bb0: {
+        _0 = const 1048604_u64;
+        return;
+    }
+}
+
+static mut G3: u64 = {
+    let mut _0: u64;
+
+    bb0: {
+        _0 = const 1048608_u64;
+        return;
+    }
+}
+
+fn hello(_1: Val) -> Val {
+    debug t0 => _1;
+    let mut _0: Val;
+    let mut _5: u64;
+    let mut _7: u64;
+    let _10: !;
+    let mut _12: u64;
+    let _15: ();
+    let _16: !;
+    let _17: ();
+    let _18: !;
+    let _19: ();
+    let _20: !;
+    let mut _21: !;
+    let mut _22: u64;
+    scope 1 {
+        debug arg_payload => _22;
+        let mut _2: u64;
+        scope 2 {
+            debug l0_0 => _2;
+            let mut _3: u32;
+            scope 3 {
+                debug __bb => _3;
+                let _4: bool;
+                let _11: u64;
+                scope 4 {
+                    debug cmp => _4;
+                    let _6: u64;
+                    scope 5 {
+                        debug and => _6;
+                        let _8: bool;
+                        scope 6 {
+                            debug cmp2_not => _8;
+                            let _9: bool;
+                            scope 7 {
+                                debug or_cond => _9;
+                            }
+                        }
+                    }
+                }
+                scope 8 {
+                    debug lshr => _11;
+                    scope 9 {
+                        debug v_Symbol__persisted__ => const Val(3867323444879862030_u64);
+                        scope 10 {
+                            debug v_true => const Val(1_u64);
+                            scope 11 {
+                                debug Persistent => const StorageType::Persistent;
+                                let _13: Val;
+                                scope 12 {
+                                    debug put_contract_data_9 => _13;
+                                    let _14: u32;
+                                    scope 13 {
+                                        debug sel => _14;
+                                        scope 14 {
+                                            debug __p0 => const 4294967299_u64;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        scope 24 (inlined Val::from_payload) {
+                        }
+                    }
+                    scope 23 (inlined Val::from_payload) {
+                    }
+                }
+                scope 15 {
+                    debug to_val => _0;
+                }
+                scope 16 {
+                    debug __p0 => const 196144296974_u64;
+                }
+                scope 17 (inlined Val::from_payload) {
+                }
+                scope 18 (inlined core::num::<impl u64>::wrapping_shr) {
+                    scope 19 (inlined #[track_caller] core::num::<impl u64>::unchecked_shr) {
+                        scope 20 (inlined core::ub_checks::check_language_ub) {
+                            scope 21 (inlined core::ub_checks::check_language_ub::runtime) {
+                            }
+                        }
+                    }
+                }
+                scope 22 (inlined Val::payload) {
+                }
+            }
+        }
+    }
+
+    bb0: {
+        _22 = const 0_u64;
+        _2 = const 0_u64;
+        _3 = const 0_u32;
+        goto -> bb1;
+    }
+
+    bb1: {
+        switchInt(copy _3) -> [0: bb10, 1: bb9, 2: bb8, 3: bb7, 4: bb6, 5: bb5, 6: bb4, 7: bb3, otherwise: bb2];
+    }
+
+    bb2: {
+        _21 = core::panicking::panic(const "internal error: entered unreachable code") -> unwind continue;
+    }
+
+    bb3: {
+        _19 = f3(const 4294967299_u64) -> [return: bb21, unwind continue];
+    }
+
+    bb4: {
+        _17 = f4() -> [return: bb20, unwind continue];
+    }
+
+    bb5: {
+        _15 = f3(const 38654705667_u64) -> [return: bb19, unwind continue];
+    }
+
+    bb6: {
+        _2 = const 196144296974_u64;
+        _3 = const 3_u32;
+        goto -> bb1;
+    }
+
+    bb7: {
+        _0 = Val(copy _2);
+        return;
+    }
+
+    bb8: {
+        _12 = copy _22;
+        _11 = ShrUnchecked(copy _12, const 32_u32);
+        _13 = put_contract_data(const Val(3867323444879862030_u64), const Val(1_u64), const StorageType::Persistent) -> [return: bb13, unwind unreachable];
+    }
+
+    bb9: {
+        _10 = trap() -> unwind unreachable;
+    }
+
+    bb10: {
+        _22 = copy (_1.0: u64);
+        _5 = copy _22;
+        _4 = Lt(move _5, const 21474836480_u64);
+        _7 = copy _22;
+        _6 = BitAnd(move _7, const 255_u64);
+        _8 = Eq(copy _6, const 4_u64);
+        _9 = BitAnd(copy _4, copy _8);
+        switchInt(copy _9) -> [0: bb12, otherwise: bb11];
+    }
+
+    bb11: {
+        _3 = const 2_u32;
+        goto -> bb1;
+    }
+
+    bb12: {
+        _3 = const 1_u32;
+        goto -> bb1;
+    }
+
+    bb13: {
+        _14 = copy _11 as u32 (IntToInt);
+        switchInt(copy _14) -> [0: bb18, 1: bb17, 2: bb16, 3: bb15, otherwise: bb14];
+    }
+
+    bb14: {
+        _3 = const 5_u32;
+        goto -> bb1;
+    }
+
+    bb15: {
+        _3 = const 6_u32;
+        goto -> bb1;
+    }
+
+    bb16: {
+        _3 = const 7_u32;
+        goto -> bb1;
+    }
+
+    bb17: {
+        _2 = const 4294967299_u64;
+        _3 = const 3_u32;
+        goto -> bb1;
+    }
+
+    bb18: {
+        _3 = const 4_u32;
+        goto -> bb1;
+    }
+
+    bb19: {
+        _16 = trap() -> unwind unreachable;
+    }
+
+    bb20: {
+        _18 = core::panicking::panic(const "internal error: entered unreachable code") -> unwind continue;
+    }
+
+    bb21: {
+        _20 = trap() -> unwind unreachable;
+    }
+}
+
+alloc5 (size: 40, align: 1) {
+    0x00 │ 69 6e 74 65 72 6e 61 6c 20 65 72 72 6f 72 3a 20 │ internal error: 
+    0x10 │ 65 6e 74 65 72 65 64 20 75 6e 72 65 61 63 68 61 │ entered unreacha
+    0x20 │ 62 6c 65 20 63 6f 64 65                         │ ble code
+}
+
+fn f3(_1: u64) -> () {
+    debug t0 => _1;
+    let mut _0: ();
+    let _2: Val;
+    scope 1 {
+        debug to_val => _2;
+        let _3: Val;
+        scope 2 {
+            debug fail_with_error_1 => _3;
+        }
+    }
+    scope 3 (inlined Val::from_payload) {
+    }
+
+    bb0: {
+        _2 = Val(copy _1);
+        _3 = fail_with_error(move _2) -> [return: bb1, unwind unreachable];
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn f4() -> () {
+    let mut _0: ();
+    let _1: !;
+
+    bb0: {
+        _1 = trap() -> unwind unreachable;
+    }
+}
+
+fn Val(_1: u64) -> Val {
+    let mut _0: Val;
+
+    bb0: {
+        _0 = Val(move _1);
+        return;
+    }
+}
+
+// MIR FOR CTFE
+fn Val(_1: u64) -> Val {
+    let mut _0: Val;
+
+    bb0: {
+        _0 = Val(move _1);
+        return;
+    }
+}

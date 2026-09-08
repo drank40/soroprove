@@ -1,0 +1,4 @@
+# rustc_private needs a nightly with the compiler's own crates installed.
+[toolchain]
+channel = "nightly-2026-05-01"
+components = ["rustc-dev"]
