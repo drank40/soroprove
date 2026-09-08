@@ -31,7 +31,11 @@ done
 cp three_bugs/target/wasm32v1-none/release/three_bugs.wasm three_bugs.wasm
 cp three_bugs/target/wasm32v1-none/fat/three_bugs.wasm     three_bugs-fat.wasm
 
+# Two goldens each: every function as lowered (--all), and the exports with
+# the SDK plumbing inlined and folded by LLVM (--inline).
 for w in *.wasm; do
-    "$BIN" "$w" --all > "${w%.wasm}.ll"
-    printf '%-22s %6s bytes wasm -> %5s lines IR\n' "$w" "$(stat -c%s "$w")" "$(wc -l < "${w%.wasm}.ll")"
+    "$BIN" "$w" --all    > "${w%.wasm}.ll"
+    "$BIN" "$w" --inline > "${w%.wasm}.inline.ll"
+    printf '%-22s %6s bytes wasm -> %5s lines IR, %4s inlined\n' "$w" "$(stat -c%s "$w")" \
+        "$(wc -l < "${w%.wasm}.ll")" "$(wc -l < "${w%.wasm}.inline.ll")"
 done

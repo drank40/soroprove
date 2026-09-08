@@ -3,27 +3,63 @@ source_filename = "ponytail"
 
 %Val = type { i64 }
 
-declare %Val @soroban.val.from_payload(i64)
+@g0 = global i64 1048576
+@g1 = constant i64 1048652
 
-declare i64 @soroban.val.payload(%Val)
+; Function Attrs: nounwind willreturn memory(none)
+declare %Val @soroban.val.from_payload(i64) #0
 
-declare i64 @soroban.storage_type(i64)
+; Function Attrs: nounwind willreturn memory(none)
+declare i64 @soroban.val.payload(%Val) #0
 
-declare %Val @ponytail.unknown()
+; Function Attrs: nounwind willreturn memory(none)
+declare i64 @soroban.storage_type(i64) #0
 
-declare i64 @ponytail.unknown.i64()
+; Function Attrs: memory(inaccessiblemem: readwrite)
+declare %Val @ponytail.unknown() #1
 
-declare %Val @buf.symbol_new_from_linear_memory(%Val, %Val) #0
+; Function Attrs: memory(inaccessiblemem: readwrite)
+declare i64 @ponytail.unknown.i64() #1
 
-declare %Val @context.fail_with_error(%Val) #1
+; Function Attrs: noreturn
+declare void @soroban.trap() #2
 
-declare %Val @ledger.has_contract_data(%Val, i64) #2
+declare i64 @soroban.load8u(i64)
 
-declare %Val @ledger.put_contract_data(%Val, %Val, i64) #3
+declare i64 @soroban.load8s(i64)
 
-declare %Val @map.map_new_from_linear_memory(%Val, %Val, %Val) #4
+declare i64 @soroban.load16u(i64)
 
-declare %Val @vec.vec_new_from_linear_memory(%Val, %Val) #5
+declare i64 @soroban.load16s(i64)
+
+declare i64 @soroban.load32u(i64)
+
+declare i64 @soroban.load32s(i64)
+
+declare i64 @soroban.load64(i64)
+
+declare void @soroban.store8(i64, i64)
+
+declare void @soroban.store16(i64, i64)
+
+declare void @soroban.store32(i64, i64)
+
+declare void @soroban.store64(i64, i64)
+
+declare %Val @buf.symbol_new_from_linear_memory(%Val, %Val) #3
+
+; Function Attrs: memory(inaccessiblemem: readwrite)
+declare %Val @context.fail_with_error(%Val) #4
+
+; Function Attrs: memory(inaccessiblemem: readwrite)
+declare %Val @ledger.has_contract_data(%Val, i64) #5
+
+; Function Attrs: memory(inaccessiblemem: readwrite)
+declare %Val @ledger.put_contract_data(%Val, %Val, i64) #6
+
+declare %Val @map.map_new_from_linear_memory(%Val, %Val, %Val) #7
+
+declare %Val @vec.vec_new_from_linear_memory(%Val, %Val) #8
 
 define %Val @read(%Val %0, %Val %1) {
 entry:
@@ -49,9 +85,10 @@ entry:
   store i64 %arg_payload, ptr %l0, align 4
   store i64 0, ptr %l1, align 4
   store i64 0, ptr %l2, align 4
-  %bottom = call i64 @ponytail.unknown.i64()
-  %sub = sub i64 %bottom, 16
+  %g0 = load i64, ptr @g0, align 4
+  %sub = sub i64 %g0, 16
   store i64 %sub, ptr %l1, align 4
+  store i64 %sub, ptr @g0, align 4
   %get = load i64, ptr %l0, align 4
   %and = and i64 %get, 255
   %cmp = icmp ne i64 %and, 4
@@ -62,6 +99,7 @@ entry:
 c1:                                               ; preds = %c2, %c3, %fall8
   %get7 = load i64, ptr %l1, align 4
   %add8 = add i64 %get7, 16
+  store i64 %add8, ptr @g0, align 4
   %get9 = load i64, ptr %l0, align 4
   %to_val = call %Val @soroban.val.from_payload(i64 %get9)
   ret %Val %to_val
@@ -76,15 +114,18 @@ c3:                                               ; preds = %fall8
 
 c4:                                               ; preds = %fall8
   call void @f24(i64 1048576, i64 14, i64 1048604)
+  call void @soroban.trap()
   unreachable
 
 c5:                                               ; preds = %fall8
   %get6 = load i64, ptr %l1, align 4
   %add = add i64 %get6, 15
   %lc = call i64 @f15(i64 %add, i64 4294967299)
+  call void @soroban.trap()
   unreachable
 
 c6:                                               ; preds = %fall7, %entry
+  call void @soroban.trap()
   unreachable
 
 fall7:                                            ; preds = %entry
@@ -113,14 +154,16 @@ define %Val @set_flag() {
 entry:
   %l0 = alloca i64, align 8
   store i64 0, ptr %l0, align 4
-  %bottom = call i64 @ponytail.unknown.i64()
-  %sub = sub i64 %bottom, 16
+  %g0 = load i64, ptr @g0, align 4
+  %sub = sub i64 %g0, 16
   store i64 %sub, ptr %l0, align 4
+  store i64 %sub, ptr @g0, align 4
   %get = load i64, ptr %l0, align 4
   %add = add i64 %get, 15
   %lc = call i64 @f16(i64 %add, i64 11022, i64 1, i64 1)
   %get1 = load i64, ptr %l0, align 4
   %add2 = add i64 %get1, 16
+  store i64 %add2, ptr @g0, align 4
   %v_void = call %Val @soroban.val.from_payload(i64 2)
   ret %Val %v_void
 }
@@ -137,9 +180,10 @@ entry:
   store i64 0, ptr %l2, align 4
   store i64 0, ptr %l3, align 4
   store i64 0, ptr %l4, align 4
-  %bottom = call i64 @ponytail.unknown.i64()
-  %sub = sub i64 %bottom, 32
+  %g0 = load i64, ptr @g0, align 4
+  %sub = sub i64 %g0, 32
   store i64 %sub, ptr %l2, align 4
+  store i64 %sub, ptr @g0, align 4
   %get = load i64, ptr %l0, align 4
   %and = and i64 %get, 255
   %cmp = icmp ne i64 %and, 77
@@ -148,6 +192,7 @@ entry:
   br i1 %brif, label %c1, label %fall2
 
 c1:                                               ; preds = %fall3, %fall2, %entry
+  call void @soroban.trap()
   unreachable
 
 fall2:                                            ; preds = %entry
@@ -165,47 +210,59 @@ fall3:                                            ; preds = %fall2
   %add8 = add i64 %get7, 31
   call void @f14(i64 %add, i64 %add8, i64 1048644)
   %get9 = load i64, ptr %l2, align 4
-  %bottom10 = call i64 @ponytail.unknown.i64()
-  %cmp11 = icmp eq i64 %bottom10, 1
-  %zext12 = zext i1 %cmp11 to i64
-  %brif13 = icmp ne i64 %zext12, 0
-  br i1 %brif13, label %c1, label %fall4
+  %ea = add i64 %get9, 8
+  %ld = call i64 @soroban.load64(i64 %ea)
+  %cmp10 = icmp eq i64 %ld, 1
+  %zext11 = zext i1 %cmp10 to i64
+  %brif12 = icmp ne i64 %zext11, 0
+  br i1 %brif12, label %c1, label %fall4
 
 fall4:                                            ; preds = %fall3
-  %get14 = load i64, ptr %l2, align 4
-  %bottom15 = call i64 @ponytail.unknown.i64()
-  store i64 %bottom15, ptr %l3, align 4
+  %get13 = load i64, ptr %l2, align 4
+  %ea14 = add i64 %get13, 16
+  %ld15 = call i64 @soroban.load64(i64 %ea14)
+  store i64 %ld15, ptr %l3, align 4
   %get16 = load i64, ptr %l2, align 4
   %get17 = load i64, ptr %l1, align 4
-  %get18 = load i64, ptr %l2, align 4
-  %get19 = load i64, ptr %l0, align 4
-  %get20 = load i64, ptr %l2, align 4
-  %get21 = load i64, ptr %l2, align 4
-  %add22 = add i64 %get21, 31
+  %ea18 = add i64 %get16, 16
+  call void @soroban.store64(i64 %ea18, i64 %get17)
+  %get19 = load i64, ptr %l2, align 4
+  %get20 = load i64, ptr %l0, align 4
+  %ea21 = add i64 %get19, 8
+  call void @soroban.store64(i64 %ea21, i64 %get20)
+  %get22 = load i64, ptr %l2, align 4
   %get23 = load i64, ptr %l2, align 4
-  %add24 = add i64 %get23, 8
-  %lc = call i64 @f13(i64 %add22, i64 1048624, i64 2, i64 %add24, i64 2)
+  %add24 = add i64 %get23, 31
   %get25 = load i64, ptr %l2, align 4
-  %get26 = load i64, ptr %l3, align 4
-  %get27 = load i64, ptr %l2, align 4
-  %add28 = add i64 %get27, 31
-  %get29 = load i64, ptr %l2, align 4
-  %add30 = add i64 %get29, 31
+  %add26 = add i64 %get25, 8
+  %lc = call i64 @f13(i64 %add24, i64 1048624, i64 2, i64 %add26, i64 2)
+  %ea27 = add i64 %get22, 16
+  call void @soroban.store64(i64 %ea27, i64 %lc)
+  %get28 = load i64, ptr %l2, align 4
+  %get29 = load i64, ptr %l3, align 4
+  %ea30 = add i64 %get28, 8
+  call void @soroban.store64(i64 %ea30, i64 %get29)
   %get31 = load i64, ptr %l2, align 4
-  %add32 = add i64 %get31, 8
-  %lc33 = call i64 @f12(i64 %add30, i64 %add32, i64 2)
-  %lc34 = call i64 @f11(i64 %add28, i64 %lc33, i64 1)
-  store i64 %lc34, ptr %l4, align 4
+  %add32 = add i64 %get31, 31
+  %get33 = load i64, ptr %l2, align 4
+  %add34 = add i64 %get33, 31
   %get35 = load i64, ptr %l2, align 4
-  %add36 = add i64 %get35, 32
-  %get37 = load i64, ptr %l4, align 4
-  ret i64 %get37
+  %add36 = add i64 %get35, 8
+  %lc37 = call i64 @f12(i64 %add34, i64 %add36, i64 2)
+  %lc38 = call i64 @f11(i64 %add32, i64 %lc37, i64 1)
+  store i64 %lc38, ptr %l4, align 4
+  %get39 = load i64, ptr %l2, align 4
+  %add40 = add i64 %get39, 32
+  store i64 %add40, ptr @g0, align 4
+  %get41 = load i64, ptr %l4, align 4
+  ret i64 %get41
 }
 
 define void @f10(i64 %0) {
 entry:
   %l0 = alloca i64, align 8
   store i64 %0, ptr %l0, align 4
+  call void @soroban.trap()
   unreachable
 }
 
@@ -276,43 +333,50 @@ entry:
   store i64 0, ptr %l3, align 4
   store i64 0, ptr %l4, align 4
   store i64 0, ptr %l5, align 4
-  %bottom = call i64 @ponytail.unknown.i64()
-  %sub = sub i64 %bottom, 16
+  %g0 = load i64, ptr @g0, align 4
+  %sub = sub i64 %g0, 16
   store i64 %sub, ptr %l3, align 4
+  store i64 %sub, ptr @g0, align 4
   %get = load i64, ptr %l3, align 4
   %get1 = load i64, ptr %l2, align 4
-  %bottom2 = call i64 @ponytail.unknown.i64()
-  store i64 %bottom2, ptr %l4, align 4
-  %get3 = load i64, ptr %l2, align 4
-  %bottom4 = call i64 @ponytail.unknown.i64()
-  store i64 %bottom4, ptr %l2, align 4
-  call void @f23(i64 %get, i64 %bottom2, i64 %bottom4)
-  %get5 = load i64, ptr %l3, align 4
-  %bottom6 = call i64 @ponytail.unknown.i64()
-  %cmp = icmp ne i64 %bottom6, 1
+  %ld = call i64 @soroban.load32u(i64 %get1)
+  store i64 %ld, ptr %l4, align 4
+  %get2 = load i64, ptr %l2, align 4
+  %ea = add i64 %get2, 4
+  %ld3 = call i64 @soroban.load32u(i64 %ea)
+  store i64 %ld3, ptr %l2, align 4
+  call void @f23(i64 %get, i64 %ld, i64 %ld3)
+  %get4 = load i64, ptr %l3, align 4
+  %ld5 = call i64 @soroban.load32u(i64 %get4)
+  %cmp = icmp ne i64 %ld5, 1
   %zext = zext i1 %cmp to i64
   %brif = icmp ne i64 %zext, 0
   br i1 %brif, label %c2, label %fall3
 
 c1:                                               ; preds = %c2, %fall3
   %get12 = load i64, ptr %l0, align 4
+  call void @soroban.store64(i64 %get12, i64 0)
   %get13 = load i64, ptr %l0, align 4
   %get14 = load i64, ptr %l5, align 4
-  %get15 = load i64, ptr %l3, align 4
-  %add = add i64 %get15, 16
+  %ea15 = add i64 %get13, 8
+  call void @soroban.store64(i64 %ea15, i64 %get14)
+  %get16 = load i64, ptr %l3, align 4
+  %add = add i64 %get16, 16
+  store i64 %add, ptr @g0, align 4
   ret void
 
 c2:                                               ; preds = %entry
-  %get10 = load i64, ptr %l3, align 4
-  %bottom11 = call i64 @ponytail.unknown.i64()
-  store i64 %bottom11, ptr %l5, align 4
+  %get9 = load i64, ptr %l3, align 4
+  %ea10 = add i64 %get9, 8
+  %ld11 = call i64 @soroban.load64(i64 %ea10)
+  store i64 %ld11, ptr %l5, align 4
   br label %c1
 
 fall3:                                            ; preds = %entry
-  %get7 = load i64, ptr %l1, align 4
-  %get8 = load i64, ptr %l4, align 4
-  %get9 = load i64, ptr %l2, align 4
-  %lc = call i64 @f19(i64 %get7, i64 %get8, i64 %get9)
+  %get6 = load i64, ptr %l1, align 4
+  %get7 = load i64, ptr %l4, align 4
+  %get8 = load i64, ptr %l2, align 4
+  %lc = call i64 @f19(i64 %get6, i64 %get7, i64 %get8)
   store i64 %lc, ptr %l5, align 4
   br label %c1
 }
@@ -405,6 +469,7 @@ c1:                                               ; preds = %entry
   ret i64 %payload
 
 fall2:                                            ; preds = %entry
+  call void @soroban.trap()
   unreachable
 }
 
@@ -499,26 +564,34 @@ entry:
   br i1 %brif, label %c4, label %fall5
 
 c1:                                               ; preds = %c2, %fall7
-  %get48 = load i64, ptr %l0, align 4
-  %get49 = load i64, ptr %l3, align 4
-  %get50 = load i64, ptr %l0, align 4
+  %get49 = load i64, ptr %l0, align 4
+  %get50 = load i64, ptr %l3, align 4
+  %ea51 = add i64 %get49, 8
+  call void @soroban.store64(i64 %ea51, i64 %get50)
+  %get52 = load i64, ptr %l0, align 4
+  call void @soroban.store32(i64 %get52, i64 0)
   ret void
 
 c2:                                               ; preds = %c10
-  %get45 = load i64, ptr %l3, align 4
-  %shl46 = shl i64 %get45, 8
-  %or47 = or i64 %shl46, 14
-  store i64 %or47, ptr %l3, align 4
+  %get46 = load i64, ptr %l3, align 4
+  %shl47 = shl i64 %get46, 8
+  %or48 = or i64 %shl47, 14
+  store i64 %or48, ptr %l3, align 4
   br label %c1
 
 c3:                                               ; preds = %c4, %c16
-  %get44 = load i64, ptr %l0, align 4
+  %get45 = load i64, ptr %l0, align 4
+  call void @soroban.store32(i64 %get45, i64 1)
   ret void
 
 c4:                                               ; preds = %entry
-  %get41 = load i64, ptr %l0, align 4
-  %get42 = load i64, ptr %l2, align 4
+  %get40 = load i64, ptr %l0, align 4
+  %get41 = load i64, ptr %l2, align 4
+  %ea42 = add i64 %get40, 8
+  call void @soroban.store32(i64 %ea42, i64 %get41)
   %get43 = load i64, ptr %l0, align 4
+  %ea44 = add i64 %get43, 4
+  call void @soroban.store8(i64 %ea44, i64 0)
   br label %c3
 
 fall5:                                            ; preds = %entry
@@ -537,30 +610,30 @@ fall7:                                            ; preds = %fall5
 h8:                                               ; preds = %fall18, %c6
   store i64 1, ptr %l4, align 4
   %get3 = load i64, ptr %l1, align 4
-  %bottom = call i64 @ponytail.unknown.i64()
-  store i64 %bottom, ptr %l5, align 4
-  %cmp4 = icmp eq i64 %bottom, 95
+  %ld = call i64 @soroban.load8u(i64 %get3)
+  store i64 %ld, ptr %l5, align 4
+  %cmp4 = icmp eq i64 %ld, 95
   %zext5 = zext i1 %cmp4 to i64
   %brif6 = icmp ne i64 %zext5, 0
   br i1 %brif6, label %c10, label %fall11
 
 c10:                                              ; preds = %c12, %c13, %fall17, %h8
-  %get30 = load i64, ptr %l3, align 4
-  %shl31 = shl i64 %get30, 6
-  %get32 = load i64, ptr %l4, align 4
-  %and33 = and i64 %get32, 255
-  %or34 = or i64 %shl31, %and33
-  store i64 %or34, ptr %l3, align 4
-  %get35 = load i64, ptr %l1, align 4
-  %add36 = add i64 %get35, 1
-  store i64 %add36, ptr %l1, align 4
-  %get37 = load i64, ptr %l2, align 4
-  %add38 = add i64 %get37, -1
-  store i64 %add38, ptr %l2, align 4
-  %eqz = icmp eq i64 %add38, 0
-  %zext39 = zext i1 %eqz to i64
-  %brif40 = icmp ne i64 %zext39, 0
-  br i1 %brif40, label %c2, label %fall18
+  %get29 = load i64, ptr %l3, align 4
+  %shl30 = shl i64 %get29, 6
+  %get31 = load i64, ptr %l4, align 4
+  %and32 = and i64 %get31, 255
+  %or33 = or i64 %shl30, %and32
+  store i64 %or33, ptr %l3, align 4
+  %get34 = load i64, ptr %l1, align 4
+  %add35 = add i64 %get34, 1
+  store i64 %add35, ptr %l1, align 4
+  %get36 = load i64, ptr %l2, align 4
+  %add37 = add i64 %get36, -1
+  store i64 %add37, ptr %l2, align 4
+  %eqz = icmp eq i64 %add37, 0
+  %zext38 = zext i1 %eqz to i64
+  %brif39 = icmp ne i64 %zext38, 0
+  br i1 %brif39, label %c2, label %fall18
 
 fall11:                                           ; preds = %h8
   %get7 = load i64, ptr %l5, align 4
@@ -572,15 +645,15 @@ fall11:                                           ; preds = %h8
   br i1 %brif10, label %c13, label %fall14
 
 c12:                                              ; preds = %fall14
-  %get28 = load i64, ptr %l5, align 4
-  %add29 = add i64 %get28, -53
-  store i64 %add29, ptr %l4, align 4
+  %get27 = load i64, ptr %l5, align 4
+  %add28 = add i64 %get27, -53
+  store i64 %add28, ptr %l4, align 4
   br label %c10
 
 c13:                                              ; preds = %fall11
-  %get26 = load i64, ptr %l5, align 4
-  %add27 = add i64 %get26, -46
-  store i64 %add27, ptr %l4, align 4
+  %get25 = load i64, ptr %l5, align 4
+  %add26 = add i64 %get25, -46
+  store i64 %add26, ptr %l4, align 4
   br label %c10
 
 fall14:                                           ; preds = %fall11
@@ -596,21 +669,23 @@ fall15:                                           ; preds = %fall14
   %get17 = load i64, ptr %l5, align 4
   %add18 = add i64 %get17, -97
   %and19 = and i64 %add18, 255
-  %bottom20 = call i64 @ponytail.unknown.i64()
-  %brif21 = icmp ne i64 %bottom20, 0
-  br i1 %brif21, label %c16, label %fall17
+  %bottom = call i64 @ponytail.unknown.i64()
+  %brif20 = icmp ne i64 %bottom, 0
+  br i1 %brif20, label %c16, label %fall17
 
 c16:                                              ; preds = %fall15
-  %get24 = load i64, ptr %l0, align 4
-  %get25 = load i64, ptr %l5, align 4
-  %shl = shl i64 %get25, 8
+  %get23 = load i64, ptr %l0, align 4
+  %get24 = load i64, ptr %l5, align 4
+  %shl = shl i64 %get24, 8
   %or = or i64 %shl, 1
+  %ea = add i64 %get23, 4
+  call void @soroban.store64(i64 %ea, i64 %or)
   br label %c3
 
 fall17:                                           ; preds = %fall15
-  %get22 = load i64, ptr %l5, align 4
-  %add23 = add i64 %get22, -59
-  store i64 %add23, ptr %l4, align 4
+  %get21 = load i64, ptr %l5, align 4
+  %add22 = add i64 %get21, -59
+  store i64 %add22, ptr %l4, align 4
   br label %c10
 
 fall18:                                           ; preds = %c10
@@ -631,6 +706,7 @@ entry:
   %or = or i64 %shl, 1
   %get2 = load i64, ptr %l2, align 4
   call void @f25(i64 %get, i64 %or, i64 %get2)
+  call void @soroban.trap()
   unreachable
 }
 
@@ -644,28 +720,43 @@ entry:
   store i64 %1, ptr %l1, align 4
   store i64 %2, ptr %l2, align 4
   store i64 0, ptr %l3, align 4
-  %bottom = call i64 @ponytail.unknown.i64()
-  %sub = sub i64 %bottom, 32
+  %g0 = load i64, ptr @g0, align 4
+  %sub = sub i64 %g0, 32
   store i64 %sub, ptr %l3, align 4
+  store i64 %sub, ptr @g0, align 4
   %get = load i64, ptr %l3, align 4
   %get1 = load i64, ptr %l1, align 4
+  %ea = add i64 %get, 16
+  call void @soroban.store32(i64 %ea, i64 %get1)
   %get2 = load i64, ptr %l3, align 4
   %get3 = load i64, ptr %l0, align 4
-  %get4 = load i64, ptr %l3, align 4
+  %ea4 = add i64 %get2, 12
+  call void @soroban.store32(i64 %ea4, i64 %get3)
   %get5 = load i64, ptr %l3, align 4
-  %get6 = load i64, ptr %l2, align 4
+  %ea6 = add i64 %get5, 28
+  call void @soroban.store16(i64 %ea6, i64 1)
   %get7 = load i64, ptr %l3, align 4
-  %get8 = load i64, ptr %l3, align 4
-  %add = add i64 %get8, 12
-  %get9 = load i64, ptr %l3, align 4
-  %add10 = add i64 %get9, 20
-  call void @f10(i64 %add10)
+  %get8 = load i64, ptr %l2, align 4
+  %ea9 = add i64 %get7, 24
+  call void @soroban.store32(i64 %ea9, i64 %get8)
+  %get10 = load i64, ptr %l3, align 4
+  %get11 = load i64, ptr %l3, align 4
+  %add = add i64 %get11, 12
+  %ea12 = add i64 %get10, 20
+  call void @soroban.store32(i64 %ea12, i64 %add)
+  %get13 = load i64, ptr %l3, align 4
+  %add14 = add i64 %get13, 20
+  call void @f10(i64 %add14)
+  call void @soroban.trap()
   unreachable
 }
 
-attributes #0 = { "soroban.import"="b.j" "soroban.sig"="(U32Val, U32Val) -> SymbolObject" }
-attributes #1 = { "soroban.import"="x.5" "soroban.sig"="(Error) -> Void" }
-attributes #2 = { "soroban.import"="l.0" "soroban.sig"="(Val, StorageType) -> Bool" }
-attributes #3 = { "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }
-attributes #4 = { "soroban.import"="m.9" "soroban.sig"="(U32Val, U32Val, U32Val) -> MapObject" }
-attributes #5 = { "soroban.import"="v.g" "soroban.sig"="(U32Val, U32Val) -> VecObject" }
+attributes #0 = { nounwind willreturn memory(none) }
+attributes #1 = { memory(inaccessiblemem: readwrite) }
+attributes #2 = { noreturn }
+attributes #3 = { "soroban.import"="b.j" "soroban.sig"="(U32Val, U32Val) -> SymbolObject" }
+attributes #4 = { memory(inaccessiblemem: readwrite) "soroban.import"="x.5" "soroban.sig"="(Error) -> Void" }
+attributes #5 = { memory(inaccessiblemem: readwrite) "soroban.import"="l.0" "soroban.sig"="(Val, StorageType) -> Bool" }
+attributes #6 = { memory(inaccessiblemem: readwrite) "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }
+attributes #7 = { "soroban.import"="m.9" "soroban.sig"="(U32Val, U32Val, U32Val) -> MapObject" }
+attributes #8 = { "soroban.import"="v.g" "soroban.sig"="(U32Val, U32Val) -> VecObject" }

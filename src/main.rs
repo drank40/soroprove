@@ -15,17 +15,28 @@
 //!    `br_table` arm can be dropped.
 //! 3. `Unknown` is bottom: it materialises only as a call to
 //!    `@ponytail.unknown`. There is no literal for a pass to substitute.
+//!
+//! `--inline` then hands the module to LLVM: helpers become internal, O1's
+//! inliner folds the SDK's plumbing into the export, and reads of the data
+//! segment become the constants they are, so each syscall shows its
+//! arguments. Nothing is guessed there; every step is an LLVM transformation
+//! of a faithful module.
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use inkwell::attributes::AttributeLoc;
+use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
-use inkwell::module::Module;
-use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum, IntType, StructType};
-use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind};
-use inkwell::IntPredicate;
+use inkwell::module::{Linkage, Module};
+use inkwell::passes::PassBuilderOptions;
+use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::types::{AnyTypeEnum, BasicMetadataTypeEnum, BasicTypeEnum, IntType, StructType};
+use inkwell::values::{
+    AnyValue, AsValueRef, BasicValue, BasicValueEnum, CallSiteValue, FunctionValue, InstructionOpcode,
+    InstructionValue, IntValue, Operand, PointerValue, ValueKind,
+};
+use inkwell::{IntPredicate, OptimizationLevel};
 use wasmparser::{ExternalKind, Operator, Parser, Payload};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -93,16 +104,18 @@ pub fn explain_val(payload: u64) -> String {
     }
 }
 
+/// Text as an LLVM-safe SSA name.
+fn ident(s: &str) -> String {
+    let mut o: String = s.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    o.truncate(40);
+    o
+}
+
 /// The decode, as an LLVM-safe SSA name. inkwell emits no comments, so the
 /// meaning rides on the value name instead -- which is strictly better: it is
 /// machine-readable and survives optimisation passes.
 fn val_name(payload: u64) -> String {
-    let mut s = String::from("v_");
-    for c in explain_val(payload).chars() {
-        s.push(if c.is_ascii_alphanumeric() { c } else { '_' });
-    }
-    s.truncate(40);
-    s
+    ident(&format!("v_{}", explain_val(payload)))
 }
 
 /// A value on the abstract wasm operand stack.
@@ -145,7 +158,107 @@ fn storage_name(c: i64) -> String {
 /// Only what `Operator::operator_arity` needs to size the fallback in `lower`:
 /// the type section, for `call_indirect`. Labels and direct calls are lowered
 /// explicitly, so the rest is never consulted.
+#[derive(Default)]
 struct Types(Vec<wasmparser::SubType>);
+
+/// Linear memory as the binary declares it: the initialised data segments, the
+/// wasm globals' initial values, and whether any store in the module targets a
+/// segment at a constant address. A load from an unwritten segment at a
+/// constant address IS a constant -- that is where `&true` and the static keys
+/// behind every outlined `storage().set` live.
+/// ponytail: a store through a pointer into a segment is invisible here. Rust
+/// keeps mutable statics out of rodata, so this is the decompiler's usual bet;
+/// `written` catches the direct `static mut` case.
+#[derive(Default)]
+struct Mem {
+    segs: Vec<(u64, Vec<u8>)>,
+    written: bool,
+    /// (initial value, mutable), by global index.
+    globals: Vec<(i64, bool)>,
+}
+
+impl Mem {
+    fn bytes(&self, addr: u64, n: usize) -> Option<&[u8]> {
+        if self.written {
+            return None;
+        }
+        self.segs.iter().find_map(|(base, d)| {
+            let off = addr.checked_sub(*base)? as usize;
+            d.get(off..off.checked_add(n)?)
+        })
+    }
+
+    /// A `bits`-wide load at a constant address, as the i64 the model carries.
+    fn load(&self, addr: u64, bits: u32, signed: bool) -> Option<i64> {
+        let b = self.bytes(addr, (bits / 8) as usize)?;
+        let v = b.iter().enumerate().fold(0u64, |v, (i, x)| v | ((*x as u64) << (8 * i)));
+        Some(if signed && bits < 64 { ((v << (64 - bits)) as i64) >> (64 - bits) } else { v as i64 })
+    }
+}
+
+#[derive(Default)]
+struct Mod {
+    types: Types,
+    mem: Mem,
+}
+
+/// A wasm load or store, reduced to what the i64-wide model needs.
+enum Acc {
+    Load { bits: u32, signed: bool, off: u64 },
+    Store { bits: u32, off: u64 },
+}
+
+fn mem_access(op: &Operator) -> Option<Acc> {
+    use Operator::*;
+    let (bits, signed, store, m) = match op {
+        I32Load { memarg } | I64Load32U { memarg } => (32, false, false, memarg),
+        I64Load32S { memarg } => (32, true, false, memarg),
+        I64Load { memarg } => (64, false, false, memarg),
+        I32Load8U { memarg } | I64Load8U { memarg } => (8, false, false, memarg),
+        I32Load8S { memarg } | I64Load8S { memarg } => (8, true, false, memarg),
+        I32Load16U { memarg } | I64Load16U { memarg } => (16, false, false, memarg),
+        I32Load16S { memarg } | I64Load16S { memarg } => (16, true, false, memarg),
+        I32Store { memarg } | I64Store32 { memarg } => (32, false, true, memarg),
+        I64Store { memarg } => (64, false, true, memarg),
+        I32Store8 { memarg } | I64Store8 { memarg } => (8, false, true, memarg),
+        I32Store16 { memarg } | I64Store16 { memarg } => (16, false, true, memarg),
+        _ => return None,
+    };
+    Some(if store {
+        Acc::Store { bits, off: m.offset }
+    } else {
+        Acc::Load { bits, signed, off: m.offset }
+    })
+}
+
+/// The memory helpers: declared always, defined by `--inline`.
+const LOADS: [(&str, u32, bool); 7] = [
+    ("load8u", 8, false),
+    ("load8s", 8, true),
+    ("load16u", 16, false),
+    ("load16s", 16, true),
+    ("load32u", 32, false),
+    ("load32s", 32, true),
+    ("load64", 64, false),
+];
+const STORES: [(&str, u32); 4] = [("store8", 8), ("store16", 16), ("store32", 32), ("store64", 64)];
+
+/// LLVM `memory(...)` attribute encodings: none, and inaccessiblemem: readwrite.
+const MEM_NONE: u64 = 0;
+const MEM_INACCESSIBLE_RW: u64 = 12;
+
+fn attr(ctx: &Context, name: &str, v: u64) -> Attribute {
+    ctx.create_enum_attribute(Attribute::get_named_enum_kind_id(name), v)
+}
+
+fn int_ty(ctx: &Context, bits: u32) -> IntType<'_> {
+    match bits {
+        8 => ctx.i8_type(),
+        16 => ctx.i16_type(),
+        32 => ctx.i32_type(),
+        _ => ctx.i64_type(),
+    }
+}
 
 impl wasmparser::ModuleArity for Types {
     fn sub_type_at(&self, i: u32) -> Option<&wasmparser::SubType> {
@@ -182,6 +295,10 @@ struct Rt<'ctx> {
     storage_type: FunctionValue<'ctx>,
     unknown_val: FunctionValue<'ctx>,
     unknown_i64: FunctionValue<'ctx>,
+    /// wasm `unreachable` is a trap the host observes, not LLVM's "never
+    /// happens": lowered bare, O1 turns the guard in front of it into an
+    /// `llvm.assume` and the check vanishes from the output.
+    trap: FunctionValue<'ctx>,
 }
 
 impl<'ctx> Rt<'ctx> {
@@ -191,7 +308,7 @@ impl<'ctx> Rt<'ctx> {
         val.set_body(&[i64t.into()], false);
         let vm: BasicMetadataTypeEnum = val.into();
         let im: BasicMetadataTypeEnum = i64t.into();
-        Rt {
+        let rt = Rt {
             val,
             i64t,
             from_payload: m.add_function("soroban.val.from_payload", val.fn_type(&[im], false), None),
@@ -199,7 +316,28 @@ impl<'ctx> Rt<'ctx> {
             storage_type: m.add_function("soroban.storage_type", i64t.fn_type(&[im], false), None),
             unknown_val: m.add_function("ponytail.unknown", val.fn_type(&[], false), None),
             unknown_i64: m.add_function("ponytail.unknown.i64", i64t.fn_type(&[], false), None),
+            trap: m.add_function("soroban.trap", ctx.void_type().fn_type(&[], false), None),
+        };
+        rt.trap.add_attribute(AttributeLoc::Function, attr(ctx, "noreturn", 0));
+        // The conversions are pure, so LLVM may fold and merge them. Bottom is
+        // NOT: two unknowns merged into one would make `x == x` true. It gets
+        // side effects on memory LLVM cannot see, which also keeps stack-slot
+        // forwarding across it legal.
+        for f in [rt.from_payload, rt.payload, rt.storage_type] {
+            for a in [attr(ctx, "memory", MEM_NONE), attr(ctx, "nounwind", 0), attr(ctx, "willreturn", 0)] {
+                f.add_attribute(AttributeLoc::Function, a);
+            }
         }
+        for f in [rt.unknown_val, rt.unknown_i64] {
+            f.add_attribute(AttributeLoc::Function, attr(ctx, "memory", MEM_INACCESSIBLE_RW));
+        }
+        for (n, _, _) in LOADS {
+            m.add_function(&format!("soroban.{n}"), i64t.fn_type(&[im], false), None);
+        }
+        for (n, _) in STORES {
+            m.add_function(&format!("soroban.{n}"), ctx.void_type().fn_type(&[im, im], false), None);
+        }
+        rt
     }
 
     fn ty(&self, v: VT) -> BasicTypeEnum<'ctx> {
@@ -285,6 +423,47 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
 
     fn pop(&mut self) -> SV<'ctx> {
         self.stack.pop().unwrap_or(SV::Unknown)
+    }
+
+    /// A linear-memory access. A constant address inside an unwritten data
+    /// segment reads as the constant it is; everything else goes through the
+    /// `soroban.load*`/`store*` helpers, which `--inline` defines as plain
+    /// accesses to `@mem` so LLVM can forward stores to loads, and then
+    /// `fold_data_loads` reads what inlining has just made constant.
+    fn mem(&mut self, acc: Acc, m: &Module<'ctx>, mem: &Mem) {
+        match acc {
+            Acc::Load { bits, signed, off } => {
+                let a = self.pop();
+                if let SV::Const(c) = a {
+                    if let Some(v) = mem.load((c as u32 as u64).wrapping_add(off), bits, signed) {
+                        self.stack.push(SV::Const(v));
+                        return;
+                    }
+                }
+                let ea = self.addr(a, off);
+                let sfx = if bits == 64 { "" } else if signed { "s" } else { "u" };
+                let f = m.get_function(&format!("soroban.load{bits}{sfx}")).expect("load helper");
+                let r = self.call1(f, &[ea.into()], "ld");
+                self.stack.push(SV::Reg(r));
+            }
+            Acc::Store { bits, off } => {
+                let v = self.pop();
+                let a = self.pop();
+                let vi = self.use_int(v);
+                let ea = self.addr(a, off);
+                let f = m.get_function(&format!("soroban.store{bits}")).expect("store helper");
+                self.b.build_direct_call(f, &[ea.into(), vi.into()], "").expect("call");
+            }
+        }
+    }
+
+    fn addr(&mut self, a: SV<'ctx>, off: u64) -> IntValue<'ctx> {
+        let ai = self.use_int(a);
+        if off == 0 {
+            ai
+        } else {
+            self.b.build_int_add(ai, self.rt.i64t.const_int(off, false), "ea").expect("add")
+        }
     }
 
     /// The single Val<->i64 crossing. Because the result is a typed inkwell
@@ -400,7 +579,7 @@ fn lower<'ctx>(
     ops: &[Operator],
     imports: &HashMap<u32, &'static HostFn>,
     local_sigs: &HashMap<u32, (usize, usize)>,
-    types: &Types,
+    md: &Mod,
     // True only for an exported contract function, whose wasm i64 params ARE
     // Soroban Vals. A helper's params are plain i64 with no declared meaning,
     // and typing them as Val is what inkwell caught the text emitter hiding.
@@ -462,7 +641,25 @@ fn lower<'ctx>(
         {
             continue;
         }
+        if let Some(acc) = mem_access(op) {
+            fun.mem(acc, m, &md.mem);
+            continue;
+        }
         match op {
+            Operator::GlobalGet { global_index } => match m.get_global(&format!("g{global_index}")) {
+                Some(g) => {
+                    let v = fun.b.build_load(rt.i64t, g.as_pointer_value(), &format!("g{global_index}")).expect("load");
+                    fun.stack.push(SV::Reg(v));
+                }
+                None => fun.stack.push(SV::Unknown),
+            },
+            Operator::GlobalSet { global_index } => {
+                let v = fun.pop();
+                let iv = fun.use_int(v);
+                if let Some(g) = m.get_global(&format!("g{global_index}")) {
+                    fun.b.build_store(g.as_pointer_value(), iv).expect("store");
+                }
+            }
             Operator::Block { .. } => {
                 let cont = fun.blk("c");
                 fun.labels.push(Lbl { target: cont, cont, else_bb: None });
@@ -532,7 +729,8 @@ fn lower<'ctx>(
                     fun.ret(n_results, val_abi);
                 } else {
                     fun.br(t);
-                }            }
+                }
+            }
             Operator::BrIf { relative_depth } => {
                 let t = fun.target(*relative_depth)?;
                 let c = fun.pop();
@@ -566,13 +764,16 @@ fn lower<'ctx>(
                 }
                 if !fun.terminated() {
                     fun.b.build_switch(s32, deflt, &cases).expect("switch");
-                }            }
+                }
+            }
             Operator::Return => {
                 fun.ret(n_results, val_abi);            }
             Operator::Unreachable => {
                 if !fun.terminated() {
+                    fun.b.build_direct_call(rt.trap, &[], "").expect("call");
                     fun.b.build_unreachable().expect("unreachable");
-                }            }
+                }
+            }
             Operator::I32Const { value } => fun.stack.push(SV::Const(*value as i64)),
             Operator::I64Const { value } => fun.stack.push(SV::Const(*value)),
             Operator::LocalGet { local_index } => {
@@ -687,7 +888,7 @@ fn lower<'ctx>(
             // phantom on the stack, and the `global.set 0` in every Rust
             // epilogue then made `return` hand back the phantom, not the value.
             _ => {
-                let (pops, pushes) = op.operator_arity(types).unwrap_or((0, 1));
+                let (pops, pushes) = op.operator_arity(&md.types).unwrap_or((0, 1));
                 for _ in 0..pops {
                     fun.pop();
                 }
@@ -743,7 +944,7 @@ fn lower<'ctx>(
 fn main() {
     let mut args = std::env::args().skip(1);
     let Some(path) = args.next() else {
-        eprintln!("usage: ponytail-wasm <contract.wasm> [export|--all]");
+        eprintln!("usage: ponytail-wasm <contract.wasm> [export|--all|--inline]");
         std::process::exit(2);
     };
     let only = args.next();
@@ -758,6 +959,274 @@ fn main() {
 }
 
 /// Parse a contract and lower it. Returns the IR, or the verifier's complaint.
+fn const_expr(e: &wasmparser::ConstExpr) -> Option<i64> {
+    match e.get_operators_reader().read().ok()? {
+        Operator::I32Const { value } => Some(value as i64),
+        Operator::I64Const { value } => Some(value),
+        _ => None,
+    }
+}
+
+/// Does any store in the module target a data segment at a constant address?
+/// Constants are tracked through straight-line code only; a control-flow
+/// operator clears what is known. Enough to catch a `static mut` counter,
+/// which is how Rust actually writes its own data segment.
+fn writes_data(
+    bodies: &[(usize, Vec<Operator>)],
+    md: &Mod,
+    imports: &HashMap<u32, &'static HostFn>,
+    local_sigs: &HashMap<u32, (usize, usize)>,
+) -> bool {
+    for (_, ops) in bodies {
+        let mut st: Vec<Option<u64>> = Vec::new();
+        for op in ops {
+            if let Some(Acc::Store { off, .. }) = mem_access(op) {
+                st.pop();
+                if let Some(Some(a)) = st.pop() {
+                    if md.mem.bytes(a.wrapping_add(off), 1).is_some() {
+                        return true;
+                    }
+                }
+                continue;
+            }
+            let (pops, pushes) = match op {
+                Operator::I32Const { value } => {
+                    st.push(Some(*value as u32 as u64));
+                    continue;
+                }
+                Operator::Call { function_index } => imports
+                    .get(function_index)
+                    .map(|h| (h.args.len() as u32, 1))
+                    .or_else(|| local_sigs.get(function_index).map(|(p, r)| (*p as u32, *r as u32)))
+                    .unwrap_or((0, 0)),
+                Operator::Block { .. }
+                | Operator::Loop { .. }
+                | Operator::If { .. }
+                | Operator::Else
+                | Operator::End
+                | Operator::Br { .. }
+                | Operator::BrIf { .. }
+                | Operator::BrTable { .. }
+                | Operator::Return
+                | Operator::Unreachable => {
+                    st.clear();
+                    continue;
+                }
+                _ => op.operator_arity(&md.types).unwrap_or((0, 0)),
+            };
+            for _ in 0..pops {
+                st.pop();
+            }
+            for _ in 0..pushes {
+                st.push(None);
+            }
+        }
+    }
+    false
+}
+
+/// Linear memory for the optimiser: `@mem`, the whole address space, contents
+/// unknown. The helpers become plain byte-addressed accesses to it, so BasicAA
+/// sees `sp-24` and `sp-32` as distinct slots and GVN forwards stores to loads
+/// across the inlined SDK plumbing.
+fn define_memory<'ctx>(ctx: &'ctx Context, m: &Module<'ctx>, rt: &Rt<'ctx>) {
+    let i8t = ctx.i8_type();
+    let memg = m.add_global(i8t, None, "mem").as_pointer_value();
+    let b = ctx.create_builder();
+    let inl = attr(ctx, "alwaysinline", 0);
+    for (name, bits, signed) in LOADS {
+        let f = m.get_function(&format!("soroban.{name}")).expect("declared");
+        f.add_attribute(AttributeLoc::Function, inl);
+        f.set_linkage(Linkage::Internal);
+        let a = f.get_first_param().expect("addr").into_int_value();
+        b.position_at_end(ctx.append_basic_block(f, "entry"));
+        let p = unsafe { b.build_gep(i8t, memg, &[a], "p") }.expect("gep");
+        let v = b.build_load(int_ty(ctx, bits), p, "v").expect("load");
+        let _ = v.as_instruction_value().expect("inst").set_alignment(1);
+        let v = v.into_int_value();
+        let w = if bits == 64 {
+            v
+        } else if signed {
+            b.build_int_s_extend(v, rt.i64t, "sx").expect("sext")
+        } else {
+            b.build_int_z_extend(v, rt.i64t, "zx").expect("zext")
+        };
+        b.build_return(Some(&w)).expect("ret");
+    }
+    for (name, bits) in STORES {
+        let f = m.get_function(&format!("soroban.{name}")).expect("declared");
+        f.add_attribute(AttributeLoc::Function, inl);
+        f.set_linkage(Linkage::Internal);
+        let a = f.get_nth_param(0).expect("addr").into_int_value();
+        let v = f.get_nth_param(1).expect("val").into_int_value();
+        b.position_at_end(ctx.append_basic_block(f, "entry"));
+        let t = if bits == 64 {
+            v
+        } else {
+            b.build_int_truncate(v, int_ty(ctx, bits), "t").expect("trunc")
+        };
+        let p = unsafe { b.build_gep(i8t, memg, &[a], "p") }.expect("gep");
+        let _ = b.build_store(p, t).expect("store").set_alignment(1);
+        b.build_return(None).expect("ret");
+    }
+}
+
+/// LLVM does the interpretation: inlining collapses the SDK's plumbing into
+/// the export and constants reach the syscalls. O1 and not higher: O2's
+/// simplifycfg turns a `switch` into a lookup table, hiding the very arms this
+/// tool exists to keep.
+fn optimize(m: &Module, mem: &Mem) -> Result<(), String> {
+    Target::initialize_native(&InitializationConfig::default())?;
+    let triple = TargetMachine::get_default_triple();
+    let tm = Target::from_triple(&triple)
+        .map_err(|e| e.to_string())?
+        .create_target_machine(&triple, "generic", "", OptimizationLevel::Less, RelocMode::Default, CodeModel::Default)
+        .ok_or("no target machine")?;
+    m.set_data_layout(&tm.get_target_data().get_data_layout());
+    let run = |p: &str| m.run_passes(p, &tm, PassBuilderOptions::create()).map_err(|e| e.to_string());
+    run("default<O1>")?;
+    // A data-segment constant can feed a Val, a branch, or another address:
+    // fold, let LLVM propagate, repeat until nothing new is constant.
+    for _ in 0..4 {
+        if fold_data_loads(m, mem) == 0 {
+            break;
+        }
+        run("instcombine,gvn,simplifycfg,dce")?;
+    }
+    Ok(())
+}
+
+/// A load from `@mem` whose address inlining has made constant is a read of
+/// the data segment, if the address falls in one: replace it with the bytes.
+/// LLVM has folded such an address into a constant `getelementptr`
+/// expression, which inkwell does not unpack, so this reads it via the C API.
+fn fold_data_loads(m: &Module, mem: &Mem) -> usize {
+    let Some(memg) = m.get_global("mem") else { return 0 };
+    let base = memg.as_pointer_value().as_value_ref();
+    let mut n = 0;
+    for f in m.get_functions() {
+        for bb in f.get_basic_blocks() {
+            let mut cur = bb.get_first_instruction();
+            while let Some(i) = cur {
+                cur = i.get_next_instruction();
+                if i.get_opcode() != InstructionOpcode::Load {
+                    continue;
+                }
+                let Some(Operand::Value(BasicValueEnum::PointerValue(p))) = i.get_operand(0) else { continue };
+                let Some(addr) = const_gep_offset(p, base) else { continue };
+                let AnyTypeEnum::IntType(t) = i.get_type() else { continue };
+                let Some(v) = mem.load(addr, t.get_bit_width(), false) else { continue };
+                i.as_any_value_enum().into_int_value().replace_all_uses_with(t.const_int(v as u64, false));
+                i.erase_from_basic_block();
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// `getelementptr (i8, ptr @mem, i64 K)` as a constant expression -> K.
+fn const_gep_offset(p: PointerValue, base: inkwell::llvm_sys::prelude::LLVMValueRef) -> Option<u64> {
+    use inkwell::llvm_sys::core::*;
+    use inkwell::llvm_sys::LLVMOpcode;
+    unsafe {
+        let r = p.as_value_ref();
+        if LLVMIsAConstantExpr(r).is_null()
+            || LLVMGetConstOpcode(r) != LLVMOpcode::LLVMGetElementPtr
+            || LLVMGetNumOperands(r) != 2
+            || LLVMGetOperand(r, 0) != base
+        {
+            return None;
+        }
+        let k = LLVMGetOperand(r, 1);
+        (!LLVMIsAConstantInt(k).is_null()).then(|| LLVMConstIntGetZExtValue(k))
+    }
+}
+
+/// Names for what folding has just made constant: a `from_payload` of a
+/// literal reads as the Val it is, a StorageType literal as its variant, and a
+/// `*_from_linear_memory` call with constant position and length as the
+/// symbol, string or Val list sitting in the data segment.
+fn rename_decoded(m: &Module, mem: &Mem) {
+    let b = m.get_context().create_builder();
+    let st = m.get_function("soroban.storage_type").unwrap_or_else(|| {
+        // O1 strips unused declarations; bring it back for the literals below.
+        let i64t = m.get_context().i64_type();
+        m.add_function("soroban.storage_type", i64t.fn_type(&[i64t.into()], false), None)
+    });
+    for f in m.get_functions() {
+        for bb in f.get_basic_blocks() {
+            let mut cur = bb.get_first_instruction();
+            while let Some(i) = cur {
+                cur = i.get_next_instruction();
+                let Ok(cs) = CallSiteValue::try_from(i) else { continue };
+                let Some(callee) = cs.get_called_fn_value() else { continue };
+                let name = callee.get_name().to_string_lossy().into_owned();
+                let args: Vec<Option<u64>> = (0..cs.count_arguments()).map(|k| const_arg(i, k)).collect();
+                // A StorageType that inlining turned into a literal has no name
+                // slot; give it the one emission uses.
+                if let Some(h) = HOST_FNS.iter().find(|h| h.name == name) {
+                    for (k, _) in h.args.iter().enumerate().filter(|(_, vt)| **vt == VT::Storage) {
+                        let Some(Operand::Value(BasicValueEnum::IntValue(v))) = i.get_operand(k as u32) else { continue };
+                        let Some(c) = args[k] else { continue };
+                        b.position_before(&i);
+                        let named = b.build_direct_call(st, &[v.into()], &storage_name(c as i64)).expect("call");
+                        if let ValueKind::Basic(nv) = named.try_as_basic_value() {
+                            i.set_operand(k as u32, nv);
+                        }
+                    }
+                }
+                let new = match name.as_str() {
+                    "soroban.val.from_payload" => args.first().copied().flatten().map(val_name),
+                    "soroban.storage_type" => args.first().copied().flatten().map(|c| storage_name(c as i64)),
+                    n => decode_lm(n, &args, mem),
+                };
+                if let (Some(n), ValueKind::Basic(v)) = (new, cs.try_as_basic_value()) {
+                    v.set_name(&n);
+                }
+            }
+        }
+    }
+}
+
+/// A call argument that is a constant, or a `%Val` made by `from_payload` of one.
+fn const_arg(i: InstructionValue, k: u32) -> Option<u64> {
+    match i.get_operand(k)? {
+        Operand::Value(BasicValueEnum::IntValue(v)) if v.is_constant_int() => v.get_zero_extended_constant(),
+        Operand::Value(BasicValueEnum::StructValue(s)) => {
+            let def = s.as_instruction_value()?;
+            let cs = CallSiteValue::try_from(def).ok()?;
+            let from_payload = cs.get_called_fn_value()?.get_name().to_bytes() == b"soroban.val.from_payload";
+            from_payload.then(|| const_arg(def, 0)).flatten()
+        }
+        _ => None,
+    }
+}
+
+fn decode_lm(name: &str, args: &[Option<u64>], mem: &Mem) -> Option<String> {
+    // Positions and lengths cross the boundary as U32Vals: tag 4, value in the top 32 bits.
+    let u = |k: usize| args.get(k).copied().flatten().filter(|p| p & 0xff == 4).map(|p| p >> 32);
+    let text = |k: usize| -> Option<String> {
+        Some(String::from_utf8_lossy(mem.bytes(u(k)?, u(k + 1)? as usize)?).into_owned())
+    };
+    let vals = |pos: u64, len: u64| -> Option<Vec<String>> {
+        (0..len).map(|i| mem.load(pos + 8 * i, 64, false).map(|v| explain_val(v as u64))).collect()
+    };
+    let s = match name {
+        "buf.symbol_new_from_linear_memory" => format!("Symbol({:?})", text(0)?),
+        "buf.string_new_from_linear_memory" => format!("String({:?})", text(0)?),
+        "buf.bytes_new_from_linear_memory" => {
+            let hex: String = mem.bytes(u(0)?, u(1)? as usize)?.iter().map(|b| format!("{b:02x}")).collect();
+            format!("Bytes({hex})")
+        }
+        "vec.vec_new_from_linear_memory" => format!("Vec[{}]", vals(u(0)?, u(1)?)?.join(", ")),
+        // Keys are Symbols in memory; the values are runtime Vals, not decoded here.
+        "map.map_new_from_linear_memory" => format!("Map{{{}}}", vals(u(0)?, u(2)?)?.join(", ")),
+        _ => return None,
+    };
+    Some(ident(&s))
+}
+
 fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
     let by_code: HashMap<(&str, &str), &HostFn> =
         HOST_FNS.iter().map(|h| ((h.module, h.code), h)).collect();
@@ -769,6 +1238,7 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
     let mut sigs: Vec<(usize, usize)> = Vec::new();
     let mut func_types: Vec<u32> = Vec::new();
     let mut types = Types(Vec::new());
+    let mut mem = Mem::default();
 
     for p in Parser::new(0).parse_all(wasm) {
         match p.expect("parse") {
@@ -824,13 +1294,43 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
                     .collect();
                 bodies.push((n_locals, ops));
             }
+            Payload::DataSection(r) => {
+                for d in r {
+                    let d = d.expect("data");
+                    if let wasmparser::DataKind::Active { offset_expr, .. } = d.kind {
+                        if let Some(base) = const_expr(&offset_expr) {
+                            mem.segs.push((base as u32 as u64, d.data.to_vec()));
+                        }
+                    }
+                }
+            }
+            Payload::GlobalSection(r) => {
+                for g in r {
+                    let g = g.expect("global");
+                    mem.globals.push((const_expr(&g.init_expr).unwrap_or(0), g.ty.mutable));
+                }
+            }
             _ => {}
         }
     }
 
+    let mut local_sigs: HashMap<u32, (usize, usize)> = HashMap::new();
+    for (i, t) in func_types.iter().enumerate() {
+        if let Some(s) = sigs.get(*t as usize) {
+            local_sigs.insert(n_imports + i as u32, *s);
+        }
+    }
+    let mut md = Mod { types, mem };
+    md.mem.written = writes_data(&bodies, &md, &imports, &local_sigs);
+
     let ctx = Context::create();
     let m = ctx.create_module("ponytail");
     let rt = Rt::new(&ctx, &m);
+    for (i, (v, mutable)) in md.mem.globals.iter().enumerate() {
+        let g = m.add_global(rt.i64t, None, &format!("g{i}"));
+        g.set_initializer(&rt.i64t.const_int(*v as u64, false));
+        g.set_constant(!mutable);
+    }
 
     // Declare every host function the module imports, with its ABI types. This
     // declaration is what `module.verify()` checks argument types against.
@@ -855,18 +1355,18 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
             AttributeLoc::Function,
             ctx.create_string_attribute("soroban.sig", &format!("({}) -> {}", h.arg_tys.join(", "), h.ret_ty)),
         );
-    }
-
-    let mut local_sigs: HashMap<u32, (usize, usize)> = HashMap::new();
-    for (i, t) in func_types.iter().enumerate() {
-        if let Some(s) = sigs.get(*t as usize) {
-            local_sigs.insert(n_imports + i as u32, *s);
+        // Host functions never touch linear memory, except the 13 whose names
+        // say so. Stating it lets LLVM forward stack slots across the call in
+        // --inline mode, and documents the ABI for the reader.
+        if !h.name.contains("linear_memory") {
+            d.add_attribute(AttributeLoc::Function, attr(&ctx, "memory", MEM_INACCESSIBLE_RW));
         }
     }
 
     // The interesting code is usually NOT in an export: the SDK dispatch
     // wrapper delegates, and constants and jump tables live in helpers.
-    let all = only == Some("--all");
+    let inline = only == Some("--inline");
+    let all = only == Some("--all") || inline;
     let mut targets: Vec<(String, u32)> = exports.clone();
     if all {
         let named: std::collections::HashSet<u32> = exports.iter().map(|(_, i)| *i).collect();
@@ -922,7 +1422,7 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
             continue;
         };
         if let Err(e) = lower(
-            &ctx, &m, &rt, f, np, nr, *n_locals, ops, &imports, &local_sigs, &types, val_abi,
+            &ctx, &m, &rt, f, np, nr, *n_locals, ops, &imports, &local_sigs, &md, val_abi,
         ) {
             let _ = writeln!(notes, "; FAILED to lower {}: {e}", f.get_name().to_string_lossy());
         }
@@ -969,6 +1469,25 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
         f.add_attribute(AttributeLoc::Function, ctx.create_string_attribute("soroban.calls", &s.join(",")));
     }
 
+    if inline {
+        define_memory(&ctx, &m, &rt);
+        let ex: std::collections::HashSet<&str> = exports.iter().map(|(n, _)| n.as_str()).collect();
+        // Helpers become internal and nothing more. That lets LLVM's cost-based
+        // inliner take every single-call-site helper (a size win, so it always
+        // does) and small shared ones, and drop what it inlined. Forcing
+        // `alwaysinline` instead duplicates each shared helper into every call
+        // site up the tree: 5.7 GB and no result on a 187-function contract.
+        for f in m.get_functions() {
+            let n = f.get_name().to_string_lossy().into_owned();
+            if f.count_basic_blocks() == 0 || ex.contains(n.as_str()) || n.starts_with("soroban.") {
+                continue;
+            }
+            f.set_linkage(Linkage::Internal);
+        }
+        optimize(&m, &md.mem)?;
+    }
+    rename_decoded(&m, &md.mem);
+
     // The real check, and the reason for inkwell: a Val/i64 confusion at a call
     // site is a verifier error here. In hand-written text it never can be.
     m.verify().map_err(|e| e.to_string())?;
@@ -980,6 +1499,10 @@ mod tests {
     use super::*;
 
     fn build(ops: Vec<Operator>, nr: usize) -> Result<String, String> {
+        build_with(ops, nr, &Mod::default())
+    }
+
+    fn build_with(ops: Vec<Operator>, nr: usize, md: &Mod) -> Result<String, String> {
         let ctx = Context::create();
         let m = ctx.create_module("t");
         let rt = Rt::new(&ctx, &m);
@@ -990,7 +1513,7 @@ mod tests {
         };
         let f = m.add_function("f", fty, None);
         lower(
-            &ctx, &m, &rt, f, 0, nr, 0, &ops, &HashMap::new(), &HashMap::new(), &Types(Vec::new()), true,
+            &ctx, &m, &rt, f, 0, nr, 0, &ops, &HashMap::new(), &HashMap::new(), md, true,
         )?;
         m.verify().map_err(|e| e.to_string())?;
         Ok(m.print_to_string().to_string())
@@ -1040,16 +1563,51 @@ mod tests {
 
     #[test]
     fn unmodelled_ops_pop_what_they_consume() {
-        // `i64.const 2; i64.const 5; global.set 0; end` -- the 5 is consumed,
-        // the 2 is the result. A phantom push would return bottom here.
+        // `memory.copy` consumes three and produces nothing; the 2 beneath is
+        // the result. A phantom push would return bottom here.
         let ops = vec![
             Operator::I64Const { value: 2 },
             Operator::I64Const { value: 5 },
-            Operator::GlobalSet { global_index: 0 },
+            Operator::I64Const { value: 6 },
+            Operator::I64Const { value: 7 },
+            Operator::MemoryCopy { dst_mem: 0, src_mem: 0 },
             Operator::End,
         ];
         let ir = build(ops, 1).unwrap();
         assert!(ir.contains("ret %Val %v_void"), "{ir}");
+    }
+
+    #[test]
+    fn data_segment_constants_are_read() {
+        let mut md = Mod::default();
+        md.mem.segs.push((1048576, vec![1]));
+        let ops = || {
+            let memarg = wasmparser::MemArg { align: 0, max_align: 0, offset: 0, memory: 0 };
+            vec![Operator::I32Const { value: 1048576 }, Operator::I32Load8U { memarg }, Operator::End]
+        };
+        // `&true` is a byte in the data segment: the load IS `true`...
+        let ir = build_with(ops(), 1, &md).unwrap();
+        assert!(ir.contains("ret %Val %v_true"), "{ir}");
+        // ...unless something in the module writes the segment.
+        md.mem.written = true;
+        let ir = build_with(ops(), 1, &md).unwrap();
+        assert!(ir.contains("@soroban.load8u(i64 1048576)"), "{ir}");
+    }
+
+    #[test]
+    fn inline_mode_shows_set_flag_as_its_syscall() {
+        let wasm = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/three_bugs.wasm")).unwrap();
+        let ir = lower_module(&wasm, Some("--inline")).unwrap();
+        let body = ir
+            .lines()
+            .skip_while(|l| !l.starts_with("define %Val @set_flag("))
+            .take_while(|l| !l.starts_with('}'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(body.contains("@ledger.put_contract_data("), "{body}");
+        assert!(body.contains("%v_true"), "{body}");
+        assert!(body.contains("%Persistent"), "{body}");
+        assert!(!body.contains("@f"), "helper calls remain: {body}");
     }
 
     #[test]
@@ -1085,11 +1643,11 @@ mod tests {
                 continue;
             }
             let wasm = std::fs::read(&p).expect("read sample");
-            for all in [false, true] {
-                let out = lower_module(&wasm, if all { Some("--all") } else { None });
+            for mode in [None, Some("--all"), Some("--inline")] {
+                let out = lower_module(&wasm, mode);
                 assert!(
                     out.is_ok(),
-                    "{} (--all={all}) failed to verify: {}",
+                    "{} ({mode:?}) failed to verify: {}",
                     p.display(),
                     out.unwrap_err()
                 );

@@ -3,19 +3,56 @@ source_filename = "ponytail"
 
 %Val = type { i64 }
 
-declare %Val @soroban.val.from_payload(i64)
+@g0 = global i64 1048576
+@g1 = constant i64 1048604
+@g2 = constant i64 1048604
+@g3 = constant i64 1048608
 
-declare i64 @soroban.val.payload(%Val)
+; Function Attrs: nounwind willreturn memory(none)
+declare %Val @soroban.val.from_payload(i64) #0
 
-declare i64 @soroban.storage_type(i64)
+; Function Attrs: nounwind willreturn memory(none)
+declare i64 @soroban.val.payload(%Val) #0
 
-declare %Val @ponytail.unknown()
+; Function Attrs: nounwind willreturn memory(none)
+declare i64 @soroban.storage_type(i64) #0
 
-declare i64 @ponytail.unknown.i64()
+; Function Attrs: memory(inaccessiblemem: readwrite)
+declare %Val @ponytail.unknown() #1
 
-declare %Val @context.fail_with_error(%Val) #0
+; Function Attrs: memory(inaccessiblemem: readwrite)
+declare i64 @ponytail.unknown.i64() #1
 
-declare %Val @ledger.put_contract_data(%Val, %Val, i64) #1
+; Function Attrs: noreturn
+declare void @soroban.trap() #2
+
+declare i64 @soroban.load8u(i64)
+
+declare i64 @soroban.load8s(i64)
+
+declare i64 @soroban.load16u(i64)
+
+declare i64 @soroban.load16s(i64)
+
+declare i64 @soroban.load32u(i64)
+
+declare i64 @soroban.load32s(i64)
+
+declare i64 @soroban.load64(i64)
+
+declare void @soroban.store8(i64, i64)
+
+declare void @soroban.store16(i64, i64)
+
+declare void @soroban.store32(i64, i64)
+
+declare void @soroban.store64(i64, i64)
+
+; Function Attrs: memory(inaccessiblemem: readwrite)
+declare %Val @context.fail_with_error(%Val) #3
+
+; Function Attrs: memory(inaccessiblemem: readwrite)
+declare %Val @ledger.put_contract_data(%Val, %Val, i64) #4
 
 define %Val @hello(%Val %0) {
 entry:
@@ -31,6 +68,7 @@ entry:
   br i1 %brif, label %c1, label %fall2
 
 c1:                                               ; preds = %fall3, %fall2, %entry
+  call void @soroban.trap()
   unreachable
 
 fall2:                                            ; preds = %entry
@@ -77,14 +115,17 @@ c6:                                               ; preds = %fall4
 
 c7:                                               ; preds = %fall4
   call void @f3(i64 38654705667)
+  call void @soroban.trap()
   unreachable
 
 c8:                                               ; preds = %fall4
   call void @f4()
+  call void @soroban.trap()
   unreachable
 
 c9:                                               ; preds = %fall4
   call void @f3(i64 4294967299)
+  call void @soroban.trap()
   unreachable
 }
 
@@ -100,8 +141,12 @@ entry:
 
 define void @f4() {
 entry:
+  call void @soroban.trap()
   unreachable
 }
 
-attributes #0 = { "soroban.import"="x.5" "soroban.sig"="(Error) -> Void" }
-attributes #1 = { "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }
+attributes #0 = { nounwind willreturn memory(none) }
+attributes #1 = { memory(inaccessiblemem: readwrite) }
+attributes #2 = { noreturn }
+attributes #3 = { memory(inaccessiblemem: readwrite) "soroban.import"="x.5" "soroban.sig"="(Error) -> Void" }
+attributes #4 = { memory(inaccessiblemem: readwrite) "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }

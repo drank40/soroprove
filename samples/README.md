@@ -1,10 +1,13 @@
 # Samples
 
-Each `.wasm` here has a checked-in `.ll` golden next to it. `./build.sh`
-regenerates both; `git diff samples/` is then the regression gate.
+Each `.wasm` here has two checked-in goldens next to it: `.ll` is `--all`,
+every function as lowered; `.inline.ll` is `--inline`, the exports after LLVM
+has folded the SDK plumbing into them. `./build.sh` regenerates all of it;
+`git diff samples/` is then the regression gate.
 
-`cargo test` lowers every `.wasm` in this directory and asserts the module
-passes `module.verify()`, so a sample that stops verifying fails the build.
+`cargo test` lowers every `.wasm` in this directory in all three modes and
+asserts the module passes `module.verify()`, so a sample that stops verifying
+fails the build.
 
 ## `three_bugs/` — source, built here
 
@@ -48,6 +51,38 @@ declare void @f17() #9      ; attributes #9 = { "soroban.calls"="ledger.put_cont
 
 `f33` really is an empty function in the wasm (`(func (;33;) (type 10))`); the
 call is faithful, not a decoding gap. `--all` defines every helper instead.
+
+`--inline` goes further and lets LLVM do the interpretation. Helpers become
+`internal`, O1's inliner folds the single-call-site and small ones into the
+export, loads and stores go through one `@mem` so GVN forwards stack slots
+across the inlined plumbing, and a load whose address inlining made constant
+is read from the data segment. `set_flag` then reads as the syscall it is
+(`three_bugs.inline.ll`; the `.i` suffixes count inline depth, and the
+stack-frame stores are elided here):
+
+```llvm
+define %Val @set_flag() local_unnamed_addr #7 {
+entry:
+  %v_Symbol__f__ = tail call %Val @soroban.val.from_payload(i64 11022)
+  %v_true = tail call %Val @soroban.val.from_payload(i64 1)
+  %Persistent = call i64 @soroban.storage_type(i64 1)
+  %put_contract_data.i.i.i.i.i = tail call %Val @ledger.put_contract_data(%Val %v_Symbol__f__, %Val %v_true, i64 %Persistent)
+  %v_void = tail call %Val @soroban.val.from_payload(i64 2)
+  ret %Val %v_void
+}
+```
+
+Nothing here is pattern-matched. The key was a constant stored to a stack slot
+and reloaded through a pointer three helpers down, and GVN forwarded it; `true`
+is the byte at `&true` in the data segment; `Persistent` is the `i64 1` an
+inlined wrapper passed along. Two assumptions carry this, both stated in the
+code: the data segment is constant unless some store in the module targets it
+at a constant address (Rust keeps mutable statics out of rodata, so this is the
+usual decompiler bet), and wasm `unreachable` is a trap (`@soroban.trap`),
+never LLVM's "cannot happen" -- lowered bare, O1 turned the SDK's argument
+checks into `llvm.assume` and they vanished. Helpers the cost model leaves
+outlined stay in the file as `define internal`. Forcing `alwaysinline` on all
+of them was tried first: 5.7 GB and no result on a 187-function contract.
 
 ## `errors.wasm` — vendored, 796 bytes
 
@@ -102,12 +137,16 @@ for f in <soroban-ret>/benchmark-data/mainnet/*.wasm; do
 done
 ```
 
-67 binaries, 134 runs (both modes), all verify.
+67 binaries, 201 runs (three modes), all verify, 7 seconds in total.
 
-In exports mode 641 of the 716 export returns carry a value; 75 are bottom.
-A bottom return means the returned value is one the model does not carry: it
-came from an operator that is not modelled (a linear-memory load, `select`,
-a global), or it was the result of a typed `block`/`if`, which the operand
-stack does not thread across `end` (549 such labels in the corpus). No `exit`
-block survives in any output, so a conditional `br_if` to the function's own
-label -- the one return shape still lowered as bottom -- does not occur here.
+In exports mode 678 of the 716 export returns carry a value; 38 are bottom.
+A bottom return means the returned value is one the model does not carry: a
+`select`, a load through a pointer, or the result of a typed `block`/`if`,
+which the operand stack does not thread across `end` (549 such labels in the
+corpus). No `exit` block survives in any output, so a conditional `br_if` to
+the function's own label -- the one return shape still lowered as bottom --
+does not occur here.
+
+In `--inline` mode 526 host calls carry a decoded linear-memory argument
+(`%Symbol_...`, `%Vec_...`, `%Map_...`), 801 StorageType literals are named,
+and 896 helpers stay outlined because LLVM's cost model left them so.
