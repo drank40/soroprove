@@ -481,20 +481,11 @@ fn lower(
                     used_locals.insert(*function_index);
                     let mut a: Vec<SV> = (0..np).map(|_| f.pop()).collect();
                     a.reverse();
-                    // Decode any constant argument, so a Val passed to an
-                    // un-inlined helper is still readable at the call site.
-                    let why: Vec<String> = a
-                        .iter()
-                        .filter_map(|v| match v {
-                            SV::Const(c) => Some(explain_val(*c as u64)),
-                            _ => None,
-                        })
-                        .collect();
-                    let note = if why.is_empty() {
-                        String::new()
-                    } else {
-                        format!("   ; {}", why.join(", "))
-                    };
+                    // Deliberately NOT Val-decoded. A local helper's parameters
+                    // are plain i64 with no declared meaning -- a data pointer,
+                    // a length and a Val all look alike. Decoding them anyway
+                    // is exactly the fabrication this tool exists to avoid.
+                    let note = "";
                     let ops_s: Vec<String> =
                         a.into_iter().map(|v| format!("i64 {}", f.use_i64(v))).collect();
                     if nr == 0 {
@@ -713,10 +704,27 @@ fn main() {
     let mut used_locals: std::collections::HashSet<u32> = Default::default();
     let mut bodies_out = String::new();
 
-    for (name, fidx) in &exports {
-        if let Some(f) = &only {
-            if name != f {
-                continue;
+    // The interesting code is usually NOT in an export: the SDK's dispatch
+    // wrapper delegates, and constants/jump tables live in helpers. Lowering
+    // only exports is how you miss them.
+    let all = only.as_deref() == Some("--all");
+    let mut targets: Vec<(String, u32)> = exports.clone();
+    if all {
+        let named: std::collections::HashSet<u32> = exports.iter().map(|(_, i)| *i).collect();
+        for i in 0..bodies.len() as u32 {
+            let fi = n_imports + i;
+            if !named.contains(&fi) {
+                targets.push((format!("f{fi}"), fi));
+            }
+        }
+    }
+
+    for (name, fidx) in &targets {
+        if !all {
+            if let Some(f) = &only {
+                if name != f {
+                    continue;
+                }
             }
         }
         let Some(local) = fidx.checked_sub(n_imports) else {
@@ -750,7 +758,9 @@ fn main() {
         }
     }
 
-    let mut used: Vec<u32> = used_locals.into_iter().collect();
+    // Only declare a local we did not also define, or LLVM sees a redefinition.
+    let defined: std::collections::HashSet<u32> = targets.iter().map(|(_, i)| *i).collect();
+    let mut used: Vec<u32> = used_locals.difference(&defined).copied().collect();
     used.sort();
     for fi in used {
         let (np, nr) = local_sigs.get(&fi).copied().unwrap_or((0, 0));
