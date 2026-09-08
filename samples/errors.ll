@@ -7,13 +7,15 @@ declare %Val @soroban.val.from_payload(i64)
 
 declare i64 @soroban.val.payload(%Val)
 
+declare i64 @soroban.storage_type(i64)
+
 declare %Val @ponytail.unknown()
 
 declare i64 @ponytail.unknown.i64()
 
-declare %Val @context.fail_with_error(%Val)
+declare %Val @context.fail_with_error(%Val) #0
 
-declare %Val @ledger.put_contract_data(%Val, %Val, i64)
+declare %Val @ledger.put_contract_data(%Val, %Val, i64) #1
 
 define %Val @hello(%Val %0) {
 entry:
@@ -52,7 +54,8 @@ fall3:                                            ; preds = %fall2
 fall4:                                            ; preds = %fall3
   %v_Symbol__persisted__ = call %Val @soroban.val.from_payload(i64 3867323444879862030)
   %v_true = call %Val @soroban.val.from_payload(i64 1)
-  %_ = call %Val @ledger.put_contract_data(%Val %v_Symbol__persisted__, %Val %v_true, i64 1)
+  %Persistent = call i64 @soroban.storage_type(i64 1)
+  %put_contract_data = call %Val @ledger.put_contract_data(%Val %v_Symbol__persisted__, %Val %v_true, i64 %Persistent)
   store i64 4294967299, ptr %l0, align 4
   %get10 = load i64, ptr %l1, align 4
   %sel = trunc i64 %get10 to i32
@@ -91,7 +94,7 @@ entry:
   store i64 %0, ptr %l0, align 4
   %get = load i64, ptr %l0, align 4
   %to_val = call %Val @soroban.val.from_payload(i64 %get)
-  %"5" = call %Val @context.fail_with_error(%Val %to_val)
+  %fail_with_error = call %Val @context.fail_with_error(%Val %to_val)
   ret void
 }
 
@@ -99,3 +102,6 @@ define void @f4() {
 entry:
   unreachable
 }
+
+attributes #0 = { "soroban.import"="x.5" "soroban.sig"="(Error) -> Void" }
+attributes #1 = { "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }

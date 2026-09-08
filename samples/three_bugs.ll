@@ -7,21 +7,23 @@ declare %Val @soroban.val.from_payload(i64)
 
 declare i64 @soroban.val.payload(%Val)
 
+declare i64 @soroban.storage_type(i64)
+
 declare %Val @ponytail.unknown()
 
 declare i64 @ponytail.unknown.i64()
 
-declare %Val @buf.symbol_new_from_linear_memory(%Val, %Val)
+declare %Val @buf.symbol_new_from_linear_memory(%Val, %Val) #0
 
-declare %Val @context.fail_with_error(%Val)
+declare %Val @context.fail_with_error(%Val) #1
 
-declare %Val @ledger.has_contract_data(%Val, i64)
+declare %Val @ledger.has_contract_data(%Val, i64) #2
 
-declare %Val @ledger.put_contract_data(%Val, %Val, i64)
+declare %Val @ledger.put_contract_data(%Val, %Val, i64) #3
 
-declare %Val @map.map_new_from_linear_memory(%Val, %Val, %Val)
+declare %Val @map.map_new_from_linear_memory(%Val, %Val, %Val) #4
 
-declare %Val @vec.vec_new_from_linear_memory(%Val, %Val)
+declare %Val @vec.vec_new_from_linear_memory(%Val, %Val) #5
 
 define %Val @pick(%Val %0) {
 entry:
@@ -1021,7 +1023,7 @@ entry:
   %or3 = or i64 %shl2, 4
   %to_val = call %Val @soroban.val.from_payload(i64 %or)
   %to_val4 = call %Val @soroban.val.from_payload(i64 %or3)
-  %g = call %Val @vec.vec_new_from_linear_memory(%Val %to_val, %Val %to_val4)
+  %vec_new_from_linear_memory = call %Val @vec.vec_new_from_linear_memory(%Val %to_val, %Val %to_val4)
   %bottom = call i64 @ponytail.unknown.i64()
   ret i64 %bottom
 }
@@ -1058,7 +1060,7 @@ c1:                                               ; preds = %dead3, %entry
   %to_val = call %Val @soroban.val.from_payload(i64 %or)
   %to_val9 = call %Val @soroban.val.from_payload(i64 %or5)
   %to_val10 = call %Val @soroban.val.from_payload(i64 %or8)
-  %"9" = call %Val @map.map_new_from_linear_memory(%Val %to_val, %Val %to_val9, %Val %to_val10)
+  %map_new_from_linear_memory = call %Val @map.map_new_from_linear_memory(%Val %to_val, %Val %to_val9, %Val %to_val10)
   %bottom = call i64 @ponytail.unknown.i64()
   ret i64 %bottom
 
@@ -1082,7 +1084,7 @@ entry:
   %or3 = or i64 %shl2, 4
   %to_val = call %Val @soroban.val.from_payload(i64 %or)
   %to_val4 = call %Val @soroban.val.from_payload(i64 %or3)
-  %j = call %Val @buf.symbol_new_from_linear_memory(%Val %to_val, %Val %to_val4)
+  %symbol_new_from_linear_memory = call %Val @buf.symbol_new_from_linear_memory(%Val %to_val, %Val %to_val4)
   %bottom = call i64 @ponytail.unknown.i64()
   ret i64 %bottom
 }
@@ -1095,7 +1097,7 @@ entry:
   store i64 %1, ptr %l1, align 4
   %get = load i64, ptr %l1, align 4
   %to_val = call %Val @soroban.val.from_payload(i64 %get)
-  %"5" = call %Val @context.fail_with_error(%Val %to_val)
+  %fail_with_error = call %Val @context.fail_with_error(%Val %to_val)
   %bottom = call i64 @ponytail.unknown.i64()
   ret i64 %bottom
 }
@@ -1111,7 +1113,7 @@ entry:
   %get = load i64, ptr %l1, align 4
   %get1 = load i64, ptr %l2, align 4
   %to_val = call %Val @soroban.val.from_payload(i64 %get)
-  %"0" = call %Val @ledger.has_contract_data(%Val %to_val, i64 %get1)
+  %has_contract_data = call %Val @ledger.has_contract_data(%Val %to_val, i64 %get1)
   %bottom = call i64 @ponytail.unknown.i64()
   ret i64 %bottom
 }
@@ -1131,7 +1133,7 @@ entry:
   %get2 = load i64, ptr %l3, align 4
   %to_val = call %Val @soroban.val.from_payload(i64 %get)
   %to_val3 = call %Val @soroban.val.from_payload(i64 %get1)
-  %_ = call %Val @ledger.put_contract_data(%Val %to_val, %Val %to_val3, i64 %get2)
+  %put_contract_data = call %Val @ledger.put_contract_data(%Val %to_val, %Val %to_val3, i64 %get2)
   %bottom = call i64 @ponytail.unknown.i64()
   ret i64 %bottom
 }
@@ -1360,3 +1362,10 @@ entry:
   call void @f23(i64 %add10)
   unreachable
 }
+
+attributes #0 = { "soroban.import"="b.j" "soroban.sig"="(U32Val, U32Val) -> SymbolObject" }
+attributes #1 = { "soroban.import"="x.5" "soroban.sig"="(Error) -> Void" }
+attributes #2 = { "soroban.import"="l.0" "soroban.sig"="(Val, StorageType) -> Bool" }
+attributes #3 = { "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }
+attributes #4 = { "soroban.import"="m.9" "soroban.sig"="(U32Val, U32Val, U32Val) -> MapObject" }
+attributes #5 = { "soroban.import"="v.g" "soroban.sig"="(U32Val, U32Val) -> VecObject" }

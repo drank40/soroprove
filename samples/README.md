@@ -47,7 +47,8 @@ What it shows, from `errors.ll`:
 ```llvm
 %v_Symbol__persisted__ = call %Val @soroban.val.from_payload(i64 3867323444879862030)
 %v_true                = call %Val @soroban.val.from_payload(i64 1)
-%_ = call %Val @ledger.put_contract_data(%Val %v_Symbol__persisted__, %Val %v_true, i64 1)
+%Persistent            = call i64  @soroban.storage_type(i64 1)
+%put_contract_data     = call %Val @ledger.put_contract_data(%Val %v_Symbol__persisted__, %Val %v_true, i64 %Persistent)
 switch i32 %sel, label %c7 [ i32 0, label %c6      ; Flag::A -> Ok(Symbol "hello")
                              i32 1, label %c5      ; Flag::B -> Err(AnError)
                              i32 2, label %c9      ; Flag::C -> panic_with_error
@@ -57,6 +58,16 @@ switch i32 %sel, label %c7 [ i32 0, label %c6      ; Flag::A -> Ok(Symbol "hello
 `%v_true` is `true`, not `1`. All five destinations are present, including the
 `Flag::B` arm. The `%v_` prefix carries the decode in the SSA name rather than a
 comment, so it survives optimisation passes.
+
+Syscalls read as syscalls: the result is named after the host function, a
+`StorageType` operand is `%Persistent` rather than `i64 1`, and each host
+declaration carries the wasm import it was resolved from as an attribute, so
+the IR stays traceable to the binary:
+
+```llvm
+declare %Val @ledger.put_contract_data(%Val, %Val, i64) #1
+attributes #1 = { "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }
+```
 
 ## Wider corpus, not vendored
 

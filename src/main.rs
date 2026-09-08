@@ -18,6 +18,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
+use inkwell::attributes::AttributeLoc;
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -129,12 +130,27 @@ struct Lbl<'ctx> {
     else_bb: Option<BasicBlock<'ctx>>,
 }
 
+/// `StorageType` is not a `Val` -- it is a direct-marshalled u64 with three
+/// legal values. Naming them is the difference between `i64 1` and `Persistent`.
+fn storage_name(c: i64) -> String {
+    match c {
+        0 => "Temporary".into(),
+        1 => "Persistent".into(),
+        2 => "Instance".into(),
+        // Not a value the host accepts; say so rather than inventing a name.
+        n => format!("StorageType_invalid_{n}"),
+    }
+}
+
 /// The declared conversion and bottom functions, plus the Val type.
 struct Rt<'ctx> {
     val: StructType<'ctx>,
     i64t: IntType<'ctx>,
     from_payload: FunctionValue<'ctx>,
     payload: FunctionValue<'ctx>,
+    /// Same trick as `from_payload`: gives a decoded constant a name slot,
+    /// because LLVM has nowhere to hang a name on a literal operand.
+    storage_type: FunctionValue<'ctx>,
     unknown_val: FunctionValue<'ctx>,
     unknown_i64: FunctionValue<'ctx>,
 }
@@ -151,6 +167,7 @@ impl<'ctx> Rt<'ctx> {
             i64t,
             from_payload: m.add_function("soroban.val.from_payload", val.fn_type(&[im], false), None),
             payload: m.add_function("soroban.val.payload", i64t.fn_type(&[vm], false), None),
+            storage_type: m.add_function("soroban.storage_type", i64t.fn_type(&[im], false), None),
             unknown_val: m.add_function("ponytail.unknown", val.fn_type(&[], false), None),
             unknown_i64: m.add_function("ponytail.unknown.i64", i64t.fn_type(&[], false), None),
         }
@@ -217,11 +234,17 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
         match v {
             SV::Const(c) => {
                 let k = self.rt.i64t.const_int(c as u64, false);
-                if wants_val {
-                    let n = val_name(c as u64);
-                    self.call1(self.rt.from_payload, &[k.into()], &n)
-                } else {
-                    k.into()
+                match want {
+                    VT::Val => {
+                        let n = val_name(c as u64);
+                        self.call1(self.rt.from_payload, &[k.into()], &n)
+                    }
+                    // A `StorageType` operand is one of three named constants.
+                    VT::Storage => {
+                        let n = storage_name(c);
+                        self.call1(self.rt.storage_type, &[k.into()], &n)
+                    }
+                    VT::Raw64 => k.into(),
                 }
             }
             SV::Reg(r) => match (r.is_struct_value(), wants_val) {
@@ -529,7 +552,10 @@ fn lower<'ctx>(
                     for (v, want) in a.into_iter().zip(h.args.iter().copied()) {
                         args.push(fun.use_as(v, want));
                     }
-                    let r = fun.call1(callee, &args, h.code);
+                    // Name the result after the syscall, not its one-character
+                    // import code: `%has_contract_data`, never `%0`.
+                    let short = h.name.rsplit('.').next().unwrap_or(h.name);
+                    let r = fun.call1(callee, &args, short);
                     fun.stack.push(SV::Reg(r));
                 } else if let Some((np, nr)) = local_sigs.get(function_index).copied() {
                     let fname = format!("f{function_index}");
@@ -749,7 +775,17 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
             VT::Val => rt.val.fn_type(&ps, false),
             _ => rt.i64t.fn_type(&ps, false),
         };
-        m.add_function(h.name, t, None);
+        let d = m.add_function(h.name, t, None);
+        // Keep the IR traceable back to the binary: the wasm import is a
+        // single letter and a code, which no reader would guess.
+        d.add_attribute(
+            AttributeLoc::Function,
+            ctx.create_string_attribute("soroban.import", &format!("{}.{}", h.module, h.code)),
+        );
+        d.add_attribute(
+            AttributeLoc::Function,
+            ctx.create_string_attribute("soroban.sig", &format!("({}) -> {}", h.arg_tys.join(", "), h.ret_ty)),
+        );
     }
 
     let mut local_sigs: HashMap<u32, (usize, usize)> = HashMap::new();
@@ -885,6 +921,18 @@ mod tests {
     /// Every sample must lower and verify, in both modes. This is the gate that
     /// would have caught the `--all` ABI mismatch inkwell found, and it needs no
     /// external corpus.
+    #[test]
+    fn syscalls_read_as_syscalls() {
+        let wasm = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/errors.wasm")).unwrap();
+        let ir = lower_module(&wasm, None).unwrap();
+        // The StorageType operand is a named constant, not a bare `i64 1`.
+        assert!(ir.contains("%Persistent = call i64 @soroban.storage_type(i64 1)"), "{ir}");
+        // The result is named after the syscall, not its import code `_`.
+        assert!(ir.contains("%put_contract_data = call %Val @ledger.put_contract_data("), "{ir}");
+        // And the declaration still says which wasm import it came from.
+        assert!(ir.contains("\"soroban.import\"=\"l._\""), "{ir}");
+    }
+
     #[test]
     fn samples_lower_and_verify() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples");
