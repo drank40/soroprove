@@ -31,22 +31,23 @@ done
 cp three_bugs/target/wasm32v1-none/release/three_bugs.wasm three_bugs.wasm
 cp three_bugs/target/wasm32v1-none/fat/three_bugs.wasm     three_bugs-fat.wasm
 
-# Goldens: every function as lowered (--all), the exports with the SDK plumbing
-# inlined and folded by LLVM (--inline), the same as Rust (--rust), and the
-# MIR rustc makes of that Rust (via ../ponytail-mir, when its nightly is there).
+# Goldens, one pipeline: every function as lowered (--all); the exports with
+# the SDK plumbing inlined and folded by LLVM (--inline); then, from that IR,
+# the MIR ponytail-mir builds inside rustc (.mir) and the Rust it emits from
+# the MIR (.rs). The last two need ../ponytail-mir's nightly with rustc-dev.
 for w in *.wasm; do
     "$BIN" "$w" --all    > "${w%.wasm}.ll"
     "$BIN" "$w" --inline > "${w%.wasm}.inline.ll"
-    "$BIN" "$w" --rust   > "${w%.wasm}.rs"
-    printf '%-22s %6s bytes wasm -> %5s lines IR, %4s inlined, %4s Rust\n' "$w" "$(stat -c%s "$w")" \
-        "$(wc -l < "${w%.wasm}.ll")" "$(wc -l < "${w%.wasm}.inline.ll")" "$(wc -l < "${w%.wasm}.rs")"
+    printf '%-22s %6s bytes wasm -> %5s lines IR, %4s inlined\n' "$w" "$(stat -c%s "$w")" \
+        "$(wc -l < "${w%.wasm}.ll")" "$(wc -l < "${w%.wasm}.inline.ll")"
 done
 if (cd ../ponytail-mir && cargo build --release -q 2>/dev/null); then
-    for r in *.rs; do
-        case $r in *.reference.rs) continue;; esac   # the vendored SDK source, not ours
-        (cd ../ponytail-mir && cargo run --release -q -- "../samples/$r") > "${r%.rs}.mir" 2>/dev/null \
-            && printf '%-22s -> %5s lines MIR\n' "$r" "$(wc -l < "${r%.rs}.mir")"
+    for ll in *.inline.ll; do
+        b=${ll%.inline.ll}
+        (cd ../ponytail-mir && cargo run --release -q -- "../samples/$ll")        > "$b.mir" 2>/dev/null
+        (cd ../ponytail-mir && cargo run --release -q -- "../samples/$ll" --rust) > "$b.rs"  2>/dev/null
+        printf '%-22s -> %5s lines MIR, %4s lines Rust\n' "$ll" "$(wc -l < "$b.mir")" "$(wc -l < "$b.rs")"
     done
 else
-    echo "ponytail-mir did not build (nightly with rustc-dev missing?); MIR goldens left as they were" >&2
+    echo "ponytail-mir did not build (nightly with rustc-dev missing?); .mir/.rs goldens left as they were" >&2
 fi

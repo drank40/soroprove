@@ -3,5 +3,7 @@ name = "ponytail-mir"
 version = "0.1.0"
 edition = "2021"
 
-# No dependencies: everything is rustc itself, linked through rustc_private.
+# rustc itself comes in through rustc_private; inkwell reads the .ll that
+# ponytail-wasm --inline wrote, with the same LLVM.
 [dependencies]
+inkwell = { version = "0.10", features = ["llvm18-1-prefer-dynamic"] }

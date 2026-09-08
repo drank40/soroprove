@@ -1,15 +1,16 @@
 # Samples
 
-Each `.wasm` here has four checked-in goldens next to it: `.ll` is `--all`,
-every function as lowered; `.inline.ll` is `--inline`, the exports after LLVM
-has folded the SDK plumbing into them; `.rs` is `--rust`, the same as Rust;
-`.mir` is what rustc makes of that Rust through `../ponytail-mir`. `./build.sh`
-regenerates all of it; `git diff samples/` is then the regression gate.
+Each `.wasm` here has four checked-in goldens next to it, one pipeline: `.ll`
+is `--all`, every function as lowered; `.inline.ll` is `--inline`, the exports
+after LLVM has folded the SDK plumbing into them; `.mir` is the MIR
+`../ponytail-mir` builds from that IR inside rustc; `.rs` is the Rust it emits
+from that MIR. `./build.sh` regenerates all of it; `git diff samples/` is then
+the regression gate.
 
-`cargo test` lowers every `.wasm` in this directory in all three IR modes and
-asserts the module passes `module.verify()`, and compiles the `--rust` output
-of `three_bugs.wasm` with rustc, so a sample that stops verifying or
-type-checking fails the build.
+`cargo test` here lowers every `.wasm` in all three IR modes and asserts the
+module passes `module.verify()`; `cargo test` in `../ponytail-mir` runs
+`three_bugs.inline.ll` through MIR and Rust and compiles the Rust with stable
+rustc. A sample that stops verifying or type-checking fails one of them.
 
 ## `three_bugs/` — source, built here
 
@@ -89,63 +90,111 @@ vanished. Helpers the cost model leaves outlined stay in the file as `define
 internal`. Forcing `alwaysinline` on all of them was tried first: 5.7 GB and
 no result on a 187-function contract.
 
-## `--rust` and `ponytail-mir`: back to MIR
+## `ponytail-mir`: wasm -> LLVM -> MIR -> Rust
 
-`--rust` prints the same inlined module as Rust: one typed `let` per SSA value,
-one `match` arm per basic block when there is more than one, one typed
-`extern "C"` declaration per host function; `Val` is a newtype, `StorageType`
-an enum. It is the IR in another syntax, and rustc's type checker is the second
-verifier: a `Val` where an integer belongs is a compile error here, exactly as
-it is a `module.verify()` error one stage earlier. From `three_bugs.rs`:
-
-```rust
-pub fn set_flag() -> Val {
-    unsafe {
-        let v_Symbol__f__: Val = Val::from_payload(11022u64);
-        let v_true: Val = Val::from_payload(1u64);
-        let Persistent: StorageType = StorageType::Persistent;
-        let put_contract_data_3: Val = put_contract_data(v_Symbol__f__, v_true, Persistent);
-        let v_void: Val = Val::from_payload(2u64);
-        return v_void;
-    }
-}
-```
-
-`../ponytail-mir` (a nightly crate on `rustc_private`) hands that file to rustc
-in-process through `rustc_driver`, lets it type-check and optimize it
-(`-Zmir-opt-level=3`), and prints `optimized_mir` for every function with
-rustc's own printer, the one behind `-Zunpretty=mir`. No MIR is built by hand:
-constructing `mir::Body` directly would be the same rustc internals, redone
-worse. The decoded names survive as `debug` entries. From `three_bugs.mir`,
-scopes trimmed:
+From the `--inline` IR, `../ponytail-mir` (a nightly crate on `rustc_private`)
+builds real MIR: `rustc_middle::mir::Body` values inside a `TyCtxt`, typed
+with rustc's own `Ty`s. The `TyCtxt` comes from compiling a stub crate
+generated from the `.ll`'s own declarations -- `Val` and `StorageType`, one
+`extern "C"` per host function and intrinsic, one static per wasm global, one
+empty `fn` per defined function -- so every body has a `DefId` with the right
+signature. One basic block per LLVM block, split at calls; phis are copies in
+an edge block; `%Val` is the ADT, its constructor an aggregate and its payload
+a field projection; a `StorageType` literal is an enum variant, a runtime one a
+transmute; a frame is a `[u8; N]` local whose raw address is taken. Anything
+without a MIR equivalent is an error, never a guess. rustc then validates
+every body (`-Zvalidate-mir`, through its own analysis-to-runtime pipeline)
+and prints it with the printer behind `-Zdump-mir`. From `three_bugs.mir`:
 
 ```
 fn set_flag() -> Val {
-    debug v_Symbol__f__ => const Val(11022_u64);
-    debug v_true => const Val(1_u64);
-    debug Persistent => const StorageType::Persistent;
+    debug v_Symbol__f__ => _1;
+    debug v_true => _2;
+    debug Persistent => _3;
+    debug put_contract_data => _4;
+    debug v_void => _5;
+    let mut _0: Val;
+    let mut _1: Val;
+    let mut _2: Val;
+    let mut _3: StorageType;
+    let mut _4: Val;
+    let mut _5: Val;
+
     bb0: {
-        _1 = put_contract_data(const Val(11022_u64), const Val(1_u64), const StorageType::Persistent) -> [return: bb1, unwind unreachable];
+        _1 = Val(const 11022_u64);
+        _2 = Val(const 1_u64);
+        _3 = StorageType::Persistent;
+        _4 = put_contract_data(copy _1, copy _2, copy _3) -> [return: bb1, unwind unreachable];
     }
+
     bb1: {
-        _0 = const Val(2_u64);
+        _5 = Val(const 2_u64);
+        _0 = copy _5;
         return;
     }
 }
 ```
 
-    ponytail-wasm contract.wasm --rust > contract.rs
-    cd ponytail-mir && cargo run --release -- ../contract.rs
+`--rust` then emits Rust *from that MIR*, structured with rustc's own analyses
+over the body: reverse postorder, dominators, predecessors. A block two edges
+reach sits after its immediate dominator in a labelled block, so a jump to it
+is `break 'b`; a loop header is `'l: loop { .. }`, its back edges `continue 'l`,
+and the merge nodes of its body stay inside the loop while its exits follow it;
+every other block is written inline where its one predecessor branches. Every
+local is declared once and assigned where MIR assigns it, and rustc's
+definite-initialisation check confirms what SSA promised. `pick`, the
+five-way dispatch, from `three_bugs.rs`:
 
-Across the corpus below, 67 of 67 binaries give Rust that rustc accepts
-(244k lines, 12 s) and 67 of 67 give MIR (1.7M lines, 2104 functions, 19 s).
+```rust
+pub fn pick(a0: Val) -> Val {
+    unsafe {
+        let mut arg_payload: u64;
+        let mut cmp: bool;
+        let mut and: u64;
+        let mut cmp2_not: bool;
+        let mut or_cond: bool;
+        let mut lshr: u64;
+        let mut _8: u8;
+        let mut brif_not: u64;
+        let mut to_val: Val;
+        let mut _0: Val;
+        arg_payload = a0.0;
+        cmp = arg_payload < 21474836480u64;
+        and = arg_payload & 255u64;
+        cmp2_not = and == 4u64;
+        or_cond = cmp & cmp2_not;
+        if or_cond {
+            'b5: {
+                lshr = arg_payload.wrapping_shr(32u64 as u32);
+                _8 = lshr as u8;
+                match _8 {
+                    0 => { brif_not = 9742u64; break 'b5; }
+                    1 => { brif_not = 4294967299u64; break 'b5; }
+                    2 => { f37(); trap(); }
+                    3 => { f50(); unreachable!(); }
+                    _ => { brif_not = 10766u64; break 'b5; }
+                }
+            }
+            to_val = Val(brif_not);
+            _0 = to_val;
+            return _0;
+        } else {
+            trap();
+        }
+    }
+}
+```
 
-Ceiling: a function with more than one block is a `loop { match __bb { .. } }`
-state machine, and rustc's jump threading does not collapse it, so its MIR
-dispatches on `__bb` where the LLVM CFG had direct edges. A relooper over the
-CFG, which inlining keeps reducible, would give `if`/`loop`/labeled `break`
-instead; add it when someone reads the MIR of a branchy function rather than
-of a syscall wrapper.
+    ponytail-wasm contract.wasm --inline > contract.inline.ll
+    cd ponytail-mir && cargo run --release -- ../contract.inline.ll          # MIR
+    cd ponytail-mir && cargo run --release -- ../contract.inline.ll --rust   # Rust, from the MIR
+
+Across the corpus below: 67 of 67 binaries, 1568 functions, build MIR that
+rustc validates and emit Rust that stable rustc accepts, all of it structured
+(31 s in total, 481k lines of MIR). A function whose control flow the
+structurer cannot place -- a jump into a region from outside it, which would
+mean an irreducible graph -- is emitted as a `loop { match __bb }` state
+machine with a comment saying so; the corpus has none.
 
 ## `errors.wasm` — vendored, 796 bytes
 
