@@ -256,7 +256,12 @@ fn main() {
         let m = load(&ctx, &ll).unwrap_or_else(|e| fatal(&e));
         format!("{}\n{}", header(&m).unwrap_or_else(|e| fatal(&e)), stubs(&m).unwrap_or_else(|e| fatal(&e)))
     };
-    let stub_path = std::env::temp_dir().join(format!("ponytail-stub-{}.rs", std::process::id()));
+    // The dump filter below also matches item paths, and a derived impl's
+    // path carries its file name: keep "ponytail" out of the stub's, and send
+    // whatever rustc dumps on its own account to a directory that goes away.
+    let scratch = std::env::temp_dir().join(format!("lift-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).unwrap_or_else(|e| fatal(&e.to_string()));
+    let stub_path = scratch.join("stub.rs");
     std::fs::write(&stub_path, stub).unwrap_or_else(|e| fatal(&e.to_string()));
 
     let mut rustc_args = vec![
@@ -267,13 +272,14 @@ fn main() {
         "--crate-name=contract".into(),
         // Gates MirDumper; the printer behind -Zdump-mir.
         "-Zdump-mir=ponytail".into(),
+        format!("-Zdump-mir-dir={}", scratch.join("mir_dump").to_string_lossy()),
         format!("--sysroot={}", sysroot()),
     ];
     if validate {
         rustc_args.push("-Zvalidate-mir".into());
     }
     rustc_driver::run_compiler(&rustc_args, &mut Lift { ll, rust, validate });
-    let _ = std::fs::remove_file(stub_path);
+    let _ = std::fs::remove_dir_all(scratch);
 }
 
 /// The sysroot of the toolchain this binary was built with; rustc_driver

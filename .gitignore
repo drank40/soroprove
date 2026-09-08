@@ -4,3 +4,5 @@ samples/*/target/
 *.bc
 # ...except the checked-in sample goldens, which are the regression gate.
 !samples/*.ll
+# rustc -Zdump-mir output, should ponytail-mir ever leave it behind.
+mir_dump/
