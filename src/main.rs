@@ -606,9 +606,30 @@ fn lower<'ctx>(
         }
     }
 
-    // Every block must end in a terminator. Sweeping for it here is more robust
-    // than tracking a flag, and any block we never reached returns bottom.
-    fun.b.position_at_end(exit);
+    // Drop blocks nothing can reach. wasm permits dead code after a br, so the
+    // lowering opens a block there just to have somewhere to write; if nothing
+    // branches to it, it is not a code path. Leaving them in would inflate the
+    // bottom count with returns no execution reaches -- the same dishonest
+    // metric this tool is a reaction to. A block's uses ARE its predecessors,
+    // so LLVM answers this for us; iterate, because deleting one can orphan
+    // the next.
+    loop {
+        let mut dropped = false;
+        for bb in f.get_basic_blocks() {
+            if bb == entry || bb.get_first_use().is_some() {
+                continue;
+            }
+            if bb.remove_from_function().is_ok() {
+                dropped = true;
+            }
+        }
+        if !dropped {
+            break;
+        }
+    }
+
+    // Every surviving block must end in a terminator. A block that is reachable
+    // but never terminated genuinely falls off the end, so bottom is honest.
     let blocks = f.get_basic_blocks();
     for bb in blocks {
         if bb.get_terminator().is_some() {

@@ -28,10 +28,6 @@ entry:
   %brif = icmp ne i64 %zext, 0
   br i1 %brif, label %c1, label %fall2
 
-exit:                                             ; No predecessors!
-  %bottom = call %Val @ponytail.unknown()
-  ret %Val %bottom
-
 c1:                                               ; preds = %dead14, %fall3, %fall2, %entry
   unreachable
 
@@ -87,25 +83,6 @@ c8:                                               ; preds = %dead11, %fall4
 c9:                                               ; preds = %dead10, %fall4
   call void @f3(i64 4294967299)
   unreachable
-
-dead10:                                           ; No predecessors!
-  br label %c9
-
-dead11:                                           ; No predecessors!
-  br label %c8
-
-dead12:                                           ; No predecessors!
-  br label %c7
-
-dead13:                                           ; No predecessors!
-  br label %c6
-
-dead14:                                           ; No predecessors!
-  br label %c1
-
-dead15:                                           ; No predecessors!
-  %bottom12 = call %Val @ponytail.unknown()
-  ret %Val %bottom12
 }
 
 define void @f3(i64 %0) {
@@ -116,18 +93,9 @@ entry:
   %to_val = call %Val @soroban.val.from_payload(i64 %get)
   %"5" = call %Val @context.fail_with_error(%Val %to_val)
   ret void
-
-exit:                                             ; No predecessors!
-  ret void
 }
 
 define void @f4() {
 entry:
   unreachable
-
-exit:                                             ; No predecessors!
-  ret void
-
-dead1:                                            ; No predecessors!
-  ret void
 }
