@@ -302,12 +302,13 @@ c1:                                               ; preds = %fall4
   %get14 = load i64, ptr %l1, align 4
   %add15 = add i64 %get14, 31
   %bottom16 = call i64 @ponytail.unknown.i64()
-  %lc = call i64 @f13(i64 %get13, i64 %bottom16, i64 %add15)
+  %bottom17 = call i64 @ponytail.unknown.i64()
+  %lc = call i64 @f13(i64 %bottom16, i64 %bottom17, i64 %add15)
   store i64 %lc, ptr %l0, align 4
-  %get17 = load i64, ptr %l1, align 4
-  %add18 = add i64 %get17, 32
-  %get19 = load i64, ptr %l0, align 4
-  ret i64 %get19
+  %get18 = load i64, ptr %l1, align 4
+  %add19 = add i64 %get18, 32
+  %get20 = load i64, ptr %l0, align 4
+  ret i64 %get20
 
 c2:                                               ; preds = %fall5, %fall3, %entry
   unreachable
@@ -466,7 +467,7 @@ fall3:                                            ; preds = %fall2
   %get24 = load i64, ptr %l1, align 4
   %get25 = load i64, ptr %l2, align 4
   %bottom26 = call i64 @ponytail.unknown.i64()
-  %lc = call i64 @f15(i64 %get25, i64 %bottom26)
+  %lc = call i64 @f15(i64 %get24, i64 %bottom26)
   %get27 = load i64, ptr %l2, align 4
   %add28 = add i64 %get27, 47
   %lc29 = call i64 @f16(i64 %lc, i64 %add28)
@@ -850,7 +851,7 @@ entry:
   %get3 = load i64, ptr %l2, align 4
   %bottom4 = call i64 @ponytail.unknown.i64()
   store i64 %bottom4, ptr %l2, align 4
-  call void @f46(i64 %bottom2, i64 %get3, i64 %bottom4)
+  call void @f46(i64 %get, i64 %bottom2, i64 %bottom4)
   %get5 = load i64, ptr %l3, align 4
   %bottom6 = call i64 @ponytail.unknown.i64()
   %cmp = icmp ne i64 %bottom6, 1
@@ -1174,7 +1175,7 @@ c6:                                               ; preds = %h4
   %add = add i64 %get6, 8
   %get7 = load i64, ptr %l1, align 4
   %bottom8 = call i64 @ponytail.unknown.i64()
-  call void @f47(i64 %get7, i64 %bottom8)
+  call void @f47(i64 %add, i64 %bottom8)
   %get9 = load i64, ptr %l3, align 4
   %bottom10 = call i64 @ponytail.unknown.i64()
   %cmp11 = icmp eq i64 %bottom10, 255
@@ -1201,7 +1202,7 @@ c8:                                               ; preds = %c6
   %shl22 = shl i64 %get21, 6
   %get23 = load i64, ptr %l3, align 4
   %bottom24 = call i64 @ponytail.unknown.i64()
-  %or25 = or i64 %get23, %bottom24
+  %or25 = or i64 %shl22, %bottom24
   store i64 %or25, ptr %l4, align 4
   br label %h4
 

@@ -142,6 +142,35 @@ fn storage_name(c: i64) -> String {
     }
 }
 
+/// Only what `Operator::operator_arity` needs to size the fallback in `lower`:
+/// the type section, for `call_indirect`. Labels and direct calls are lowered
+/// explicitly, so the rest is never consulted.
+struct Types(Vec<wasmparser::SubType>);
+
+impl wasmparser::ModuleArity for Types {
+    fn sub_type_at(&self, i: u32) -> Option<&wasmparser::SubType> {
+        self.0.get(i as usize)
+    }
+    fn tag_type_arity(&self, _: u32) -> Option<(u32, u32)> {
+        None
+    }
+    fn type_index_of_function(&self, _: u32) -> Option<u32> {
+        None
+    }
+    fn func_type_of_cont_type(&self, _: &wasmparser::ContType) -> Option<&wasmparser::FuncType> {
+        None
+    }
+    fn sub_type_of_ref_type(&self, _: &wasmparser::RefType) -> Option<&wasmparser::SubType> {
+        None
+    }
+    fn control_stack_height(&self) -> u32 {
+        0
+    }
+    fn label_block(&self, _: u32) -> Option<(wasmparser::BlockType, wasmparser::FrameKind)> {
+        None
+    }
+}
+
 /// The declared conversion and bottom functions, plus the Val type.
 struct Rt<'ctx> {
     val: StructType<'ctx>,
@@ -371,6 +400,7 @@ fn lower<'ctx>(
     ops: &[Operator],
     imports: &HashMap<u32, &'static HostFn>,
     local_sigs: &HashMap<u32, (usize, usize)>,
+    types: &Types,
     // True only for an exported contract function, whose wasm i64 params ARE
     // Soroban Vals. A helper's params are plain i64 with no declared meaning,
     // and typing them as Val is what inkwell caught the text emitter hiding.
@@ -652,8 +682,19 @@ fn lower<'ctx>(
             | Operator::I64Extend32S
             | Operator::I32Extend8S
             | Operator::I32Extend16S => {}
-            // Anything unmodelled yields bottom, never a plausible value.
-            _ => fun.stack.push(SV::Unknown),
+            // Anything unmodelled yields bottom, never a plausible value -- but
+            // pops exactly what it consumes. A blanket push here left a
+            // phantom on the stack, and the `global.set 0` in every Rust
+            // epilogue then made `return` hand back the phantom, not the value.
+            _ => {
+                let (pops, pushes) = op.operator_arity(types).unwrap_or((0, 1));
+                for _ in 0..pops {
+                    fun.pop();
+                }
+                for _ in 0..pushes {
+                    fun.stack.push(SV::Unknown);
+                }
+            }
         }
     }
 
@@ -727,6 +768,7 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
     let mut exports: Vec<(String, u32)> = Vec::new();
     let mut sigs: Vec<(usize, usize)> = Vec::new();
     let mut func_types: Vec<u32> = Vec::new();
+    let mut types = Types(Vec::new());
 
     for p in Parser::new(0).parse_all(wasm) {
         match p.expect("parse") {
@@ -738,6 +780,7 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
                         } else {
                             sigs.push((0, 0));
                         }
+                        types.0.push(st);
                     }
                 }
             }
@@ -879,7 +922,7 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
             continue;
         };
         if let Err(e) = lower(
-            &ctx, &m, &rt, f, np, nr, *n_locals, ops, &imports, &local_sigs, val_abi,
+            &ctx, &m, &rt, f, np, nr, *n_locals, ops, &imports, &local_sigs, &types, val_abi,
         ) {
             let _ = writeln!(notes, "; FAILED to lower {}: {e}", f.get_name().to_string_lossy());
         }
@@ -947,7 +990,7 @@ mod tests {
         };
         let f = m.add_function("f", fty, None);
         lower(
-            &ctx, &m, &rt, f, 0, nr, 0, &ops, &HashMap::new(), &HashMap::new(), true,
+            &ctx, &m, &rt, f, 0, nr, 0, &ops, &HashMap::new(), &HashMap::new(), &Types(Vec::new()), true,
         )?;
         m.verify().map_err(|e| e.to_string())?;
         Ok(m.print_to_string().to_string())
@@ -993,6 +1036,20 @@ mod tests {
         let ir = build(vec![Operator::I64Const { value: 2 }, Operator::End], 1).unwrap();
         assert!(ir.contains("ret %Val %v_void"), "{ir}");
         assert!(!ir.contains("bottom"), "{ir}");
+    }
+
+    #[test]
+    fn unmodelled_ops_pop_what_they_consume() {
+        // `i64.const 2; i64.const 5; global.set 0; end` -- the 5 is consumed,
+        // the 2 is the result. A phantom push would return bottom here.
+        let ops = vec![
+            Operator::I64Const { value: 2 },
+            Operator::I64Const { value: 5 },
+            Operator::GlobalSet { global_index: 0 },
+            Operator::End,
+        ];
+        let ir = build(ops, 1).unwrap();
+        assert!(ir.contains("ret %Val %v_void"), "{ir}");
     }
 
     #[test]

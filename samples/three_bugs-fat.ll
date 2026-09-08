@@ -286,7 +286,7 @@ entry:
   %get3 = load i64, ptr %l2, align 4
   %bottom4 = call i64 @ponytail.unknown.i64()
   store i64 %bottom4, ptr %l2, align 4
-  call void @f23(i64 %bottom2, i64 %get3, i64 %bottom4)
+  call void @f23(i64 %get, i64 %bottom2, i64 %bottom4)
   %get5 = load i64, ptr %l3, align 4
   %bottom6 = call i64 @ponytail.unknown.i64()
   %cmp = icmp ne i64 %bottom6, 1

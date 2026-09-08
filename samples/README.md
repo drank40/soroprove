@@ -104,10 +104,10 @@ done
 
 67 binaries, 134 runs (both modes), all verify.
 
-In exports mode 519 of the 716 export returns carry a value; 197 are bottom.
-A bottom return means the returned value was one the model does not carry: it
-came from an operator that is not modelled (a linear-memory load, a global), or
-it was the result of a typed `block`/`if`, which the operand stack does not
-thread across `end` (549 such labels in the corpus). No `exit` block survives
-in any output, so a conditional `br_if` to the function's own label -- the one
-return shape still lowered as bottom -- does not occur here.
+In exports mode 641 of the 716 export returns carry a value; 75 are bottom.
+A bottom return means the returned value is one the model does not carry: it
+came from an operator that is not modelled (a linear-memory load, `select`,
+a global), or it was the result of a typed `block`/`if`, which the operand
+stack does not thread across `end` (549 such labels in the corpus). No `exit`
+block survives in any output, so a conditional `br_if` to the function's own
+label -- the one return shape still lowered as bottom -- does not occur here.
