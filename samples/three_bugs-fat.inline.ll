@@ -6,7 +6,6 @@ target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:
 
 @g0 = local_unnamed_addr global i64 1048576
 @g1 = local_unnamed_addr constant i64 1048652
-@mem = external local_unnamed_addr global i8
 
 ; Function Attrs: mustprogress nofree nosync nounwind willreturn memory(none)
 declare %Val @soroban.val.from_payload(i64) local_unnamed_addr #0
@@ -37,153 +36,114 @@ declare %Val @vec.vec_new_from_linear_memory(%Val, %Val) local_unnamed_addr #8
 
 define %Val @read(%Val %0, %Val %1) local_unnamed_addr {
 entry:
+  %frame = alloca [32 x i8], align 1
   %arg_payload = tail call i64 @soroban.val.payload(%Val %0)
   %arg_payload1 = tail call i64 @soroban.val.payload(%Val %1)
-  %g0.i = load i64, ptr @g0, align 8
-  %sub.i = add i64 %g0.i, -32
-  store i64 %sub.i, ptr @g0, align 8
-  %and.i = and i64 %arg_payload, 255
-  %cmp.not.i = icmp eq i64 %and.i, 77
-  %and2.i = and i64 %arg_payload1, 255
-  %cmp3.not.i = icmp eq i64 %and2.i, 77
-  %or.cond.i = select i1 %cmp.not.i, i1 %cmp3.not.i, i1 false
-  br i1 %or.cond.i, label %fall3.i, label %c1.i
+  call void @llvm.lifetime.start.p0(i64 32, ptr nonnull %frame)
+  %and = and i64 %arg_payload, 255
+  %cmp.not = icmp eq i64 %and, 77
+  %and2 = and i64 %arg_payload1, 255
+  %cmp3.not = icmp eq i64 %and2, 77
+  %or.cond = select i1 %cmp.not, i1 %cmp3.not, i1 false
+  br i1 %or.cond, label %h8, label %c1
 
-c1.i:                                             ; preds = %entry
-  tail call void @soroban.trap()
+c1:                                               ; preds = %entry
+  call void @soroban.trap()
   unreachable
 
-fall3.i:                                          ; preds = %entry
-  %sub.i.i = add i64 %g0.i, -48
-  store i64 %sub.i.i, ptr @g0, align 8
-  br label %h8.i.i.i
+c2:                                               ; preds = %c10
+  %shl47 = shl i64 %or33, 8
+  %or48 = or disjoint i64 %shl47, 14
+  br label %f14.exit
 
-c2.i.i.i:                                         ; preds = %c10.i.i.i
-  %shl47.i.i.i = shl i64 %or33.i.i.i, 8
-  %or48.i.i.i = or disjoint i64 %shl47.i.i.i, 14
-  %2 = getelementptr i8, ptr @mem, i64 %sub.i.i
-  %p.i74.i.i.i = getelementptr i8, ptr %2, i64 8
-  store i64 %or48.i.i.i, ptr %p.i74.i.i.i, align 1
-  store i32 0, ptr %2, align 1
-  br label %f23.exit.i.i
+h8:                                               ; preds = %entry, %c10
+  %l1.0 = phi i64 [ %add35, %c10 ], [ 1048640, %entry ]
+  %l2.0 = phi i64 [ %add37, %c10 ], [ 4, %entry ]
+  %l3.1 = phi i64 [ %or33, %c10 ], [ 0, %entry ]
+  %p = inttoptr i64 %l1.0 to ptr
+  %v = load i8, ptr %p, align 1
+  %zx = zext i8 %v to i64
+  %cmp4 = icmp eq i8 %v, 95
+  br i1 %cmp4, label %c10, label %fall11
 
-h8.i.i.i:                                         ; preds = %fall3.i, %c10.i.i.i
-  %l1.0.i.i.i = phi i64 [ %add35.i.i.i, %c10.i.i.i ], [ 1048640, %fall3.i ]
-  %l2.0.i.i.i = phi i64 [ %add37.i.i.i, %c10.i.i.i ], [ 4, %fall3.i ]
-  %l3.1.i.i.i = phi i64 [ %or33.i.i.i, %c10.i.i.i ], [ 0, %fall3.i ]
-  %p.i.i.i.i = getelementptr i8, ptr @mem, i64 %l1.0.i.i.i
-  %v.i.i.i.i = load i8, ptr %p.i.i.i.i, align 1
-  %zx.i.i.i.i = zext i8 %v.i.i.i.i to i64
-  %cmp4.i.i.i = icmp eq i8 %v.i.i.i.i, 95
-  br i1 %cmp4.i.i.i, label %c10.i.i.i, label %fall11.i.i.i
+c10:                                              ; preds = %fall17, %c13, %c12, %h8
+  %l4.0 = phi i64 [ 1, %h8 ], [ %add26, %c13 ], [ %add28, %c12 ], [ %add22, %fall17 ]
+  %shl30 = shl i64 %l3.1, 6
+  %and32 = and i64 %l4.0, 255
+  %or33 = or i64 %and32, %shl30
+  %add35 = add nuw nsw i64 %l1.0, 1
+  %add37 = add nsw i64 %l2.0, -1
+  %eqz = icmp eq i64 %add37, 0
+  br i1 %eqz, label %c2, label %h8
 
-c10.i.i.i:                                        ; preds = %fall17.i.i.i, %c13.i.i.i, %c12.i.i.i, %h8.i.i.i
-  %l4.0.i.i.i = phi i64 [ 1, %h8.i.i.i ], [ %add26.i.i.i, %c13.i.i.i ], [ %add28.i.i.i, %c12.i.i.i ], [ %add22.i.i.i, %fall17.i.i.i ]
-  %shl30.i.i.i = shl i64 %l3.1.i.i.i, 6
-  %and32.i.i.i = and i64 %l4.0.i.i.i, 255
-  %or33.i.i.i = or i64 %and32.i.i.i, %shl30.i.i.i
-  %add35.i.i.i = add nuw nsw i64 %l1.0.i.i.i, 1
-  %add37.i.i.i = add nsw i64 %l2.0.i.i.i, -1
-  %eqz.i.i.i = icmp eq i64 %add37.i.i.i, 0
-  br i1 %eqz.i.i.i, label %c2.i.i.i, label %h8.i.i.i
+fall11:                                           ; preds = %h8
+  %add = add nuw nsw i64 %zx, 208
+  %and12 = and i64 %add, 254
+  %cmp8 = icmp ult i64 %and12, 10
+  br i1 %cmp8, label %c13, label %fall14
 
-fall11.i.i.i:                                     ; preds = %h8.i.i.i
-  %add.i.i.i = add nuw nsw i64 %zx.i.i.i.i, 208
-  %and.i.i.i = and i64 %add.i.i.i, 254
-  %cmp8.i.i.i = icmp ult i64 %and.i.i.i, 10
-  br i1 %cmp8.i.i.i, label %c13.i.i.i, label %fall14.i.i.i
+c12:                                              ; preds = %fall14
+  %add28 = add nsw i64 %zx, -53
+  br label %c10
 
-c12.i.i.i:                                        ; preds = %fall14.i.i.i
-  %add28.i.i.i = add nsw i64 %zx.i.i.i.i, -53
-  br label %c10.i.i.i
+c13:                                              ; preds = %fall11
+  %add26 = add nsw i64 %zx, -46
+  br label %c10
 
-c13.i.i.i:                                        ; preds = %fall11.i.i.i
-  %add26.i.i.i = add nsw i64 %zx.i.i.i.i, -46
-  br label %c10.i.i.i
+fall14:                                           ; preds = %fall11
+  %add12 = add nuw nsw i64 %zx, 191
+  %and13 = and i64 %add12, 254
+  %cmp14 = icmp ult i64 %and13, 26
+  br i1 %cmp14, label %c12, label %fall15
 
-fall14.i.i.i:                                     ; preds = %fall11.i.i.i
-  %add12.i.i.i = add nuw nsw i64 %zx.i.i.i.i, 191
-  %and13.i.i.i = and i64 %add12.i.i.i, 254
-  %cmp14.i.i.i = icmp ult i64 %and13.i.i.i, 26
-  br i1 %cmp14.i.i.i, label %c12.i.i.i, label %fall15.i.i.i
+fall15:                                           ; preds = %fall14
+  %bottom = call i64 @ponytail.unknown.i64()
+  %brif20.not = icmp eq i64 %bottom, 0
+  br i1 %brif20.not, label %fall17, label %f23.exit
 
-fall15.i.i.i:                                     ; preds = %fall14.i.i.i
-  %bottom.i.i.i = tail call i64 @ponytail.unknown.i64()
-  %brif20.not.i.i.i = icmp eq i64 %bottom.i.i.i, 0
-  br i1 %brif20.not.i.i.i, label %fall17.i.i.i, label %c16.i.i.i
+fall17:                                           ; preds = %fall15
+  %add22 = add nsw i64 %zx, -59
+  br label %c10
 
-c16.i.i.i:                                        ; preds = %fall15.i.i.i
-  %shl.i.i.i = shl nuw nsw i64 %zx.i.i.i.i, 8
-  %or.i.i.i = or disjoint i64 %shl.i.i.i, 1
-  %3 = getelementptr i8, ptr @mem, i64 %sub.i.i
-  %p.i75.i.i.i = getelementptr i8, ptr %3, i64 4
-  store i64 %or.i.i.i, ptr %p.i75.i.i.i, align 1
-  %p.i72.i.i.i = getelementptr i8, ptr @mem, i64 %sub.i.i
-  store i32 1, ptr %p.i72.i.i.i, align 1
-  br label %f23.exit.i.i
+f23.exit:                                         ; preds = %fall15
+  %v_u32_1048640 = call %Val @soroban.val.from_payload(i64 4503874505277444)
+  %v_u32_4 = call %Val @soroban.val.from_payload(i64 17179869188)
+  %Symbol__Pair__ = call %Val @buf.symbol_new_from_linear_memory(%Val %v_u32_1048640, %Val %v_u32_4)
+  %payload = call i64 @soroban.val.payload(%Val %Symbol__Pair__)
+  br label %f14.exit
 
-fall17.i.i.i:                                     ; preds = %fall15.i.i.i
-  %add22.i.i.i = add nsw i64 %zx.i.i.i.i, -59
-  br label %c10.i.i.i
-
-f23.exit.i.i:                                     ; preds = %c16.i.i.i, %c2.i.i.i
-  %v.i.i.i = phi i32 [ 1, %c16.i.i.i ], [ 0, %c2.i.i.i ]
-  %cmp.not.i.i = icmp eq i32 %v.i.i.i, 1
-  br i1 %cmp.not.i.i, label %fall3.i.i, label %c2.i.i
-
-c2.i.i:                                           ; preds = %f23.exit.i.i
-  %4 = getelementptr i8, ptr @mem, i64 %sub.i
-  %p.i27.i.i = getelementptr i8, ptr %4, i64 -8
-  %v.i28.i.i = load i64, ptr %p.i27.i.i, align 1
-  br label %f7.exit
-
-fall3.i.i:                                        ; preds = %f23.exit.i.i
-  %v_u32_1048640 = tail call %Val @soroban.val.from_payload(i64 4503874505277444)
-  %v_u32_4 = tail call %Val @soroban.val.from_payload(i64 17179869188)
-  %Symbol__Pair__ = tail call %Val @buf.symbol_new_from_linear_memory(%Val %v_u32_1048640, %Val %v_u32_4)
-  %payload.i.i.i = tail call i64 @soroban.val.payload(%Val %Symbol__Pair__)
-  br label %f7.exit
-
-f7.exit:                                          ; preds = %c2.i.i, %fall3.i.i
-  %l5.0.i.i = phi i64 [ %v.i28.i.i, %c2.i.i ], [ %payload.i.i.i, %fall3.i.i ]
-  %add.i = add i64 %g0.i, -24
-  %p.i30.i.i = getelementptr i8, ptr @mem, i64 %add.i
-  store i64 0, ptr %p.i30.i.i, align 1
-  %p.i29.i.i = getelementptr i8, ptr %p.i30.i.i, i64 8
-  store i64 %l5.0.i.i, ptr %p.i29.i.i, align 1
-  store i64 %sub.i, ptr @g0, align 8
-  %5 = getelementptr i8, ptr @mem, i64 %g0.i
-  %p.i.i = getelementptr i8, ptr %5, i64 -16
-  store i64 %arg_payload1, ptr %p.i.i, align 1
-  store i64 %arg_payload, ptr %p.i30.i.i, align 1
-  %shl4.i.i.i = shl i64 %add.i, 32
-  %or5.i.i.i = or disjoint i64 %shl4.i.i.i, 4
-  %v_u32_1048624 = tail call %Val @soroban.val.from_payload(i64 4503805785800708)
-  %to_val9.i.i.i = tail call %Val @soroban.val.from_payload(i64 %or5.i.i.i)
-  %v_u32_2 = tail call %Val @soroban.val.from_payload(i64 8589934596)
-  %Map_BAD_tag_44__BAD_tag_45_ = tail call %Val @map.map_new_from_linear_memory(%Val %v_u32_1048624, %Val %to_val9.i.i.i, %Val %v_u32_2)
-  %payload.i.i64.i = tail call i64 @soroban.val.payload(%Val %Map_BAD_tag_44__BAD_tag_45_)
-  store i64 %payload.i.i64.i, ptr %p.i.i, align 1
-  store i64 %l5.0.i.i, ptr %p.i30.i.i, align 1
-  %vec_new_from_linear_memory.i.i.i = tail call %Val @vec.vec_new_from_linear_memory(%Val %to_val9.i.i.i, %Val %v_u32_2)
-  %payload.i.i69.i = tail call i64 @soroban.val.payload(%Val %vec_new_from_linear_memory.i.i.i)
-  %to_val.i.i70.i = tail call %Val @soroban.val.from_payload(i64 %payload.i.i69.i)
+f14.exit:                                         ; preds = %f23.exit, %c2
+  %ld11 = phi i64 [ %or48, %c2 ], [ %payload, %f23.exit ]
+  %slot8 = getelementptr inbounds i8, ptr %frame, i64 8
+  %fp11 = getelementptr inbounds i8, ptr %frame, i64 16
+  %fp = ptrtoint ptr %slot8 to i64
+  store i64 %arg_payload1, ptr %fp11, align 1
+  store i64 %arg_payload, ptr %slot8, align 1
+  %shl4 = shl i64 %fp, 32
+  %or5 = or disjoint i64 %shl4, 4
+  %v_u32_1048624 = call %Val @soroban.val.from_payload(i64 4503805785800708)
+  %to_val9 = call %Val @soroban.val.from_payload(i64 %or5)
+  %v_u32_2 = call %Val @soroban.val.from_payload(i64 8589934596)
+  %Map_BAD_tag_44__BAD_tag_45_ = call %Val @map.map_new_from_linear_memory(%Val %v_u32_1048624, %Val %to_val9, %Val %v_u32_2)
+  %payload15 = call i64 @soroban.val.payload(%Val %Map_BAD_tag_44__BAD_tag_45_)
+  store i64 %payload15, ptr %fp11, align 1
+  store i64 %ld11, ptr %slot8, align 1
+  %vec_new_from_linear_memory = call %Val @vec.vec_new_from_linear_memory(%Val %to_val9, %Val %v_u32_2)
+  %payload16 = call i64 @soroban.val.payload(%Val %vec_new_from_linear_memory)
+  %to_val17 = call %Val @soroban.val.from_payload(i64 %payload16)
   %Persistent = call i64 @soroban.storage_type(i64 1)
-  %has_contract_data.i.i.i = tail call %Val @ledger.has_contract_data(%Val %to_val.i.i70.i, i64 %Persistent)
-  %payload.i.i71.i = tail call i64 @soroban.val.payload(%Val %has_contract_data.i.i.i)
-  %cmp.i.i = icmp eq i64 %payload.i.i71.i, 1
-  %zext.i.i = zext i1 %cmp.i.i to i64
-  store i64 %g0.i, ptr @g0, align 8
-  %to_val = tail call %Val @soroban.val.from_payload(i64 %zext.i.i)
+  %has_contract_data = call %Val @ledger.has_contract_data(%Val %to_val17, i64 %Persistent)
+  %payload18 = call i64 @soroban.val.payload(%Val %has_contract_data)
+  %cmp = icmp eq i64 %payload18, 1
+  %zext = zext i1 %cmp to i64
+  call void @llvm.lifetime.end.p0(i64 32, ptr nonnull %frame)
+  %to_val = call %Val @soroban.val.from_payload(i64 %zext)
   ret %Val %to_val
 }
 
 define %Val @pick(%Val %0) local_unnamed_addr {
 entry:
   %arg_payload = tail call i64 @soroban.val.payload(%Val %0)
-  %g0 = load i64, ptr @g0, align 8
-  %sub = add i64 %g0, -16
-  store i64 %sub, ptr @g0, align 8
   %and = and i64 %arg_payload, 255
   %cmp.not = icmp ne i64 %and, 4
   %cmp2 = icmp ugt i64 %arg_payload, 21474836479
@@ -192,7 +152,6 @@ entry:
 
 c1:                                               ; preds = %c2, %c3, %fall8
   %l0.0 = phi i64 [ 9742, %c2 ], [ 4294967299, %fall8 ], [ 10766, %c3 ]
-  store i64 %g0, ptr @g0, align 8
   %to_val = tail call %Val @soroban.val.from_payload(i64 %l0.0)
   ret %Val %to_val
 
@@ -226,17 +185,13 @@ fall8:                                            ; preds = %entry
   ]
 }
 
-; Function Attrs: memory(readwrite, argmem: none)
-define %Val @set_flag() local_unnamed_addr #9 {
+; Function Attrs: memory(inaccessiblemem: readwrite)
+define %Val @set_flag() local_unnamed_addr #1 {
 entry:
-  %g0 = load i64, ptr @g0, align 8
-  %sub = add i64 %g0, -16
-  store i64 %sub, ptr @g0, align 8
   %v_Symbol__f__ = tail call %Val @soroban.val.from_payload(i64 11022)
   %v_true = tail call %Val @soroban.val.from_payload(i64 1)
   %Persistent = call i64 @soroban.storage_type(i64 1)
-  %put_contract_data.i.i = tail call %Val @ledger.put_contract_data(%Val %v_Symbol__f__, %Val %v_true, i64 %Persistent)
-  store i64 %g0, ptr @g0, align 8
+  %put_contract_data = tail call %Val @ledger.put_contract_data(%Val %v_Symbol__f__, %Val %v_true, i64 %Persistent)
   %v_void = tail call %Val @soroban.val.from_payload(i64 2)
   ret %Val %v_void
 }
@@ -245,7 +200,7 @@ entry:
 define internal fastcc void @f15() unnamed_addr #1 {
 entry:
   %v_Error_type_0__code_1_ = tail call %Val @soroban.val.from_payload(i64 4294967299)
-  %fail_with_error.i = tail call %Val @context.fail_with_error(%Val %v_Error_type_0__code_1_)
+  %fail_with_error = tail call %Val @context.fail_with_error(%Val %v_Error_type_0__code_1_)
   ret void
 }
 
@@ -259,25 +214,28 @@ entry:
 ; Function Attrs: noreturn
 define internal fastcc void @f25() unnamed_addr #2 {
 entry:
-  %g0 = load i64, ptr @g0, align 8
-  %sub = add i64 %g0, -32
-  store i64 %sub, ptr @g0, align 8
-  %0 = getelementptr i8, ptr @mem, i64 %g0
-  %p.i24 = getelementptr i8, ptr %0, i64 -16
-  store i32 29, ptr %p.i24, align 1
-  %ea4 = add i64 %g0, -20
-  %p.i23 = getelementptr i8, ptr @mem, i64 %ea4
-  store i32 1048576, ptr %p.i23, align 1
-  %p.i = getelementptr i8, ptr %0, i64 -4
-  store i16 1, ptr %p.i, align 1
-  %p.i22 = getelementptr i8, ptr %0, i64 -8
-  store i32 1048604, ptr %p.i22, align 1
-  %t.i = trunc i64 %ea4 to i32
-  %p.i21 = getelementptr i8, ptr %0, i64 -12
-  store i32 %t.i, ptr %p.i21, align 1
-  tail call void @soroban.trap()
+  %frame = alloca [32 x i8], align 1
+  %slot16 = getelementptr inbounds i8, ptr %frame, i64 16
+  store i32 29, ptr %slot16, align 1
+  %slot12 = getelementptr inbounds i8, ptr %frame, i64 12
+  store i32 1048576, ptr %slot12, align 1
+  %slot28 = getelementptr inbounds i8, ptr %frame, i64 28
+  store i16 1, ptr %slot28, align 1
+  %slot24 = getelementptr inbounds i8, ptr %frame, i64 24
+  store i32 1048604, ptr %slot24, align 1
+  %fp = ptrtoint ptr %slot12 to i64
+  %slot20 = getelementptr inbounds i8, ptr %frame, i64 20
+  %t6 = trunc i64 %fp to i32
+  store i32 %t6, ptr %slot20, align 1
+  call void @soroban.trap()
   unreachable
 }
+
+; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
+declare void @llvm.lifetime.start.p0(i64 immarg, ptr nocapture) #9
+
+; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
+declare void @llvm.lifetime.end.p0(i64 immarg, ptr nocapture) #9
 
 declare i64 @soroban.storage_type(i64)
 
@@ -290,4 +248,4 @@ attributes #5 = { memory(inaccessiblemem: readwrite) "soroban.import"="l.0" "sor
 attributes #6 = { memory(inaccessiblemem: readwrite) "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }
 attributes #7 = { "soroban.import"="m.9" "soroban.sig"="(U32Val, U32Val, U32Val) -> MapObject" }
 attributes #8 = { "soroban.import"="v.g" "soroban.sig"="(U32Val, U32Val) -> VecObject" }
-attributes #9 = { memory(readwrite, argmem: none) }
+attributes #9 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }

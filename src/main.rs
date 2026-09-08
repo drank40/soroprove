@@ -36,7 +36,7 @@ use inkwell::values::{
     AnyValue, AsValueRef, BasicValue, BasicValueEnum, CallSiteValue, FunctionValue, InstructionOpcode,
     InstructionValue, IntValue, Operand, PointerValue, ValueKind,
 };
-use inkwell::{IntPredicate, OptimizationLevel};
+use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 use wasmparser::{ExternalKind, Operator, Parser, Payload};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -127,6 +127,10 @@ enum SV<'ctx> {
     /// An emitted LLVM value. Its type is carried by the value itself, so there
     /// is no separate tag that could disagree with reality.
     Reg(BasicValueEnum<'ctx>),
+    /// An address in this function's shadow-stack frame, `frame + off`. The
+    /// frame is an `alloca`, so an access here is a typed access to
+    /// function-local memory, which LLVM then cleans up like any local.
+    Frame(i64),
     /// Bottom.
     Unknown,
 }
@@ -358,6 +362,11 @@ struct Fun<'ctx, 'a> {
     labels: Vec<Lbl<'ctx>>,
     imports: &'a HashMap<u32, &'static HostFn>,
     n: usize,
+    /// The recovered shadow-stack frame (alloca, size) and the wasm local that
+    /// holds its base, when the function opens one the way LLVM's wasm
+    /// backend does.
+    frame: Option<(PointerValue<'ctx>, u64)>,
+    frame_local: Option<u32>,
 }
 
 impl<'ctx, 'a> Fun<'ctx, 'a> {
@@ -426,10 +435,11 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
     }
 
     /// A linear-memory access. A constant address inside an unwritten data
-    /// segment reads as the constant it is; everything else goes through the
-    /// `soroban.load*`/`store*` helpers, which `--inline` defines as plain
-    /// accesses to `@mem` so LLVM can forward stores to loads, and then
-    /// `fold_data_loads` reads what inlining has just made constant.
+    /// segment reads as the constant it is; an address inside this function's
+    /// recovered frame is a typed access to the frame alloca; everything else
+    /// goes through the `soroban.load*`/`store*` helpers, which `--inline`
+    /// defines as `inttoptr` accesses, so an escaped frame address folds back
+    /// to its alloca and `fold_data_loads` can read what became constant.
     fn mem(&mut self, acc: Acc, m: &Module<'ctx>, mem: &Mem) {
         match acc {
             Acc::Load { bits, signed, off } => {
@@ -439,6 +449,20 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
                         self.stack.push(SV::Const(v));
                         return;
                     }
+                }
+                if let Some(p) = self.frame_slot(a, off, bits) {
+                    let v = self.b.build_load(int_ty(self.ctx, bits), p, "ld").expect("load");
+                    let _ = v.as_instruction_value().expect("inst").set_alignment(1);
+                    let v = v.into_int_value();
+                    let w = if bits == 64 {
+                        v
+                    } else if signed {
+                        self.b.build_int_s_extend(v, self.rt.i64t, "sx").expect("sext")
+                    } else {
+                        self.b.build_int_z_extend(v, self.rt.i64t, "zx").expect("zext")
+                    };
+                    self.stack.push(SV::Reg(w.into()));
+                    return;
                 }
                 let ea = self.addr(a, off);
                 let sfx = if bits == 64 { "" } else if signed { "s" } else { "u" };
@@ -450,11 +474,36 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
                 let v = self.pop();
                 let a = self.pop();
                 let vi = self.use_int(v);
+                if let Some(p) = self.frame_slot(a, off, bits) {
+                    let t = if bits == 64 {
+                        vi
+                    } else {
+                        self.b.build_int_truncate(vi, int_ty(self.ctx, bits), "t").expect("trunc")
+                    };
+                    let _ = self.b.build_store(p, t).expect("store").set_alignment(1);
+                    return;
+                }
                 let ea = self.addr(a, off);
                 let f = m.get_function(&format!("soroban.store{bits}")).expect("store helper");
                 self.b.build_direct_call(f, &[ea.into(), vi.into()], "").expect("call");
             }
         }
+    }
+
+    /// `frame + off` as a pointer, when the whole access lies inside the frame.
+    fn frame_slot(&mut self, a: SV<'ctx>, off: u64, bits: u32) -> Option<PointerValue<'ctx>> {
+        let (SV::Frame(fo), Some((fr, size))) = (a, self.frame) else { return None };
+        let o = fo.checked_add(off as i64)?;
+        let end = (o as u64).checked_add((bits / 8) as u64)?;
+        (o >= 0 && end <= size).then(|| self.frame_ptr(fr, o))
+    }
+
+    fn frame_ptr(&mut self, fr: PointerValue<'ctx>, o: i64) -> PointerValue<'ctx> {
+        if o == 0 {
+            return fr;
+        }
+        let k = self.rt.i64t.const_int(o as u64, true);
+        unsafe { self.b.build_gep(self.ctx.i8_type(), fr, &[k], &format!("slot{o}")) }.expect("gep")
     }
 
     fn addr(&mut self, a: SV<'ctx>, off: u64) -> IntValue<'ctx> {
@@ -492,6 +541,19 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
                 (false, true) => self.call1(self.rt.from_payload, &[r], "to_val"),
                 (true, false) => self.call1(self.rt.payload, &[r], "payload"),
             },
+            // A frame address that escapes -- passed to a call, stored, compared
+            // -- is the integer `ptrtoint(frame + off)`. After inlining,
+            // `inttoptr(ptrtoint(frame) + k)` folds back to the alloca.
+            SV::Frame(o) => {
+                let v = match self.frame {
+                    Some((fr, _)) => {
+                        let p = self.frame_ptr(fr, o);
+                        SV::Reg(self.b.build_ptr_to_int(p, self.rt.i64t, "fp").expect("ptrtoint").into())
+                    }
+                    None => SV::Unknown,
+                };
+                self.use_as(v, want)
+            }
             SV::Unknown => {
                 let f = if wants_val {
                     self.rt.unknown_val
@@ -510,6 +572,14 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
     fn binop(&mut self, op: &str) {
         let b = self.pop();
         let a = self.pop();
+        // Frame arithmetic stays symbolic: `frame + 8` is a slot, not an int.
+        match (op, a, b) {
+            ("add", SV::Frame(o), SV::Const(k)) | ("add", SV::Const(k), SV::Frame(o)) => {
+                return self.stack.push(SV::Frame(o.wrapping_add(k)));
+            }
+            ("sub", SV::Frame(o), SV::Const(k)) => return self.stack.push(SV::Frame(o.wrapping_sub(k))),
+            _ => {}
+        }
         let (x, y) = (self.use_int(a), self.use_int(b));
         let r = match op {
             "add" => self.b.build_int_add(x, y, "add"),
@@ -600,6 +670,8 @@ fn lower<'ctx>(
         labels: Vec::new(),
         imports,
         n: 0,
+        frame: None,
+        frame_local: None,
     };
 
     // Locals in allocas; `mem2reg` promotes them to SSA with real phis. Doing
@@ -624,6 +696,27 @@ fn lower<'ctx>(
             .expect("store");
     }
 
+    // LLVM's wasm backend opens a frame with exactly this sequence, keeps the
+    // base in one local it never reassigns, and closes it by adding the size
+    // back to the stack pointer. Recovered as an alloca, the frame is the
+    // function-local memory it really is: dead stores go, and the SP traffic
+    // through @g0 with them. Anything else touching @g0 is lowered as is.
+    let mut skip = 0;
+    if let [Operator::GlobalGet { global_index: 0 }, Operator::I32Const { value: n }, Operator::I32Sub, Operator::LocalTee { local_index: l }, Operator::GlobalSet { global_index: 0 }, ..] =
+        ops
+    {
+        let sets = ops
+            .iter()
+            .filter(|o| matches!(o, Operator::LocalSet { local_index } | Operator::LocalTee { local_index } if local_index == l))
+            .count();
+        if *n > 0 && sets == 1 {
+            let fr = b.build_alloca(ctx.i8_type().array_type(*n as u32), "frame").expect("alloca");
+            fun.frame = Some((fr, *n as u64));
+            fun.frame_local = Some(*l);
+            skip = 5;
+        }
+    }
+
     let exit = ctx.append_basic_block(f, "exit");
     fun.labels.push(Lbl {
         target: exit,
@@ -631,7 +724,7 @@ fn lower<'ctx>(
         else_bb: None,
     });
 
-    for (i, op) in ops.iter().enumerate() {
+    for (i, op) in ops.iter().enumerate().skip(skip) {
         // Dead code only needs its labels kept balanced; nothing in it runs.
         if fun.terminated()
             && !matches!(
@@ -655,6 +748,11 @@ fn lower<'ctx>(
             },
             Operator::GlobalSet { global_index } => {
                 let v = fun.pop();
+                // Restoring the stack pointer from a frame address: the frame
+                // is an alloca now, so there is nothing to restore.
+                if matches!(v, SV::Frame(_)) {
+                    continue;
+                }
                 let iv = fun.use_int(v);
                 if let Some(g) = m.get_global(&format!("g{global_index}")) {
                     fun.b.build_store(g.as_pointer_value(), iv).expect("store");
@@ -777,6 +875,10 @@ fn lower<'ctx>(
             Operator::I32Const { value } => fun.stack.push(SV::Const(*value as i64)),
             Operator::I64Const { value } => fun.stack.push(SV::Const(*value)),
             Operator::LocalGet { local_index } => {
+                if fun.frame_local == Some(*local_index) {
+                    fun.stack.push(SV::Frame(0));
+                    continue;
+                }
                 let Some(p) = fun.locals.get(*local_index as usize).copied() else {
                     fun.stack.push(SV::Unknown);
                     continue;
@@ -791,7 +893,7 @@ fn lower<'ctx>(
                     fun.b.build_store(p, iv).expect("store");
                 }
                 if matches!(op, Operator::LocalTee { .. }) {
-                    fun.stack.push(SV::Reg(iv.into()));
+                    fun.stack.push(if matches!(v, SV::Frame(_)) { v } else { SV::Reg(iv.into()) });
                 }
             }
             Operator::Drop => {
@@ -1025,13 +1127,13 @@ fn writes_data(
     false
 }
 
-/// Linear memory for the optimiser: `@mem`, the whole address space, contents
-/// unknown. The helpers become plain byte-addressed accesses to it, so BasicAA
-/// sees `sp-24` and `sp-32` as distinct slots and GVN forwards stores to loads
-/// across the inlined SDK plumbing.
+/// Linear memory for the optimiser. An address is an integer and an access is
+/// `inttoptr` of it. A frame address is `ptrtoint` of the frame alloca, so
+/// `inttoptr(ptrtoint(frame) + k)` folds back to the alloca and the optimiser
+/// sees function-local memory; every other address is an opaque pointer, and
+/// two of those may alias, which is the truth.
 fn define_memory<'ctx>(ctx: &'ctx Context, m: &Module<'ctx>, rt: &Rt<'ctx>) {
-    let i8t = ctx.i8_type();
-    let memg = m.add_global(i8t, None, "mem").as_pointer_value();
+    let pt = ctx.ptr_type(AddressSpace::default());
     let b = ctx.create_builder();
     let inl = attr(ctx, "alwaysinline", 0);
     for (name, bits, signed) in LOADS {
@@ -1040,7 +1142,7 @@ fn define_memory<'ctx>(ctx: &'ctx Context, m: &Module<'ctx>, rt: &Rt<'ctx>) {
         f.set_linkage(Linkage::Internal);
         let a = f.get_first_param().expect("addr").into_int_value();
         b.position_at_end(ctx.append_basic_block(f, "entry"));
-        let p = unsafe { b.build_gep(i8t, memg, &[a], "p") }.expect("gep");
+        let p = b.build_int_to_ptr(a, pt, "p").expect("inttoptr");
         let v = b.build_load(int_ty(ctx, bits), p, "v").expect("load");
         let _ = v.as_instruction_value().expect("inst").set_alignment(1);
         let v = v.into_int_value();
@@ -1065,7 +1167,7 @@ fn define_memory<'ctx>(ctx: &'ctx Context, m: &Module<'ctx>, rt: &Rt<'ctx>) {
         } else {
             b.build_int_truncate(v, int_ty(ctx, bits), "t").expect("trunc")
         };
-        let p = unsafe { b.build_gep(i8t, memg, &[a], "p") }.expect("gep");
+        let p = b.build_int_to_ptr(a, pt, "p").expect("inttoptr");
         let _ = b.build_store(p, t).expect("store").set_alignment(1);
         b.build_return(None).expect("ret");
     }
@@ -1085,24 +1187,87 @@ fn optimize(m: &Module, mem: &Mem) -> Result<(), String> {
     m.set_data_layout(&tm.get_target_data().get_data_layout());
     let run = |p: &str| m.run_passes(p, &tm, PassBuilderOptions::create()).map_err(|e| e.to_string());
     run("default<O1>")?;
-    // A data-segment constant can feed a Val, a branch, or another address:
-    // fold, let LLVM propagate, repeat until nothing new is constant.
-    for _ in 0..4 {
-        if fold_data_loads(m, mem) == 0 {
+    // Inlining exposes frame addresses that travelled as integers, and
+    // constant addresses into the data segment. Each fold can feed the next
+    // -- a folded frame load yields a constant, a constant yields an address --
+    // so fold, let LLVM propagate, repeat until nothing changes.
+    for _ in 0..6 {
+        let folded = fold_frame_pointers(m) + fold_data_loads(m, mem);
+        // Runs once more after the last fold: DSE has just emptied a frame,
+        // and instcombine then drops the alloca and its lifetime markers.
+        // LLVM 18 aborts if a standalone instcombine is not at a fixpoint
+        // after one iteration, which hand-rewritten IR routinely is not.
+        run("sroa,instcombine<no-verify-fixpoint>,gvn,dse,simplifycfg,adce")?;
+        if folded == 0 {
             break;
         }
-        run("instcombine,gvn,simplifycfg,dce")?;
     }
     Ok(())
 }
 
-/// A load from `@mem` whose address inlining has made constant is a read of
-/// the data segment, if the address falls in one: replace it with the bytes.
-/// LLVM has folded such an address into a constant `getelementptr`
-/// expression, which inkwell does not unpack, so this reads it via the C API.
+/// `inttoptr(ptrtoint(P) + K)` -> `getelementptr i8, P, K`. LLVM will not do
+/// this fold itself, on provenance grounds that do not hold for wasm's flat
+/// memory, where an integer address IS the pointer. Only after it does the
+/// optimiser see that a frame address handed to an inlined helper is the
+/// frame alloca -- and only then can it forward the store and drop it.
+fn fold_frame_pointers(m: &Module) -> usize {
+    let ctx = m.get_context();
+    let b = ctx.create_builder();
+    let mut n = 0;
+    for f in m.get_functions() {
+        for bb in f.get_basic_blocks() {
+            let mut cur = bb.get_first_instruction();
+            while let Some(i) = cur {
+                cur = i.get_next_instruction();
+                if i.get_opcode() != InstructionOpcode::IntToPtr {
+                    continue;
+                }
+                let Some(Operand::Value(BasicValueEnum::IntValue(a))) = i.get_operand(0) else { continue };
+                let Some((p, k)) = ptr_plus_const(a) else { continue };
+                b.position_before(&i);
+                let g = if k == 0 {
+                    p
+                } else {
+                    let k = ctx.i64_type().const_int(k as u64, true);
+                    unsafe { b.build_gep(ctx.i8_type(), p, &[k], "fp") }.expect("gep")
+                };
+                i.as_any_value_enum().into_pointer_value().replace_all_uses_with(g);
+                i.erase_from_basic_block();
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// `ptrtoint P`, or `add (ptrtoint P), C` in either order -> (P, C).
+fn ptr_plus_const(a: IntValue) -> Option<(PointerValue, i64)> {
+    let i = a.as_instruction_value()?;
+    match i.get_opcode() {
+        InstructionOpcode::PtrToInt => match i.get_operand(0)? {
+            Operand::Value(BasicValueEnum::PointerValue(p)) => Some((p, 0)),
+            _ => None,
+        },
+        InstructionOpcode::Add => {
+            let (Operand::Value(BasicValueEnum::IntValue(x)), Operand::Value(BasicValueEnum::IntValue(y))) =
+                (i.get_operand(0)?, i.get_operand(1)?)
+            else {
+                return None;
+            };
+            [(x, y), (y, x)].into_iter().find_map(|(v, c)| {
+                let (p, 0) = ptr_plus_const(v)? else { return None };
+                c.is_constant_int().then(|| c.get_sign_extended_constant()).flatten().map(|k| (p, k))
+            })
+        }
+        _ => None,
+    }
+}
+
+/// A load whose address inlining has made constant is a read of the data
+/// segment, if the address falls in one: replace it with the bytes. LLVM has
+/// folded such an address into a constant `inttoptr` expression, which inkwell
+/// does not unpack, so this reads it via the C API.
 fn fold_data_loads(m: &Module, mem: &Mem) -> usize {
-    let Some(memg) = m.get_global("mem") else { return 0 };
-    let base = memg.as_pointer_value().as_value_ref();
     let mut n = 0;
     for f in m.get_functions() {
         for bb in f.get_basic_blocks() {
@@ -1113,7 +1278,7 @@ fn fold_data_loads(m: &Module, mem: &Mem) -> usize {
                     continue;
                 }
                 let Some(Operand::Value(BasicValueEnum::PointerValue(p))) = i.get_operand(0) else { continue };
-                let Some(addr) = const_gep_offset(p, base) else { continue };
+                let Some(addr) = const_addr(p) else { continue };
                 let AnyTypeEnum::IntType(t) = i.get_type() else { continue };
                 let Some(v) = mem.load(addr, t.get_bit_width(), false) else { continue };
                 i.as_any_value_enum().into_int_value().replace_all_uses_with(t.const_int(v as u64, false));
@@ -1125,21 +1290,54 @@ fn fold_data_loads(m: &Module, mem: &Mem) -> usize {
     n
 }
 
-/// `getelementptr (i8, ptr @mem, i64 K)` as a constant expression -> K.
-fn const_gep_offset(p: PointerValue, base: inkwell::llvm_sys::prelude::LLVMValueRef) -> Option<u64> {
+/// `inttoptr (i64 K to ptr)` as a constant expression -> K.
+fn const_addr(p: PointerValue) -> Option<u64> {
     use inkwell::llvm_sys::core::*;
     use inkwell::llvm_sys::LLVMOpcode;
     unsafe {
         let r = p.as_value_ref();
-        if LLVMIsAConstantExpr(r).is_null()
-            || LLVMGetConstOpcode(r) != LLVMOpcode::LLVMGetElementPtr
-            || LLVMGetNumOperands(r) != 2
-            || LLVMGetOperand(r, 0) != base
-        {
+        if LLVMIsAConstantExpr(r).is_null() || LLVMGetConstOpcode(r) != LLVMOpcode::LLVMIntToPtr {
             return None;
         }
-        let k = LLVMGetOperand(r, 1);
+        let k = LLVMGetOperand(r, 0);
         (!LLVMIsAConstantInt(k).is_null()).then(|| LLVMConstIntGetZExtValue(k))
+    }
+}
+
+/// `%p.i4.i.i` is LLVM's `%p` after inlining, three levels deep. The suffixes
+/// record where a value came from and nothing else; drop them.
+fn strip_inline_suffixes(m: &Module) {
+    fn base(s: &str) -> &str {
+        let mut s = s;
+        while let Some(dot) = s.rfind('.') {
+            let tail = &s[dot + 1..];
+            if tail.starts_with('i') && tail[1..].chars().all(|c| c.is_ascii_digit()) {
+                s = &s[..dot];
+            } else {
+                break;
+            }
+        }
+        s
+    }
+    for f in m.get_functions() {
+        for bb in f.get_basic_blocks() {
+            if let Ok(n) = bb.get_name().to_str() {
+                let b = base(n);
+                if b.len() != n.len() && !b.is_empty() {
+                    bb.set_name(b);
+                }
+            }
+            let mut cur = bb.get_first_instruction();
+            while let Some(i) = cur {
+                cur = i.get_next_instruction();
+                let Some(n) = i.get_name().and_then(|n| n.to_str().ok()) else { continue };
+                let b = base(n);
+                if b.len() != n.len() && !b.is_empty() {
+                    let b = b.to_owned();
+                    let _ = i.set_name(&b);
+                }
+            }
+        }
     }
 }
 
@@ -1485,6 +1683,7 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
             f.set_linkage(Linkage::Internal);
         }
         optimize(&m, &md.mem)?;
+        strip_inline_suffixes(&m);
     }
     rename_decoded(&m, &md.mem);
 
@@ -1499,10 +1698,10 @@ mod tests {
     use super::*;
 
     fn build(ops: Vec<Operator>, nr: usize) -> Result<String, String> {
-        build_with(ops, nr, &Mod::default())
+        build_with(ops, nr, 0, &Mod::default())
     }
 
-    fn build_with(ops: Vec<Operator>, nr: usize, md: &Mod) -> Result<String, String> {
+    fn build_with(ops: Vec<Operator>, nr: usize, n_locals: usize, md: &Mod) -> Result<String, String> {
         let ctx = Context::create();
         let m = ctx.create_module("t");
         let rt = Rt::new(&ctx, &m);
@@ -1513,7 +1712,7 @@ mod tests {
         };
         let f = m.add_function("f", fty, None);
         lower(
-            &ctx, &m, &rt, f, 0, nr, 0, &ops, &HashMap::new(), &HashMap::new(), md, true,
+            &ctx, &m, &rt, f, 0, nr, n_locals, &ops, &HashMap::new(), &HashMap::new(), md, true,
         )?;
         m.verify().map_err(|e| e.to_string())?;
         Ok(m.print_to_string().to_string())
@@ -1586,11 +1785,11 @@ mod tests {
             vec![Operator::I32Const { value: 1048576 }, Operator::I32Load8U { memarg }, Operator::End]
         };
         // `&true` is a byte in the data segment: the load IS `true`...
-        let ir = build_with(ops(), 1, &md).unwrap();
+        let ir = build_with(ops(), 1, 0, &md).unwrap();
         assert!(ir.contains("ret %Val %v_true"), "{ir}");
         // ...unless something in the module writes the segment.
         md.mem.written = true;
-        let ir = build_with(ops(), 1, &md).unwrap();
+        let ir = build_with(ops(), 1, 0, &md).unwrap();
         assert!(ir.contains("@soroban.load8u(i64 1048576)"), "{ir}");
     }
 
@@ -1608,6 +1807,44 @@ mod tests {
         assert!(body.contains("%v_true"), "{body}");
         assert!(body.contains("%Persistent"), "{body}");
         assert!(!body.contains("@f"), "helper calls remain: {body}");
+        // Inline suffixes are stripped, and the recovered frame leaves no
+        // stack-pointer traffic or dead stores behind.
+        assert!(body.contains("%put_contract_data = "), "{body}");
+        assert!(!body.contains("@g0") && !body.contains(" store "), "{body}");
+    }
+
+    #[test]
+    fn frame_is_an_alloca() {
+        // LLVM's prologue, a spill and a reload through the frame, the epilogue.
+        let ma = |offset| wasmparser::MemArg { align: 0, max_align: 0, offset, memory: 0 };
+        let ops = vec![
+            Operator::GlobalGet { global_index: 0 },
+            Operator::I32Const { value: 16 },
+            Operator::I32Sub,
+            Operator::LocalTee { local_index: 0 },
+            Operator::GlobalSet { global_index: 0 },
+            Operator::LocalGet { local_index: 0 },
+            Operator::I64Const { value: 7 },
+            Operator::I64Store { memarg: ma(8) },
+            Operator::LocalGet { local_index: 0 },
+            Operator::I64Load { memarg: ma(8) },
+            Operator::Drop,
+            Operator::LocalGet { local_index: 0 },
+            Operator::I32Const { value: 16 },
+            Operator::I32Add,
+            Operator::GlobalSet { global_index: 0 },
+            Operator::I64Const { value: 2 },
+            Operator::End,
+        ];
+        let ir = build_with(ops, 1, 1, &Mod::default()).unwrap();
+        assert!(ir.contains("%frame = alloca [16 x i8]"), "{ir}");
+        assert!(ir.contains("store i64 7, ptr %slot8"), "{ir}");
+        assert!(ir.contains("load i64, ptr %slot8"), "{ir}");
+        // No stack-pointer traffic and no memory helper: the frame is local.
+        assert!(
+            !ir.contains("call void @soroban.store64(") && !ir.contains("call i64 @soroban.load64(") && !ir.contains("ptrtoint"),
+            "{ir}"
+        );
     }
 
     #[test]

@@ -85,10 +85,7 @@ entry:
   store i64 %arg_payload, ptr %l0, align 4
   store i64 0, ptr %l1, align 4
   store i64 0, ptr %l2, align 4
-  %g0 = load i64, ptr @g0, align 4
-  %sub = sub i64 %g0, 16
-  store i64 %sub, ptr %l1, align 4
-  store i64 %sub, ptr @g0, align 4
+  %frame = alloca [16 x i8], align 1
   %get = load i64, ptr %l0, align 4
   %and = and i64 %get, 255
   %cmp = icmp ne i64 %and, 4
@@ -97,11 +94,8 @@ entry:
   br i1 %brif, label %c6, label %fall7
 
 c1:                                               ; preds = %c2, %c3, %fall8
-  %get7 = load i64, ptr %l1, align 4
-  %add8 = add i64 %get7, 16
-  store i64 %add8, ptr @g0, align 4
-  %get9 = load i64, ptr %l0, align 4
-  %to_val = call %Val @soroban.val.from_payload(i64 %get9)
+  %get6 = load i64, ptr %l0, align 4
+  %to_val = call %Val @soroban.val.from_payload(i64 %get6)
   ret %Val %to_val
 
 c2:                                               ; preds = %fall8, %fall8
@@ -118,9 +112,9 @@ c4:                                               ; preds = %fall8
   unreachable
 
 c5:                                               ; preds = %fall8
-  %get6 = load i64, ptr %l1, align 4
-  %add = add i64 %get6, 15
-  %lc = call i64 @f15(i64 %add, i64 4294967299)
+  %slot15 = getelementptr i8, ptr %frame, i64 15
+  %fp = ptrtoint ptr %slot15 to i64
+  %lc = call i64 @f15(i64 %fp, i64 4294967299)
   call void @soroban.trap()
   unreachable
 
@@ -154,16 +148,10 @@ define %Val @set_flag() {
 entry:
   %l0 = alloca i64, align 8
   store i64 0, ptr %l0, align 4
-  %g0 = load i64, ptr @g0, align 4
-  %sub = sub i64 %g0, 16
-  store i64 %sub, ptr %l0, align 4
-  store i64 %sub, ptr @g0, align 4
-  %get = load i64, ptr %l0, align 4
-  %add = add i64 %get, 15
-  %lc = call i64 @f16(i64 %add, i64 11022, i64 1, i64 1)
-  %get1 = load i64, ptr %l0, align 4
-  %add2 = add i64 %get1, 16
-  store i64 %add2, ptr @g0, align 4
+  %frame = alloca [16 x i8], align 1
+  %slot15 = getelementptr i8, ptr %frame, i64 15
+  %fp = ptrtoint ptr %slot15 to i64
+  %lc = call i64 @f16(i64 %fp, i64 11022, i64 1, i64 1)
   %v_void = call %Val @soroban.val.from_payload(i64 2)
   ret %Val %v_void
 }
@@ -180,10 +168,7 @@ entry:
   store i64 0, ptr %l2, align 4
   store i64 0, ptr %l3, align 4
   store i64 0, ptr %l4, align 4
-  %g0 = load i64, ptr @g0, align 4
-  %sub = sub i64 %g0, 32
-  store i64 %sub, ptr %l2, align 4
-  store i64 %sub, ptr @g0, align 4
+  %frame = alloca [32 x i8], align 1
   %get = load i64, ptr %l0, align 4
   %and = and i64 %get, 255
   %cmp = icmp ne i64 %and, 77
@@ -204,58 +189,49 @@ fall2:                                            ; preds = %entry
   br i1 %brif5, label %c1, label %fall3
 
 fall3:                                            ; preds = %fall2
-  %get6 = load i64, ptr %l2, align 4
-  %add = add i64 %get6, 8
-  %get7 = load i64, ptr %l2, align 4
-  %add8 = add i64 %get7, 31
-  call void @f14(i64 %add, i64 %add8, i64 1048644)
-  %get9 = load i64, ptr %l2, align 4
-  %ea = add i64 %get9, 8
-  %ld = call i64 @soroban.load64(i64 %ea)
-  %cmp10 = icmp eq i64 %ld, 1
-  %zext11 = zext i1 %cmp10 to i64
-  %brif12 = icmp ne i64 %zext11, 0
-  br i1 %brif12, label %c1, label %fall4
+  %slot8 = getelementptr i8, ptr %frame, i64 8
+  %fp = ptrtoint ptr %slot8 to i64
+  %slot31 = getelementptr i8, ptr %frame, i64 31
+  %fp6 = ptrtoint ptr %slot31 to i64
+  call void @f14(i64 %fp, i64 %fp6, i64 1048644)
+  %slot87 = getelementptr i8, ptr %frame, i64 8
+  %ld = load i64, ptr %slot87, align 1
+  %cmp8 = icmp eq i64 %ld, 1
+  %zext9 = zext i1 %cmp8 to i64
+  %brif10 = icmp ne i64 %zext9, 0
+  br i1 %brif10, label %c1, label %fall4
 
 fall4:                                            ; preds = %fall3
-  %get13 = load i64, ptr %l2, align 4
-  %ea14 = add i64 %get13, 16
-  %ld15 = call i64 @soroban.load64(i64 %ea14)
-  store i64 %ld15, ptr %l3, align 4
-  %get16 = load i64, ptr %l2, align 4
-  %get17 = load i64, ptr %l1, align 4
-  %ea18 = add i64 %get16, 16
-  call void @soroban.store64(i64 %ea18, i64 %get17)
-  %get19 = load i64, ptr %l2, align 4
-  %get20 = load i64, ptr %l0, align 4
-  %ea21 = add i64 %get19, 8
-  call void @soroban.store64(i64 %ea21, i64 %get20)
-  %get22 = load i64, ptr %l2, align 4
-  %get23 = load i64, ptr %l2, align 4
-  %add24 = add i64 %get23, 31
-  %get25 = load i64, ptr %l2, align 4
-  %add26 = add i64 %get25, 8
-  %lc = call i64 @f13(i64 %add24, i64 1048624, i64 2, i64 %add26, i64 2)
-  %ea27 = add i64 %get22, 16
-  call void @soroban.store64(i64 %ea27, i64 %lc)
-  %get28 = load i64, ptr %l2, align 4
-  %get29 = load i64, ptr %l3, align 4
-  %ea30 = add i64 %get28, 8
-  call void @soroban.store64(i64 %ea30, i64 %get29)
-  %get31 = load i64, ptr %l2, align 4
-  %add32 = add i64 %get31, 31
-  %get33 = load i64, ptr %l2, align 4
-  %add34 = add i64 %get33, 31
-  %get35 = load i64, ptr %l2, align 4
-  %add36 = add i64 %get35, 8
-  %lc37 = call i64 @f12(i64 %add34, i64 %add36, i64 2)
-  %lc38 = call i64 @f11(i64 %add32, i64 %lc37, i64 1)
-  store i64 %lc38, ptr %l4, align 4
-  %get39 = load i64, ptr %l2, align 4
-  %add40 = add i64 %get39, 32
-  store i64 %add40, ptr @g0, align 4
-  %get41 = load i64, ptr %l4, align 4
-  ret i64 %get41
+  %slot16 = getelementptr i8, ptr %frame, i64 16
+  %ld11 = load i64, ptr %slot16, align 1
+  store i64 %ld11, ptr %l3, align 4
+  %get12 = load i64, ptr %l1, align 4
+  %slot1613 = getelementptr i8, ptr %frame, i64 16
+  store i64 %get12, ptr %slot1613, align 1
+  %get14 = load i64, ptr %l0, align 4
+  %slot815 = getelementptr i8, ptr %frame, i64 8
+  store i64 %get14, ptr %slot815, align 1
+  %slot3116 = getelementptr i8, ptr %frame, i64 31
+  %fp17 = ptrtoint ptr %slot3116 to i64
+  %slot818 = getelementptr i8, ptr %frame, i64 8
+  %fp19 = ptrtoint ptr %slot818 to i64
+  %lc = call i64 @f13(i64 %fp17, i64 1048624, i64 2, i64 %fp19, i64 2)
+  %slot1620 = getelementptr i8, ptr %frame, i64 16
+  store i64 %lc, ptr %slot1620, align 1
+  %get21 = load i64, ptr %l3, align 4
+  %slot822 = getelementptr i8, ptr %frame, i64 8
+  store i64 %get21, ptr %slot822, align 1
+  %slot3123 = getelementptr i8, ptr %frame, i64 31
+  %fp24 = ptrtoint ptr %slot3123 to i64
+  %slot825 = getelementptr i8, ptr %frame, i64 8
+  %fp26 = ptrtoint ptr %slot825 to i64
+  %lc27 = call i64 @f12(i64 %fp24, i64 %fp26, i64 2)
+  %slot3128 = getelementptr i8, ptr %frame, i64 31
+  %fp29 = ptrtoint ptr %slot3128 to i64
+  %lc30 = call i64 @f11(i64 %fp29, i64 %lc27, i64 1)
+  store i64 %lc30, ptr %l4, align 4
+  %get31 = load i64, ptr %l4, align 4
+  ret i64 %get31
 }
 
 define void @f10(i64 %0) {
@@ -333,50 +309,43 @@ entry:
   store i64 0, ptr %l3, align 4
   store i64 0, ptr %l4, align 4
   store i64 0, ptr %l5, align 4
-  %g0 = load i64, ptr @g0, align 4
-  %sub = sub i64 %g0, 16
-  store i64 %sub, ptr %l3, align 4
-  store i64 %sub, ptr @g0, align 4
-  %get = load i64, ptr %l3, align 4
-  %get1 = load i64, ptr %l2, align 4
-  %ld = call i64 @soroban.load32u(i64 %get1)
+  %frame = alloca [16 x i8], align 1
+  %get = load i64, ptr %l2, align 4
+  %ld = call i64 @soroban.load32u(i64 %get)
   store i64 %ld, ptr %l4, align 4
-  %get2 = load i64, ptr %l2, align 4
-  %ea = add i64 %get2, 4
-  %ld3 = call i64 @soroban.load32u(i64 %ea)
-  store i64 %ld3, ptr %l2, align 4
-  call void @f23(i64 %get, i64 %ld, i64 %ld3)
-  %get4 = load i64, ptr %l3, align 4
-  %ld5 = call i64 @soroban.load32u(i64 %get4)
-  %cmp = icmp ne i64 %ld5, 1
+  %get1 = load i64, ptr %l2, align 4
+  %ea = add i64 %get1, 4
+  %ld2 = call i64 @soroban.load32u(i64 %ea)
+  store i64 %ld2, ptr %l2, align 4
+  %fp = ptrtoint ptr %frame to i64
+  call void @f23(i64 %fp, i64 %ld, i64 %ld2)
+  %ld3 = load i32, ptr %frame, align 1
+  %zx = zext i32 %ld3 to i64
+  %cmp = icmp ne i64 %zx, 1
   %zext = zext i1 %cmp to i64
   %brif = icmp ne i64 %zext, 0
   br i1 %brif, label %c2, label %fall3
 
 c1:                                               ; preds = %c2, %fall3
-  %get12 = load i64, ptr %l0, align 4
-  call void @soroban.store64(i64 %get12, i64 0)
-  %get13 = load i64, ptr %l0, align 4
-  %get14 = load i64, ptr %l5, align 4
-  %ea15 = add i64 %get13, 8
-  call void @soroban.store64(i64 %ea15, i64 %get14)
-  %get16 = load i64, ptr %l3, align 4
-  %add = add i64 %get16, 16
-  store i64 %add, ptr @g0, align 4
+  %get8 = load i64, ptr %l0, align 4
+  call void @soroban.store64(i64 %get8, i64 0)
+  %get9 = load i64, ptr %l0, align 4
+  %get10 = load i64, ptr %l5, align 4
+  %ea11 = add i64 %get9, 8
+  call void @soroban.store64(i64 %ea11, i64 %get10)
   ret void
 
 c2:                                               ; preds = %entry
-  %get9 = load i64, ptr %l3, align 4
-  %ea10 = add i64 %get9, 8
-  %ld11 = call i64 @soroban.load64(i64 %ea10)
-  store i64 %ld11, ptr %l5, align 4
+  %slot8 = getelementptr i8, ptr %frame, i64 8
+  %ld7 = load i64, ptr %slot8, align 1
+  store i64 %ld7, ptr %l5, align 4
   br label %c1
 
 fall3:                                            ; preds = %entry
-  %get6 = load i64, ptr %l1, align 4
-  %get7 = load i64, ptr %l4, align 4
-  %get8 = load i64, ptr %l2, align 4
-  %lc = call i64 @f19(i64 %get6, i64 %get7, i64 %get8)
+  %get4 = load i64, ptr %l1, align 4
+  %get5 = load i64, ptr %l4, align 4
+  %get6 = load i64, ptr %l2, align 4
+  %lc = call i64 @f19(i64 %get4, i64 %get5, i64 %get6)
   store i64 %lc, ptr %l5, align 4
   br label %c1
 }
@@ -720,33 +689,29 @@ entry:
   store i64 %1, ptr %l1, align 4
   store i64 %2, ptr %l2, align 4
   store i64 0, ptr %l3, align 4
-  %g0 = load i64, ptr @g0, align 4
-  %sub = sub i64 %g0, 32
-  store i64 %sub, ptr %l3, align 4
-  store i64 %sub, ptr @g0, align 4
-  %get = load i64, ptr %l3, align 4
-  %get1 = load i64, ptr %l1, align 4
-  %ea = add i64 %get, 16
-  call void @soroban.store32(i64 %ea, i64 %get1)
-  %get2 = load i64, ptr %l3, align 4
-  %get3 = load i64, ptr %l0, align 4
-  %ea4 = add i64 %get2, 12
-  call void @soroban.store32(i64 %ea4, i64 %get3)
-  %get5 = load i64, ptr %l3, align 4
-  %ea6 = add i64 %get5, 28
-  call void @soroban.store16(i64 %ea6, i64 1)
-  %get7 = load i64, ptr %l3, align 4
-  %get8 = load i64, ptr %l2, align 4
-  %ea9 = add i64 %get7, 24
-  call void @soroban.store32(i64 %ea9, i64 %get8)
-  %get10 = load i64, ptr %l3, align 4
-  %get11 = load i64, ptr %l3, align 4
-  %add = add i64 %get11, 12
-  %ea12 = add i64 %get10, 20
-  call void @soroban.store32(i64 %ea12, i64 %add)
-  %get13 = load i64, ptr %l3, align 4
-  %add14 = add i64 %get13, 20
-  call void @f10(i64 %add14)
+  %frame = alloca [32 x i8], align 1
+  %get = load i64, ptr %l1, align 4
+  %slot16 = getelementptr i8, ptr %frame, i64 16
+  %t = trunc i64 %get to i32
+  store i32 %t, ptr %slot16, align 1
+  %get1 = load i64, ptr %l0, align 4
+  %slot12 = getelementptr i8, ptr %frame, i64 12
+  %t2 = trunc i64 %get1 to i32
+  store i32 %t2, ptr %slot12, align 1
+  %slot28 = getelementptr i8, ptr %frame, i64 28
+  store i16 1, ptr %slot28, align 1
+  %get3 = load i64, ptr %l2, align 4
+  %slot24 = getelementptr i8, ptr %frame, i64 24
+  %t4 = trunc i64 %get3 to i32
+  store i32 %t4, ptr %slot24, align 1
+  %slot125 = getelementptr i8, ptr %frame, i64 12
+  %fp = ptrtoint ptr %slot125 to i64
+  %slot20 = getelementptr i8, ptr %frame, i64 20
+  %t6 = trunc i64 %fp to i32
+  store i32 %t6, ptr %slot20, align 1
+  %slot207 = getelementptr i8, ptr %frame, i64 20
+  %fp8 = ptrtoint ptr %slot207 to i64
+  call void @f10(i64 %fp8)
   call void @soroban.trap()
   unreachable
 }

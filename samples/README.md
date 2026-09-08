@@ -53,36 +53,39 @@ declare void @f17() #9      ; attributes #9 = { "soroban.calls"="ledger.put_cont
 call is faithful, not a decoding gap. `--all` defines every helper instead.
 
 `--inline` goes further and lets LLVM do the interpretation. Helpers become
-`internal`, O1's inliner folds the single-call-site and small ones into the
-export, loads and stores go through one `@mem` so GVN forwards stack slots
-across the inlined plumbing, and a load whose address inlining made constant
-is read from the data segment. `set_flag` then reads as the syscall it is
-(`three_bugs.inline.ll`; the `.i` suffixes count inline depth, and the
-stack-frame stores are elided here):
+`internal` and O1's inliner folds the single-call-site and small ones into the
+export; the shadow-stack frame LLVM's wasm backend opens in every function
+(`global.get 0; i32.const N; i32.sub; local.tee L; global.set 0`) is
+recovered as an `alloca`, so the frame is the function-local memory it really
+is; a load whose address inlining made constant is read from the data segment.
+`set_flag` then reads as the syscall it is, complete (`three_bugs.inline.ll`):
 
 ```llvm
-define %Val @set_flag() local_unnamed_addr #7 {
+define %Val @set_flag() local_unnamed_addr {
 entry:
-  %v_Symbol__f__ = tail call %Val @soroban.val.from_payload(i64 11022)
-  %v_true = tail call %Val @soroban.val.from_payload(i64 1)
+  %v_Symbol__f__ = call %Val @soroban.val.from_payload(i64 11022)
+  %v_true = call %Val @soroban.val.from_payload(i64 1)
   %Persistent = call i64 @soroban.storage_type(i64 1)
-  %put_contract_data.i.i.i.i.i = tail call %Val @ledger.put_contract_data(%Val %v_Symbol__f__, %Val %v_true, i64 %Persistent)
-  %v_void = tail call %Val @soroban.val.from_payload(i64 2)
+  %put_contract_data = call %Val @ledger.put_contract_data(%Val %v_Symbol__f__, %Val %v_true, i64 %Persistent)
+  %v_void = call %Val @soroban.val.from_payload(i64 2)
   ret %Val %v_void
 }
 ```
 
-Nothing here is pattern-matched. The key was a constant stored to a stack slot
-and reloaded through a pointer three helpers down, and GVN forwarded it; `true`
-is the byte at `&true` in the data segment; `Persistent` is the `i64 1` an
-inlined wrapper passed along. Two assumptions carry this, both stated in the
-code: the data segment is constant unless some store in the module targets it
-at a constant address (Rust keeps mutable statics out of rodata, so this is the
-usual decompiler bet), and wasm `unreachable` is a trap (`@soroban.trap`),
-never LLVM's "cannot happen" -- lowered bare, O1 turned the SDK's argument
-checks into `llvm.assume` and they vanished. Helpers the cost model leaves
-outlined stay in the file as `define internal`. Forcing `alwaysinline` on all
-of them was tried first: 5.7 GB and no result on a 187-function contract.
+Nothing here is pattern-matched. The key was a constant stored to a frame slot
+and reloaded through a pointer three helpers down: after inlining, the tool
+folds `inttoptr(ptrtoint(frame) + 8)` back to the frame (LLVM will not, on
+provenance grounds that do not hold for wasm's flat memory), GVN forwards the
+store, DSE drops it, and the frame goes with it. `true` is the byte at `&true`
+in the data segment; `Persistent` is the `i64 1` an inlined wrapper passed
+along. Two assumptions carry this, both stated in the code: the data segment is
+constant unless some store in the module targets it at a constant address (Rust
+keeps mutable statics out of rodata, so this is the usual decompiler bet), and
+wasm `unreachable` is a trap (`@soroban.trap`), never LLVM's "cannot happen" --
+lowered bare, O1 turned the SDK's argument checks into `llvm.assume` and they
+vanished. Helpers the cost model leaves outlined stay in the file as `define
+internal`. Forcing `alwaysinline` on all of them was tried first: 5.7 GB and
+no result on a 187-function contract.
 
 ## `errors.wasm` — vendored, 796 bytes
 
