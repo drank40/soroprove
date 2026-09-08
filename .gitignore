@@ -1,4 +1,6 @@
 target/
+samples/*/target/
 *.ll
 *.bc
-testdata/*/target/
+# ...except the checked-in sample goldens, which are the regression gate.
+!samples/*.ll

@@ -634,7 +634,17 @@ fn main() {
     };
     let only = args.next();
     let wasm = std::fs::read(&path).expect("read wasm");
+    match lower_module(&wasm, only.as_deref()) {
+        Ok(ir) => print!("{ir}"),
+        Err(e) => {
+            eprintln!("ponytail-wasm: module does not verify:\n{e}");
+            std::process::exit(1);
+        }
+    }
+}
 
+/// Parse a contract and lower it. Returns the IR, or the verifier's complaint.
+fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
     let by_code: HashMap<(&str, &str), &HostFn> =
         HOST_FNS.iter().map(|h| ((h.module, h.code), h)).collect();
 
@@ -645,7 +655,7 @@ fn main() {
     let mut sigs: Vec<(usize, usize)> = Vec::new();
     let mut func_types: Vec<u32> = Vec::new();
 
-    for p in Parser::new(0).parse_all(&wasm) {
+    for p in Parser::new(0).parse_all(wasm) {
         match p.expect("parse") {
             Payload::TypeSection(r) => {
                 for rg in r {
@@ -730,7 +740,7 @@ fn main() {
 
     // The interesting code is usually NOT in an export: the SDK dispatch
     // wrapper delegates, and constants and jump tables live in helpers.
-    let all = only.as_deref() == Some("--all");
+    let all = only == Some("--all");
     let mut targets: Vec<(String, u32)> = exports.clone();
     if all {
         let named: std::collections::HashSet<u32> = exports.iter().map(|(_, i)| *i).collect();
@@ -750,7 +760,7 @@ fn main() {
     let mut plan: Vec<(FunctionValue, u32, usize, usize, bool)> = Vec::new();
     for (name, fidx) in &targets {
         if !all {
-            if let Some(f) = &only {
+            if let Some(f) = only {
                 if name != f {
                     continue;
                 }
@@ -794,12 +804,8 @@ fn main() {
 
     // The real check, and the reason for inkwell: a Val/i64 confusion at a call
     // site is a verifier error here. In hand-written text it never can be.
-    if let Err(e) = m.verify() {
-        eprintln!("ponytail-wasm: module does not verify:\n{}", e.to_string());
-        print!("{}{}", notes, m.print_to_string().to_string());
-        std::process::exit(1);
-    }
-    print!("{}{}", notes, m.print_to_string().to_string());
+    m.verify().map_err(|e| e.to_string())?;
+    Ok(format!("{}{}", notes, m.print_to_string().to_string()))
 }
 
 #[cfg(test)]
@@ -853,6 +859,33 @@ mod tests {
     #[test]
     fn branch_depth_out_of_range_is_an_error() {
         assert!(build(vec![Operator::Br { relative_depth: 99 }], 0).is_err());
+    }
+
+    /// Every sample must lower and verify, in both modes. This is the gate that
+    /// would have caught the `--all` ABI mismatch inkwell found, and it needs no
+    /// external corpus.
+    #[test]
+    fn samples_lower_and_verify() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples");
+        let mut n = 0;
+        for e in std::fs::read_dir(&dir).expect("samples/ exists").flatten() {
+            let p = e.path();
+            if p.extension().map(|x| x != "wasm").unwrap_or(true) {
+                continue;
+            }
+            let wasm = std::fs::read(&p).expect("read sample");
+            for all in [false, true] {
+                let out = lower_module(&wasm, if all { Some("--all") } else { None });
+                assert!(
+                    out.is_ok(),
+                    "{} (--all={all}) failed to verify: {}",
+                    p.display(),
+                    out.unwrap_err()
+                );
+            }
+            n += 1;
+        }
+        assert!(n >= 3, "expected at least 3 samples, found {n}");
     }
 
     /// The whole reason for inkwell: LLVM rejects an integer where a Val is

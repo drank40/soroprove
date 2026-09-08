@@ -1,0 +1,34 @@
+[package]
+name = "three_bugs"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = "25"
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
+
+# Detach from any enclosing cargo workspace.
+[workspace]
+
+# A second profile that inlines more. Real contracts ship at opt-level="z"
+# with LTO, which outlines the SDK storage helpers so a Val constant never
+# reaches the exported function. This profile keeps those constants at the
+# call site, which is the shape the Val-typing invariant is about.
+[profile.fat]
+inherits = "release"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
