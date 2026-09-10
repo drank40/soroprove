@@ -1,14 +1,20 @@
-//! LLVM IR -> `rustc_middle::mir::Body`.
+//! LLVM IR -> `rustc_middle::mir::Body`, in the `Built` phase.
 //!
 //! One MIR local per SSA value and parameter, typed with rustc's `Ty`; one
-//! basic block per LLVM block, split at calls and selects because MIR ends a
-//! block there; phis become copies in an edge block; `%Val` is the `Val`
-//! ADT, its constructor an aggregate and its payload a field projection;
-//! a `StorageType` literal is an enum variant, a runtime one a transmute;
-//! a frame is a `[u8; N]` local whose raw address is taken. Every LLVM
+//! basic block per LLVM block, split at calls because MIR ends a block there;
+//! phis become copies in an edge block; `%Val` is the `Val` ADT, its
+//! constructor an aggregate and its payload a field projection; a
+//! `StorageType` literal is an enum variant, a runtime one a call to
+//! `core::intrinsics::transmute`, which rustc lowers to its own `Transmute`
+//! cast; a frame is a `[u64; N]` local whose raw address is taken. Every LLVM
 //! operation that has no MIR equivalent is an error, never a guess.
+//!
+//! The body is handed to rustc as the function's `mir_built`, so rustc
+//! borrow-checks it, validates it after every pass and optimizes it exactly
+//! as it would MIR of its own making.
 use std::collections::HashMap;
 
+use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock as LBlock;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{
@@ -23,7 +29,7 @@ use rustc_index::IndexVec;
 use rustc_middle::mir::interpret::{Pointer, Scalar};
 use rustc_middle::mir::*;
 use rustc_middle::ty::{self, List, Ty, TyCtxt};
-use rustc_span::{Spanned, Symbol, DUMMY_SP};
+use rustc_span::{sym, Spanned, Symbol, DUMMY_SP};
 
 type R<T> = Result<T, String>;
 
@@ -36,6 +42,7 @@ pub struct Env<'tcx> {
     pub storage: Ty<'tcx>,
     pub storage_def: DefId,
     pub u8p: Ty<'tcx>,
+    pub transmute: DefId,
     pub fns: HashMap<String, DefId>,
     pub statics: HashMap<String, DefId>,
 }
@@ -73,6 +80,7 @@ impl<'tcx> Env<'tcx> {
             storage: Ty::new_adt(tcx, tcx.adt_def(storage_def), List::empty()),
             storage_def,
             u8p: Ty::new_mut_ptr(tcx, tcx.types.u8),
+            transmute: tcx.get_diagnostic_item(sym::transmute).expect("core::intrinsics::transmute"),
             fns,
             statics,
         }
@@ -95,6 +103,17 @@ impl<'tcx> Env<'tcx> {
         })
     }
 
+    /// The function's return type: LLVM `noreturn` is Rust `!`.
+    pub fn ret_ty(&self, f: FunctionValue) -> R<Ty<'tcx>> {
+        if noreturn(f) {
+            return Ok(self.tcx.types.never);
+        }
+        match f.get_type().get_return_type() {
+            Some(t) => self.ty(t),
+            None => Ok(self.tcx.types.unit),
+        }
+    }
+
     fn signed(&self, t: Ty<'tcx>) -> Ty<'tcx> {
         let tcx = self.tcx;
         match t.kind() {
@@ -104,6 +123,10 @@ impl<'tcx> Env<'tcx> {
             _ => tcx.types.i64,
         }
     }
+}
+
+pub fn noreturn(f: FunctionValue) -> bool {
+    f.get_enum_attribute(AttributeLoc::Function, Attribute::get_named_enum_kind_id("noreturn")).is_some()
 }
 
 fn key(v: impl AsValueRef) -> usize {
@@ -135,6 +158,8 @@ struct B<'a, 'tcx> {
     si: SourceInfo,
 }
 
+type Stmts<'tcx> = Vec<Statement<'tcx>>;
+
 impl<'a, 'tcx> B<'a, 'tcx> {
     fn tcx(&self) -> TyCtxt<'tcx> {
         self.env.tcx
@@ -148,8 +173,43 @@ impl<'a, 'tcx> B<'a, 'tcx> {
         self.blocks.push(BasicBlockData::new(None, false))
     }
 
-    fn assign(&self, st: &mut Vec<Statement<'tcx>>, place: Place<'tcx>, rv: Rvalue<'tcx>) {
+    fn assign(&self, st: &mut Stmts<'tcx>, place: Place<'tcx>, rv: Rvalue<'tcx>) {
         st.push(Statement::new(self.si, StatementKind::Assign(Box::new((place, rv)))));
+    }
+
+    /// End the current block with `kind`; nothing more can go in it.
+    fn terminate(&mut self, cur: &mut Option<BasicBlock>, st: &mut Stmts<'tcx>, kind: TerminatorKind<'tcx>) {
+        if let Some(b) = *cur {
+            self.blocks[b].statements = std::mem::take(st);
+            self.blocks[b].terminator = Some(Terminator { source_info: self.si, kind });
+        }
+        *cur = None;
+    }
+
+    /// A call ends a MIR block: emit it and continue in a fresh one, or in
+    /// none if the callee never returns.
+    fn call(
+        &mut self,
+        cur: &mut Option<BasicBlock>,
+        st: &mut Stmts<'tcx>,
+        func: Operand<'tcx>,
+        args: Vec<Operand<'tcx>>,
+        destination: Place<'tcx>,
+        diverges: bool,
+    ) {
+        let next = if diverges { None } else { Some(self.new_block()) };
+        let args = args.into_iter().map(|node| Spanned { node, span: DUMMY_SP }).collect();
+        let kind = TerminatorKind::Call {
+            func,
+            args,
+            destination,
+            target: next,
+            unwind: UnwindAction::Unreachable,
+            call_source: CallSource::Normal,
+            fn_span: DUMMY_SP,
+        };
+        self.terminate(cur, st, kind);
+        *cur = next;
     }
 
     fn konst(&self, bits: u128, ty: Ty<'tcx>) -> Operand<'tcx> {
@@ -169,7 +229,7 @@ impl<'a, 'tcx> B<'a, 'tcx> {
     }
 
     /// The address of a wasm global, as rustc represents a static's address.
-    fn static_ptr(&mut self, def_id: DefId, st: &mut Vec<Statement<'tcx>>) -> Operand<'tcx> {
+    fn static_ptr(&mut self, def_id: DefId, st: &mut Stmts<'tcx>) -> Operand<'tcx> {
         let tcx = self.tcx();
         let alloc = tcx.reserve_and_set_static_alloc(def_id);
         let ptr_ty = Ty::new_mut_ptr(tcx, tcx.types.u64);
@@ -178,13 +238,13 @@ impl<'a, 'tcx> B<'a, 'tcx> {
         self.cast(op, CastKind::PtrToPtr, self.env.u8p, st)
     }
 
-    fn cast(&mut self, op: Operand<'tcx>, kind: CastKind, ty: Ty<'tcx>, st: &mut Vec<Statement<'tcx>>) -> Operand<'tcx> {
+    fn cast(&mut self, op: Operand<'tcx>, kind: CastKind, ty: Ty<'tcx>, st: &mut Stmts<'tcx>) -> Operand<'tcx> {
         let t = self.temp(ty);
         self.assign(st, Place::from(t), Rvalue::Cast(kind, op, ty));
         Operand::Copy(Place::from(t))
     }
 
-    fn operand(&mut self, v: BasicValueEnum<'a>, st: &mut Vec<Statement<'tcx>>) -> R<Operand<'tcx>> {
+    fn operand(&mut self, v: BasicValueEnum<'a>, st: &mut Stmts<'tcx>) -> R<Operand<'tcx>> {
         if let Some(&l) = self.map.get(&key(v)) {
             return Ok(Operand::Copy(Place::from(l)));
         }
@@ -213,7 +273,7 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                 let t = self.temp(self.env.val);
                 let k = self.konst(bits as u128, self.tcx().types.u64);
                 self.assign(st, Place::from(t), self.val_of(k));
-                Ok(Operand::Move(Place::from(t)))
+                Ok(Operand::Copy(Place::from(t)))
             }
             other => Err(format!("unsupported operand {}", other.print_to_string())),
         }
@@ -226,7 +286,7 @@ impl<'a, 'tcx> B<'a, 'tcx> {
         Rvalue::Aggregate(Box::new(kind), fields)
     }
 
-    fn op(&mut self, i: InstructionValue<'a>, k: u32, st: &mut Vec<Statement<'tcx>>) -> R<Operand<'tcx>> {
+    fn op(&mut self, i: InstructionValue<'a>, k: u32, st: &mut Stmts<'tcx>) -> R<Operand<'tcx>> {
         match i.get_operand(k) {
             Some(LOperand::Value(v)) => self.operand(v, st),
             _ => Err(format!("operand {k} of {} is not a value", i.print_to_string())),
@@ -255,6 +315,24 @@ impl<'a, 'tcx> B<'a, 'tcx> {
         self.locals[self.map[&key(i)]].ty
     }
 
+    /// `*(p as *mut ty)`, as a place. Every pointer the model carries is
+    /// `*mut u8`, so a byte access needs no cast.
+    fn deref(&mut self, p: Operand<'tcx>, ty: Ty<'tcx>, st: &mut Stmts<'tcx>) -> Place<'tcx> {
+        let tcx = self.tcx();
+        let byte = ty == tcx.types.u8;
+        let place = match p {
+            Operand::Copy(pl) | Operand::Move(pl) if byte => pl,
+            p => {
+                let pty = Ty::new_mut_ptr(tcx, ty);
+                let t = self.temp(pty);
+                let rv = if byte { Rvalue::Use(p) } else { Rvalue::Cast(CastKind::PtrToPtr, p, pty) };
+                self.assign(st, Place::from(t), rv);
+                Place::from(t)
+            }
+        };
+        tcx.mk_place_deref(place)
+    }
+
     /// The block for an edge `from -> to`: `to` itself, or a fresh block that
     /// performs `to`'s phi copies for this edge first.
     fn edge(&mut self, from: LBlock<'a>, to: LBlock<'a>) -> R<BasicBlock> {
@@ -281,7 +359,7 @@ impl<'a, 'tcx> B<'a, 'tcx> {
         Ok(e)
     }
 
-    fn binop(&mut self, i: InstructionValue<'a>, op: BinOp, signed: bool, st: &mut Vec<Statement<'tcx>>) -> R<()> {
+    fn binop(&mut self, i: InstructionValue<'a>, op: BinOp, signed: bool, st: &mut Stmts<'tcx>) -> R<()> {
         let (mut a, mut b) = (self.op(i, 0, st)?, self.op(i, 1, st)?);
         let ty = self.opty(i, 0)?;
         let sty = self.env.signed(ty);
@@ -302,36 +380,42 @@ impl<'a, 'tcx> B<'a, 'tcx> {
         Ok(())
     }
 
-    /// Coerce a call argument to the callee's declared parameter type: the
-    /// one legal mismatch is an integer where the ABI says StorageType.
-    fn coerce(&mut self, op: Operand<'tcx>, from: Ty<'tcx>, to: Ty<'tcx>, st: &mut Vec<Statement<'tcx>>) -> R<Operand<'tcx>> {
-        if from == to {
-            return Ok(op);
-        }
-        if to == self.env.storage && from.is_integral() {
-            return Ok(self.cast(op, CastKind::Transmute, to, st));
-        }
-        Err(format!("argument of type {from} where {to} is declared"))
+    /// An integer where the ABI says `StorageType`: `transmute::<u64, StorageType>`,
+    /// the one conversion Rust has for it. rustc lowers the call to its own
+    /// `Transmute` cast in runtime MIR.
+    fn to_storage(&mut self, cur: &mut Option<BasicBlock>, st: &mut Stmts<'tcx>, op: Operand<'tcx>, from: Ty<'tcx>) -> Operand<'tcx> {
+        let tcx = self.tcx();
+        let t = self.temp(self.env.storage);
+        let f = Operand::function_handle(tcx, self.env.transmute, [from.into(), self.env.storage.into()], DUMMY_SP);
+        self.call(cur, st, f, vec![op], Place::from(t), false);
+        Operand::Copy(Place::from(t))
     }
 
-    /// Emit one LLVM block. Returns nothing; blocks are written in place.
     fn block(&mut self, lb: LBlock<'a>) -> R<()> {
         let tcx = self.tcx();
         let mut cur = Some(self.bbmap[&(lb.as_mut_ptr() as usize)]);
-        let mut st: Vec<Statement<'tcx>> = Vec::new();
+        let mut st: Stmts<'tcx> = Vec::new();
         for i in insts(lb) {
-            let Some(cb) = cur else { break }; // after a diverging call
+            if cur.is_none() {
+                break; // after a diverging call
+            }
             use InstructionOpcode::*;
             match i.get_opcode() {
                 Phi => {}
                 Alloca => {
-                    let n = match i.get_allocated_type() {
+                    // A frame, as words: 8-aligned, so the naturally aligned
+                    // accesses Rust-compiled wasm makes are aligned here too.
+                    let bytes = match i.get_allocated_type() {
                         Ok(BasicTypeEnum::ArrayType(a)) => a.len() as u64,
                         Ok(BasicTypeEnum::IntType(t)) => (t.get_bit_width() / 8) as u64,
                         _ => return Err("alloca shape".into()),
                     };
-                    let arr = self.temp(Ty::new_array(tcx, tcx.types.u8, n));
-                    let raw = self.temp(Ty::new_mut_ptr(tcx, Ty::new_array(tcx, tcx.types.u8, n)));
+                    let words = bytes.div_ceil(8).max(1);
+                    let arr_ty = Ty::new_array(tcx, tcx.types.u64, words);
+                    let arr = self.temp(arr_ty);
+                    let zero = self.konst(0, tcx.types.u64);
+                    self.assign(&mut st, Place::from(arr), Rvalue::Repeat(zero, ty::Const::from_target_usize(tcx, words)));
+                    let raw = self.temp(Ty::new_mut_ptr(tcx, arr_ty));
                     self.assign(&mut st, Place::from(raw), Rvalue::RawPtr(RawPtrKind::Mut, Place::from(arr)));
                     let dst = self.res(i);
                     self.assign(&mut st, dst, Rvalue::Cast(CastKind::PtrToPtr, Operand::Copy(Place::from(raw)), self.env.u8p));
@@ -339,18 +423,16 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                 Load => {
                     let ty = self.res_ty(i);
                     let p = self.op(i, 0, &mut st)?;
-                    let tp = self.cast(p, CastKind::PtrToPtr, Ty::new_mut_ptr(tcx, ty), &mut st);
-                    let Operand::Copy(tpp) = tp else { unreachable!() };
+                    let src = self.deref(p, ty, &mut st);
                     let dst = self.res(i);
-                    self.assign(&mut st, dst, Rvalue::Use(Operand::Copy(tcx.mk_place_deref(tpp))));
+                    self.assign(&mut st, dst, Rvalue::Use(Operand::Copy(src)));
                 }
                 Store => {
                     let v = self.op(i, 0, &mut st)?;
                     let ty = self.opty(i, 0)?;
                     let p = self.op(i, 1, &mut st)?;
-                    let tp = self.cast(p, CastKind::PtrToPtr, Ty::new_mut_ptr(tcx, ty), &mut st);
-                    let Operand::Copy(tpp) = tp else { unreachable!() };
-                    self.assign(&mut st, tcx.mk_place_deref(tpp), Rvalue::Use(v));
+                    let dst = self.deref(p, ty, &mut st);
+                    self.assign(&mut st, dst, Rvalue::Use(v));
                 }
                 GetElementPtr => {
                     if i.get_num_operands() != 2 {
@@ -391,6 +473,17 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                     };
                     self.binop(i, op, signed, &mut st)?;
                 }
+                // MIR has no int -> bool cast: `trunc to i1` is the low bit.
+                Trunc if self.res_ty(i).is_bool() => {
+                    let a = self.op(i, 0, &mut st)?;
+                    let from = self.opty(i, 0)?;
+                    let one = self.konst(1, from);
+                    let low = self.temp(from);
+                    self.assign(&mut st, Place::from(low), Rvalue::BinaryOp(BinOp::BitAnd, Box::new((a, one))));
+                    let zero = self.konst(0, from);
+                    let dst = self.res(i);
+                    self.assign(&mut st, dst, Rvalue::BinaryOp(BinOp::Ne, Box::new((Operand::Copy(Place::from(low)), zero))));
+                }
                 ZExt | Trunc => {
                     let a = self.op(i, 0, &mut st)?;
                     let (dst, ty) = (self.res(i), self.res_ty(i));
@@ -399,21 +492,17 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                 SExt => {
                     let a = self.op(i, 0, &mut st)?;
                     let from = self.opty(i, 0)?;
-                    let a = if from.is_bool() {
-                        a
-                    } else {
-                        let s = self.env.signed(from);
-                        self.cast(a, CastKind::IntToInt, s, &mut st)
-                    };
                     let (dst, ty) = (self.res(i), self.res_ty(i));
                     if from.is_bool() {
-                        // sext i1: all ones or zero.
-                        let z = self.cast(a, CastKind::IntToInt, ty, &mut st);
-                        let neg = Rvalue::UnaryOp(UnOp::Neg, self.cast(z, CastKind::IntToInt, self.env.signed(ty), &mut st));
-                        let t = self.temp(self.env.signed(ty));
-                        self.assign(&mut st, Place::from(t), neg);
-                        self.assign(&mut st, dst, Rvalue::Cast(CastKind::IntToInt, Operand::Copy(Place::from(t)), ty));
+                        // sext i1: all ones or zero, i.e. -(b as iN).
+                        let sty = self.env.signed(ty);
+                        let z = self.cast(a, CastKind::IntToInt, sty, &mut st);
+                        let neg = self.temp(sty);
+                        self.assign(&mut st, Place::from(neg), Rvalue::UnaryOp(UnOp::Neg, z));
+                        self.assign(&mut st, dst, Rvalue::Cast(CastKind::IntToInt, Operand::Copy(Place::from(neg)), ty));
                     } else {
+                        let s = self.env.signed(from);
+                        let a = self.cast(a, CastKind::IntToInt, s, &mut st);
                         self.assign(&mut st, dst, Rvalue::Cast(CastKind::IntToInt, a, ty));
                     }
                 }
@@ -438,11 +527,8 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                     let c = self.op(i, 0, &mut st)?;
                     let (a, b) = (self.op(i, 1, &mut st)?, self.op(i, 2, &mut st)?);
                     let (then_bb, else_bb, join) = (self.new_block(), self.new_block(), self.new_block());
-                    self.blocks[cb].statements = std::mem::take(&mut st);
-                    self.blocks[cb].terminator = Some(Terminator {
-                        source_info: self.si,
-                        kind: TerminatorKind::SwitchInt { discr: c, targets: SwitchTargets::static_if(0, else_bb, then_bb) },
-                    });
+                    let kind = TerminatorKind::SwitchInt { discr: c, targets: SwitchTargets::static_if(0, else_bb, then_bb) };
+                    self.terminate(&mut cur, &mut st, kind);
                     let dst = self.res(i);
                     for (bb, v) in [(then_bb, a), (else_bb, b)] {
                         let mut s = Vec::new();
@@ -487,7 +573,9 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                                 }
                                 _ => {
                                     let a = self.op(i, 0, &mut st)?;
-                                    self.assign(&mut st, dst, Rvalue::Cast(CastKind::Transmute, a, self.env.storage));
+                                    let from = self.opty(i, 0)?;
+                                    let v = self.to_storage(&mut cur, &mut st, a, from);
+                                    self.assign(&mut st, dst, Rvalue::Use(v));
                                 }
                             }
                         }
@@ -498,37 +586,28 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                             let mut args = Vec::new();
                             for k in 0..nargs {
                                 let a = self.op(i, k, &mut st)?;
-                                // The MIR type of the operand, which for a
-                                // storage_type result is the enum already.
                                 let from = match &a {
                                     Operand::Copy(p) | Operand::Move(p) => p.ty(&self.locals, tcx).ty,
                                     Operand::Constant(c) => c.const_.ty(),
                                     _ => self.opty(i, k)?,
                                 };
                                 let to = *fsig.inputs().get(k as usize).ok_or("arity")?;
-                                args.push(Spanned { node: self.coerce(a, from, to, &mut st)?, span: DUMMY_SP });
+                                let a = if from == to {
+                                    a
+                                } else if to == self.env.storage && from.is_integral() {
+                                    self.to_storage(&mut cur, &mut st, a, from)
+                                } else {
+                                    return Err(format!("argument of type {from} where {to} is declared"));
+                                };
+                                args.push(a);
                             }
                             let destination = if self.map.contains_key(&key(i)) {
                                 self.res(i)
                             } else {
                                 Place::from(self.temp(fsig.output()))
                             };
-                            let diverges = fsig.output().is_never();
-                            let next = if diverges { None } else { Some(self.new_block()) };
-                            self.blocks[cb].statements = std::mem::take(&mut st);
-                            self.blocks[cb].terminator = Some(Terminator {
-                                source_info: self.si,
-                                kind: TerminatorKind::Call {
-                                    func: Operand::function_handle(tcx, def_id, [], DUMMY_SP),
-                                    args: args.into_boxed_slice(),
-                                    destination,
-                                    target: next,
-                                    unwind: UnwindAction::Unreachable,
-                                    call_source: CallSource::Normal,
-                                    fn_span: DUMMY_SP,
-                                },
-                            });
-                            cur = next;
+                            let f = Operand::function_handle(tcx, def_id, [], DUMMY_SP);
+                            self.call(&mut cur, &mut st, f, args, destination, fsig.output().is_never());
                         }
                     }
                 }
@@ -537,33 +616,21 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                         let v = self.op(i, 0, &mut st)?;
                         self.assign(&mut st, Place::from(Local::ZERO), Rvalue::Use(v));
                     }
-                    self.blocks[cb].statements = std::mem::take(&mut st);
-                    self.blocks[cb].terminator = Some(Terminator { source_info: self.si, kind: TerminatorKind::Return });
-                    cur = None;
+                    self.terminate(&mut cur, &mut st, TerminatorKind::Return);
                 }
-                Unreachable => {
-                    self.blocks[cb].statements = std::mem::take(&mut st);
-                    self.blocks[cb].terminator = Some(Terminator { source_info: self.si, kind: TerminatorKind::Unreachable });
-                    cur = None;
-                }
+                Unreachable => self.terminate(&mut cur, &mut st, TerminatorKind::Unreachable),
                 // LLVM stores a conditional branch as [cond, false, true].
                 Br if i.get_num_operands() == 3 => {
                     let c = self.op(i, 0, &mut st)?;
                     let (f, t) = (self.target(i, 1)?, self.target(i, 2)?);
                     let (fb, tb) = (self.edge(lb, f)?, self.edge(lb, t)?);
-                    self.blocks[cb].statements = std::mem::take(&mut st);
-                    self.blocks[cb].terminator = Some(Terminator {
-                        source_info: self.si,
-                        kind: TerminatorKind::SwitchInt { discr: c, targets: SwitchTargets::static_if(0, fb, tb) },
-                    });
-                    cur = None;
+                    let kind = TerminatorKind::SwitchInt { discr: c, targets: SwitchTargets::static_if(0, fb, tb) };
+                    self.terminate(&mut cur, &mut st, kind);
                 }
                 Br => {
                     let t = self.target(i, 0)?;
                     let target = self.edge(lb, t)?;
-                    self.blocks[cb].statements = std::mem::take(&mut st);
-                    self.blocks[cb].terminator = Some(Terminator { source_info: self.si, kind: TerminatorKind::Goto { target } });
-                    cur = None;
+                    self.terminate(&mut cur, &mut st, TerminatorKind::Goto { target });
                 }
                 Switch => {
                     let d = self.op(i, 0, &mut st)?;
@@ -577,21 +644,14 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                         cases.push((val, self.edge(lb, t)?));
                         k += 2;
                     }
-                    self.blocks[cb].statements = std::mem::take(&mut st);
-                    self.blocks[cb].terminator = Some(Terminator {
-                        source_info: self.si,
-                        kind: TerminatorKind::SwitchInt { discr: d, targets: SwitchTargets::new(cases.into_iter(), otherwise) },
-                    });
-                    cur = None;
+                    let kind = TerminatorKind::SwitchInt { discr: d, targets: SwitchTargets::new(cases.into_iter(), otherwise) };
+                    self.terminate(&mut cur, &mut st, kind);
                 }
                 op => return Err(format!("unsupported instruction {op:?}: {}", i.print_to_string())),
             }
         }
-        if let Some(cb) = cur {
-            // A block that fell off its end: only dead code does that.
-            self.blocks[cb].statements = st;
-            self.blocks[cb].terminator = Some(Terminator { source_info: self.si, kind: TerminatorKind::Unreachable });
-        }
+        // A block that fell off its end: only dead code does that.
+        self.terminate(&mut cur, &mut st, TerminatorKind::Unreachable);
         Ok(())
     }
 }
@@ -599,21 +659,9 @@ impl<'a, 'tcx> B<'a, 'tcx> {
 pub fn build<'a, 'tcx>(env: &'a Env<'tcx>, f: FunctionValue<'a>, def_id: DefId) -> R<Body<'tcx>> {
     let tcx = env.tcx;
     let si = SourceInfo::outermost(DUMMY_SP);
-    let mut b = B {
-        env,
-        locals: IndexVec::new(),
-        map: HashMap::new(),
-        blocks: IndexVec::new(),
-        bbmap: HashMap::new(),
-        debug: Vec::new(),
-        si,
-    };
+    let mut b = B { env, locals: IndexVec::new(), map: HashMap::new(), blocks: IndexVec::new(), bbmap: HashMap::new(), debug: Vec::new(), si };
     // _0, the parameters, then one local per SSA value.
-    let ret = match f.get_type().get_return_type() {
-        Some(t) => env.ty(t)?,
-        None => tcx.types.unit,
-    };
-    b.locals.push(LocalDecl::new(ret, DUMMY_SP));
+    b.locals.push(LocalDecl::new(env.ret_ty(f)?, DUMMY_SP));
     for (n, p) in f.get_params().iter().enumerate() {
         let l = b.locals.push(LocalDecl::new(env.ty(p.get_type())?, DUMMY_SP));
         b.map.insert(key(*p), l);
@@ -648,8 +696,17 @@ pub fn build<'a, 'tcx>(env: &'a Env<'tcx>, f: FunctionValue<'a>, def_id: DefId) 
     for lb in f.get_basic_blocks() {
         b.block(lb)?;
     }
+    // A lint root lets rustc's MIR lints report against this function rather
+    // than panic on a scope without one.
+    let lint_root = tcx.local_def_id_to_hir_id(def_id.expect_local());
     let mut scopes: IndexVec<SourceScope, SourceScopeData<'tcx>> = IndexVec::new();
-    scopes.push(SourceScopeData { span: DUMMY_SP, parent_scope: None, inlined: None, inlined_parent_scope: None, local_data: ClearCrossCrate::Clear });
+    scopes.push(SourceScopeData {
+        span: DUMMY_SP,
+        parent_scope: None,
+        inlined: None,
+        inlined_parent_scope: None,
+        local_data: ClearCrossCrate::Set(SourceScopeLocalData { lint_root }),
+    });
     Ok(Body::new(MirSource::item(def_id), b.blocks, scopes, b.locals, IndexVec::new(), arg_count, b.debug, DUMMY_SP, None, None))
 }
 

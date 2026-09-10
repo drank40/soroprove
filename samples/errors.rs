@@ -3,10 +3,45 @@
 #![no_std]
 #![allow(unused, non_snake_case, non_camel_case_types, non_upper_case_globals, unreachable_code, unused_unsafe, bindings_with_variant_name)]
 
-/// A Soroban `Val`: 64 bits, tag in the low byte. Never an integer.
+/// A Soroban `Val`: 64 bits, tag in the low byte, body above. Never an integer.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct Val(pub u64);
+
+impl Val {
+    pub const FALSE: Val = Val(0);
+    pub const TRUE: Val = Val(1);
+    pub const VOID: Val = Val(2);
+    /// Tag 3. Type: 0 Contract, 1 WasmVm, 2 Context, 3 Storage, 4 Object,
+    /// 5 Crypto, 6 Events, 7 Budget, 8 Value, 9 Auth.
+    pub const fn error(ty: u32, code: u32) -> Val { Val(((code as u64) << 32) | (((ty & 0xff_ffff) as u64) << 8) | 3) }
+    pub const fn u32(v: u32) -> Val { Val(((v as u64) << 32) | 4) }
+    pub const fn i32(v: i32) -> Val { Val(((v as u32 as u64) << 32) | 5) }
+    /// Any other small tag with its 56-bit body: 6 U64Small, 7 I64Small,
+    /// 8 TimepointSmall, 9 DurationSmall, 10 U128Small, 11 I128Small,
+    /// 12 U256Small, 13 I256Small.
+    pub const fn small(tag: u8, body: u64) -> Val { Val((body << 8) | tag as u64) }
+    /// Tag 14, `SymbolSmall`: up to 9 chars of `_ 0-9 A-Z a-z`, 6 bits each,
+    /// the first char highest.
+    pub const fn sym(s: &str) -> Val {
+        let b = s.as_bytes();
+        let mut acc = 0u64;
+        let mut i = 0;
+        while i < b.len() {
+            let c = b[i];
+            let code = match c {
+                b'_' => 1,
+                b'0'..=b'9' => 2 + (c - b'0'),
+                b'A'..=b'Z' => 12 + (c - b'A'),
+                b'a'..=b'z' => 38 + (c - b'a'),
+                _ => panic!("not a symbol char"),
+            };
+            acc = (acc << 6) | code as u64;
+            i += 1;
+        }
+        Val((acc << 8) | 14)
+    }
+}
 
 /// `StorageType` is not a `Val`: it crosses the host boundary as a plain u64.
 #[repr(u64)]
@@ -20,10 +55,6 @@ extern "C" {
     pub fn unknown() -> Val;
     pub fn unknown_i64() -> u64;
 }
-pub static mut G0: u64 = 1048576;
-pub static mut G1: u64 = 1048604;
-pub static mut G2: u64 = 1048604;
-pub static mut G3: u64 = 1048608;
 
 extern "C" {
     /// wasm import `x.5`
@@ -32,7 +63,7 @@ extern "C" {
     pub fn put_contract_data(a0: Val, a1: Val, a2: StorageType) -> Val;
 }
 
-pub fn hello(a0: Val) -> Val {
+pub fn hello(mut a0: Val) -> Val {
     unsafe {
         let mut arg_payload: u64;
         let mut cmp: bool;
@@ -40,14 +71,10 @@ pub fn hello(a0: Val) -> Val {
         let mut cmp2_not: bool;
         let mut or_cond: bool;
         let mut lshr: u64;
-        let mut v_Symbol__persisted__: Val;
-        let mut v_true: Val;
-        let mut Persistent: StorageType;
-        let mut put_contract_data_11: Val;
+        let mut put_contract_data_8: Val;
         let mut sel: u32;
-        let mut l0_0: u64;
+        let mut l0_0: Val;
         let mut to_val: Val;
-        let mut _0: Val;
         arg_payload = a0.0;
         cmp = arg_payload < 21474836480u64;
         and = arg_payload & 255u64;
@@ -55,45 +82,36 @@ pub fn hello(a0: Val) -> Val {
         or_cond = cmp & cmp2_not;
         if or_cond {
             lshr = arg_payload.wrapping_shr(32u64 as u32);
-            v_Symbol__persisted__ = Val(3867323444879862030u64);
-            v_true = Val(1u64);
-            Persistent = StorageType::Persistent;
-            put_contract_data_11 = put_contract_data(v_Symbol__persisted__, v_true, Persistent);
-            'b3: {
-                sel = lshr as u32;
-                match sel {
-                    0 => {
-                        l0_0 = 196144296974u64;
-                        break 'b3;
-                    }
-                    1 => {
-                        l0_0 = 4294967299u64;
-                        break 'b3;
-                    }
-                    2 => {
-                        f3(4294967299u64);
-                        trap();
-                    }
-                    3 => {
-                        f4();
-                        unreachable!();
-                    }
-                    _ => {
-                        f3(38654705667u64);
-                        trap();
-                    }
+            put_contract_data_8 = put_contract_data(Val::sym("persisted"), Val::TRUE, StorageType::Persistent);
+            sel = lshr as u32;
+            match sel {
+                0 => {
+                    l0_0 = Val::sym("hello");
+                }
+                1 => {
+                    l0_0 = Val::error(0, 1);
+                }
+                2 => {
+                    f3(4294967299u64);
+                    trap();
+                }
+                3 => {
+                    f4();
+                }
+                _ => {
+                    f3(38654705667u64);
+                    trap();
                 }
             }
-            to_val = Val(l0_0);
-            _0 = to_val;
-            return _0;
+            to_val = l0_0;
+            return to_val;
         } else {
             trap();
         }
     }
 }
 
-fn f3(a0: u64) {
+fn f3(mut a0: u64) {
     unsafe {
         let mut to_val: Val;
         let mut fail_with_error_3: Val;
@@ -103,7 +121,7 @@ fn f3(a0: u64) {
     }
 }
 
-fn f4() {
+fn f4() -> ! {
     unsafe {
         trap();
     }

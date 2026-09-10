@@ -45,75 +45,36 @@ entry:
   %and2 = and i64 %arg_payload1, 255
   %cmp3.not = icmp eq i64 %and2, 77
   %or.cond = select i1 %cmp.not, i1 %cmp3.not, i1 false
-  br i1 %or.cond, label %h8, label %c1
+  br i1 %or.cond, label %fall14, label %c1
 
 c1:                                               ; preds = %entry
   call void @soroban.trap()
   unreachable
 
-c2:                                               ; preds = %c10
-  %shl47 = shl i64 %or33, 8
-  %or48 = or disjoint i64 %shl47, 14
-  br label %f14.exit
+fall15.2:                                         ; preds = %fall14
+  %bottom.2 = call i64 @ponytail.unknown.i64()
+  %brif20.not.2 = icmp eq i64 %bottom.2, 0
+  br i1 %brif20.not.2, label %fall15.3, label %f23.exit
 
-h8:                                               ; preds = %entry, %c10
-  %l1.0 = phi i64 [ %add35, %c10 ], [ 1048640, %entry ]
-  %l2.0 = phi i64 [ %add37, %c10 ], [ 4, %entry ]
-  %l3.1 = phi i64 [ %or33, %c10 ], [ 0, %entry ]
-  %p = inttoptr i64 %l1.0 to ptr
-  %v = load i8, ptr %p, align 1
-  %zx = zext i8 %v to i64
-  %cmp4 = icmp eq i8 %v, 95
-  br i1 %cmp4, label %c10, label %fall11
+fall15.3:                                         ; preds = %fall15.2
+  %bottom.3 = call i64 @ponytail.unknown.i64()
+  %brif20.not.3 = icmp eq i64 %bottom.3, 0
+  br i1 %brif20.not.3, label %f14.exit, label %f23.exit
 
-c10:                                              ; preds = %fall17, %c13, %c12, %h8
-  %l4.0 = phi i64 [ 1, %h8 ], [ %add26, %c13 ], [ %add28, %c12 ], [ %add22, %fall17 ]
-  %shl30 = shl i64 %l3.1, 6
-  %and32 = and i64 %l4.0, 255
-  %or33 = or i64 %and32, %shl30
-  %add35 = add nuw nsw i64 %l1.0, 1
-  %add37 = add nsw i64 %l2.0, -1
-  %eqz = icmp eq i64 %add37, 0
-  br i1 %eqz, label %c2, label %h8
+fall14:                                           ; preds = %entry
+  %bottom.1 = call i64 @ponytail.unknown.i64()
+  %brif20.not.1 = icmp eq i64 %bottom.1, 0
+  br i1 %brif20.not.1, label %fall15.2, label %f23.exit
 
-fall11:                                           ; preds = %h8
-  %add = add nuw nsw i64 %zx, 208
-  %and12 = and i64 %add, 254
-  %cmp8 = icmp ult i64 %and12, 10
-  br i1 %cmp8, label %c13, label %fall14
-
-c12:                                              ; preds = %fall14
-  %add28 = add nsw i64 %zx, -53
-  br label %c10
-
-c13:                                              ; preds = %fall11
-  %add26 = add nsw i64 %zx, -46
-  br label %c10
-
-fall14:                                           ; preds = %fall11
-  %add12 = add nuw nsw i64 %zx, 191
-  %and13 = and i64 %add12, 254
-  %cmp14 = icmp ult i64 %and13, 26
-  br i1 %cmp14, label %c12, label %fall15
-
-fall15:                                           ; preds = %fall14
-  %bottom = call i64 @ponytail.unknown.i64()
-  %brif20.not = icmp eq i64 %bottom, 0
-  br i1 %brif20.not, label %fall17, label %f23.exit
-
-fall17:                                           ; preds = %fall15
-  %add22 = add nsw i64 %zx, -59
-  br label %c10
-
-f23.exit:                                         ; preds = %fall15
+f23.exit:                                         ; preds = %fall15.3, %fall15.2, %fall14
   %v_u32_1048640 = call %Val @soroban.val.from_payload(i64 4503874505277444)
   %v_u32_4 = call %Val @soroban.val.from_payload(i64 17179869188)
   %Symbol__Pair__ = call %Val @buf.symbol_new_from_linear_memory(%Val %v_u32_1048640, %Val %v_u32_4)
   %payload = call i64 @soroban.val.payload(%Val %Symbol__Pair__)
   br label %f14.exit
 
-f14.exit:                                         ; preds = %f23.exit, %c2
-  %ld11 = phi i64 [ %or48, %c2 ], [ %payload, %f23.exit ]
+f14.exit:                                         ; preds = %fall15.3, %f23.exit
+  %ld11 = phi i64 [ %payload, %f23.exit ], [ 1852552974, %fall15.3 ]
   %slot8 = getelementptr inbounds i8, ptr %frame, i64 8
   %fp11 = getelementptr inbounds i8, ptr %frame, i64 16
   %fp = ptrtoint ptr %slot8 to i64
@@ -124,17 +85,17 @@ f14.exit:                                         ; preds = %f23.exit, %c2
   %v_u32_1048624 = call %Val @soroban.val.from_payload(i64 4503805785800708)
   %to_val9 = call %Val @soroban.val.from_payload(i64 %or5)
   %v_u32_2 = call %Val @soroban.val.from_payload(i64 8589934596)
-  %Map_BAD_tag_44__BAD_tag_45_ = call %Val @map.map_new_from_linear_memory(%Val %v_u32_1048624, %Val %to_val9, %Val %v_u32_2)
-  %payload15 = call i64 @soroban.val.payload(%Val %Map_BAD_tag_44__BAD_tag_45_)
-  store i64 %payload15, ptr %fp11, align 1
+  %Map__a____b__ = call %Val @map.map_new_from_linear_memory(%Val %v_u32_1048624, %Val %to_val9, %Val %v_u32_2)
+  %payload14 = call i64 @soroban.val.payload(%Val %Map__a____b__)
+  store i64 %payload14, ptr %fp11, align 1
   store i64 %ld11, ptr %slot8, align 1
   %vec_new_from_linear_memory = call %Val @vec.vec_new_from_linear_memory(%Val %to_val9, %Val %v_u32_2)
-  %payload16 = call i64 @soroban.val.payload(%Val %vec_new_from_linear_memory)
-  %to_val17 = call %Val @soroban.val.from_payload(i64 %payload16)
+  %payload15 = call i64 @soroban.val.payload(%Val %vec_new_from_linear_memory)
+  %to_val16 = call %Val @soroban.val.from_payload(i64 %payload15)
   %Persistent = call i64 @soroban.storage_type(i64 1)
-  %has_contract_data = call %Val @ledger.has_contract_data(%Val %to_val17, i64 %Persistent)
-  %payload18 = call i64 @soroban.val.payload(%Val %has_contract_data)
-  %cmp = icmp eq i64 %payload18, 1
+  %has_contract_data = call %Val @ledger.has_contract_data(%Val %to_val16, i64 %Persistent)
+  %payload17 = call i64 @soroban.val.payload(%Val %has_contract_data)
+  %cmp = icmp eq i64 %payload17, 1
   %zext = zext i1 %cmp to i64
   call void @llvm.lifetime.end.p0(i64 32, ptr nonnull %frame)
   %to_val = call %Val @soroban.val.from_payload(i64 %zext)

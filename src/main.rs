@@ -1197,7 +1197,10 @@ fn optimize(m: &Module, mem: &Mem) -> Result<(), String> {
         // and instcombine then drops the alloca and its lifetime markers.
         // LLVM 18 aborts if a standalone instcombine is not at a fixpoint
         // after one iteration, which hand-rewritten IR routinely is not.
-        run("sroa,instcombine<no-verify-fixpoint>,gvn,dse,simplifycfg,adce")?;
+        // Full unrolling: the SDK encodes `Symbol::new("Pair")` with a loop
+        // over a constant string; unrolled, its loads are constant-address,
+        // the next fold reads them, and the whole loop folds to the symbol.
+        run("sroa,instcombine<no-verify-fixpoint>,gvn,dse,simplifycfg,adce,loop-simplify,lcssa,loop(indvars),loop-unroll<O3;upperbound;full-unroll-max=64>")?;
         if folded == 0 {
             break;
         }
@@ -1406,6 +1409,18 @@ fn decode_lm(name: &str, args: &[Option<u64>], mem: &Mem) -> Option<String> {
     let vals = |pos: u64, len: u64| -> Option<Vec<String>> {
         (0..len).map(|i| mem.load(pos + 8 * i, 64, false).map(|v| explain_val(v as u64))).collect()
     };
+    // Map keys are not Vals in memory: the host scans `len` (pos: u32, len: u32)
+    // slices and reads each as a symbol (host.rs map_new_from_linear_memory ->
+    // metered_vm_scan_slices_in_linear_memory).
+    let slices = |pos: u64, len: u64| -> Option<Vec<String>> {
+        (0..len)
+            .map(|i| {
+                let p = mem.load(pos + 8 * i, 32, false)? as u64;
+                let l = mem.load(pos + 8 * i + 4, 32, false)? as usize;
+                Some(format!("{:?}", String::from_utf8_lossy(mem.bytes(p, l)?)))
+            })
+            .collect()
+    };
     let s = match name {
         "buf.symbol_new_from_linear_memory" => format!("Symbol({:?})", text(0)?),
         "buf.string_new_from_linear_memory" => format!("String({:?})", text(0)?),
@@ -1414,8 +1429,8 @@ fn decode_lm(name: &str, args: &[Option<u64>], mem: &Mem) -> Option<String> {
             format!("Bytes({hex})")
         }
         "vec.vec_new_from_linear_memory" => format!("Vec[{}]", vals(u(0)?, u(1)?)?.join(", ")),
-        // Keys are Symbols in memory; the values are runtime Vals, not decoded here.
-        "map.map_new_from_linear_memory" => format!("Map{{{}}}", vals(u(0)?, u(2)?)?.join(", ")),
+        // The values are runtime Vals, not decoded here.
+        "map.map_new_from_linear_memory" => format!("Map{{{}}}", slices(u(0)?, u(2)?)?.join(", ")),
         _ => return None,
     };
     Some(ident(&s))

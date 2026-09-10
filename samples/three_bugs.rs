@@ -3,10 +3,45 @@
 #![no_std]
 #![allow(unused, non_snake_case, non_camel_case_types, non_upper_case_globals, unreachable_code, unused_unsafe, bindings_with_variant_name)]
 
-/// A Soroban `Val`: 64 bits, tag in the low byte. Never an integer.
+/// A Soroban `Val`: 64 bits, tag in the low byte, body above. Never an integer.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct Val(pub u64);
+
+impl Val {
+    pub const FALSE: Val = Val(0);
+    pub const TRUE: Val = Val(1);
+    pub const VOID: Val = Val(2);
+    /// Tag 3. Type: 0 Contract, 1 WasmVm, 2 Context, 3 Storage, 4 Object,
+    /// 5 Crypto, 6 Events, 7 Budget, 8 Value, 9 Auth.
+    pub const fn error(ty: u32, code: u32) -> Val { Val(((code as u64) << 32) | (((ty & 0xff_ffff) as u64) << 8) | 3) }
+    pub const fn u32(v: u32) -> Val { Val(((v as u64) << 32) | 4) }
+    pub const fn i32(v: i32) -> Val { Val(((v as u32 as u64) << 32) | 5) }
+    /// Any other small tag with its 56-bit body: 6 U64Small, 7 I64Small,
+    /// 8 TimepointSmall, 9 DurationSmall, 10 U128Small, 11 I128Small,
+    /// 12 U256Small, 13 I256Small.
+    pub const fn small(tag: u8, body: u64) -> Val { Val((body << 8) | tag as u64) }
+    /// Tag 14, `SymbolSmall`: up to 9 chars of `_ 0-9 A-Z a-z`, 6 bits each,
+    /// the first char highest.
+    pub const fn sym(s: &str) -> Val {
+        let b = s.as_bytes();
+        let mut acc = 0u64;
+        let mut i = 0;
+        while i < b.len() {
+            let c = b[i];
+            let code = match c {
+                b'_' => 1,
+                b'0'..=b'9' => 2 + (c - b'0'),
+                b'A'..=b'Z' => 12 + (c - b'A'),
+                b'a'..=b'z' => 38 + (c - b'a'),
+                _ => panic!("not a symbol char"),
+            };
+            acc = (acc << 6) | code as u64;
+            i += 1;
+        }
+        Val((acc << 8) | 14)
+    }
+}
 
 /// `StorageType` is not a `Val`: it crosses the host boundary as a plain u64.
 #[repr(u64)]
@@ -20,12 +55,8 @@ extern "C" {
     pub fn unknown() -> Val;
     pub fn unknown_i64() -> u64;
 }
-pub static mut G0: u64 = 1048576;
-pub static mut G1: u64 = 1048680;
 
 extern "C" {
-    /// wasm import `b.j`
-    pub fn symbol_new_from_linear_memory(a0: Val, a1: Val) -> Val;
     /// wasm import `x.5`
     pub fn fail_with_error(a0: Val) -> Val;
     /// wasm import `l.0`
@@ -38,7 +69,7 @@ extern "C" {
     pub fn vec_new_from_linear_memory(a0: Val, a1: Val) -> Val;
 }
 
-pub fn pick(a0: Val) -> Val {
+pub fn pick(mut a0: Val) -> Val {
     unsafe {
         let mut arg_payload: u64;
         let mut cmp: bool;
@@ -47,371 +78,161 @@ pub fn pick(a0: Val) -> Val {
         let mut or_cond: bool;
         let mut lshr: u64;
         let mut _8: u8;
-        let mut brif_not: u64;
+        let mut brif_not: Val;
         let mut to_val: Val;
-        let mut _0: Val;
         arg_payload = a0.0;
         cmp = arg_payload < 21474836480u64;
         and = arg_payload & 255u64;
         cmp2_not = and == 4u64;
         or_cond = cmp & cmp2_not;
         if or_cond {
-            'b5: {
-                lshr = arg_payload.wrapping_shr(32u64 as u32);
-                _8 = lshr as u8;
-                match _8 {
-                    0 => {
-                        brif_not = 9742u64;
-                        break 'b5;
-                    }
-                    1 => {
-                        brif_not = 4294967299u64;
-                        break 'b5;
-                    }
-                    2 => {
-                        f37();
-                        trap();
-                    }
-                    3 => {
-                        f50();
-                        unreachable!();
-                    }
-                    _ => {
-                        brif_not = 10766u64;
-                        break 'b5;
-                    }
+            lshr = arg_payload.wrapping_shr(32u64 as u32);
+            _8 = lshr as u8;
+            match _8 {
+                0 => {
+                    brif_not = Val::sym("a");
+                }
+                1 => {
+                    brif_not = Val::error(0, 1);
+                }
+                2 => {
+                    f37();
+                    trap();
+                }
+                3 => {
+                    f50();
+                }
+                _ => {
+                    brif_not = Val::sym("e");
                 }
             }
-            to_val = Val(brif_not);
-            _0 = to_val;
-            return _0;
+            to_val = brif_not;
+            return to_val;
         } else {
             trap();
         }
     }
 }
 
-pub fn read(a0: Val, a1: Val) -> Val {
+pub fn read(mut a0: Val, mut a1: Val) -> Val {
     unsafe {
-        let mut frame_sroa_2: *mut u8;
         let mut frame: *mut u8;
-        let mut frame32: *mut u8;
+        let mut frame73: *mut u8;
         let mut arg_payload: u64;
         let mut arg_payload1: u64;
         let mut and: u64;
         let mut cmp_not_not: bool;
-        let mut and33: u64;
-        let mut cmp_not_not34: bool;
-        let mut or_cond: bool;
-        let mut frame_sroa_2_0: u64;
-        let mut l4_053: u64;
-        let mut l1_052: u64;
-        let mut l2_051: u64;
-        let mut p: *mut u8;
-        let mut v: u8;
-        let mut zx: u64;
-        let mut cmp: bool;
-        let mut l2_0: u8;
-        let mut frame_sroa_2_9_insert_ext: u64;
-        let mut frame_sroa_2_9_insert_shift: u64;
-        let mut frame_sroa_2_8_insert_insert26: u64;
-        let mut frame_sroa_2_9_insert_mask: u64;
-        let mut frame_sroa_2_9_insert_insert: u64;
-        let mut add: u64;
-        let mut and2: u64;
-        let mut cmp3: bool;
-        let mut add26: u8;
-        let mut add24: u8;
-        let mut add7: u64;
-        let mut and8: u64;
-        let mut cmp9: bool;
-        let mut add13: u64;
-        let mut and14: u64;
-        let mut cmp15: bool;
-        let mut add22: u8;
-        let mut frame_sroa_2_9_insert_shift29: u64;
-        let mut frame_sroa_2_9_insert_mask30: u64;
-        let mut frame_sroa_2_9_insert_insert31: u64;
-        let mut frame_sroa_2_8_insert_insert: u64;
-        let mut frame_sroa_2_1: u64;
-        let mut ld22: u8;
-        let mut cmp937: bool;
-        let mut _46: u64;
-        let mut _47: u64;
-        let mut frame_sroa_2_4_sroa_idx23: *mut u8;
-        let mut add38: u64;
-        let mut add19: u64;
-        let mut shl21: u64;
-        let mut zx23: u64;
-        let mut or24: u64;
-        let mut brif2_not: bool;
-        let mut frame_sroa_2_4_sroa_idx: *mut u8;
-        let mut frame_sroa_2_4_frame_sroa_2_8_ld7: u64;
-        let mut v_u32_1048652: Val;
-        let mut v_u32_4: Val;
-        let mut Symbol__Pair__: Val;
-        let mut payload: u64;
-        let mut ld3: u64;
+        let mut and74: u64;
+        let mut cmp_not_not75: bool;
         let mut fp: u64;
         let mut fp12: *mut u8;
         let mut shl4: u64;
-        let mut or5: u64;
-        let mut v_u32_1048636: Val;
+        let mut or5: Val;
         let mut to_val9: Val;
-        let mut v_u32_2: Val;
-        let mut Map_BAD_tag_56__BAD_tag_57_: Val;
-        let mut payload41: u64;
+        let mut Map__a____b__: Val;
+        let mut payload: u64;
         let mut slot8: *mut u8;
-        let mut fp42: u64;
+        let mut fp77: u64;
         let mut shl: u64;
-        let mut or: u64;
-        let mut to_val43: Val;
-        let mut vec_new_from_linear_memory_76: Val;
-        let mut payload44: u64;
-        let mut to_val45: Val;
-        let mut Persistent: StorageType;
-        let mut has_contract_data_80: Val;
-        let mut payload46: u64;
-        let mut cmp47: bool;
-        let mut zext: u64;
+        let mut or: Val;
+        let mut to_val78: Val;
+        let mut vec_new_from_linear_memory_23: Val;
+        let mut payload79: u64;
+        let mut has_contract_data_25: Val;
+        let mut payload81: u64;
+        let mut cmp: bool;
+        let mut zext: Val;
+        let mut _29: [u64; 2];
+        let mut _30: *mut [u64; 2];
+        let mut _31: [u64; 2];
+        let mut _32: *mut [u64; 2];
+        let mut _34: usize;
+        let mut _35: *mut u64;
+        let mut _36: *mut u64;
+        let mut _37: *mut u64;
+        let mut _38: *mut u64;
+        let mut _39: usize;
         let mut to_val: Val;
-        let mut _85: [u8; 12] = core::mem::zeroed();
-        let mut _86: *mut [u8; 12];
-        let mut _87: [u8; 16] = core::mem::zeroed();
-        let mut _88: *mut [u8; 16];
-        let mut _89: [u8; 16] = core::mem::zeroed();
-        let mut _90: *mut [u8; 16];
-        let mut _92: usize;
-        let mut _93: *mut u8;
-        let mut _94: isize;
-        let mut _95: *mut u64;
-        let mut _96: *mut u64;
-        let mut _97: isize;
-        let mut _98: *mut u64;
-        let mut _99: usize;
-        let mut _100: isize;
-        let mut _101: *mut u64;
-        let mut _102: *mut u64;
-        let mut _103: isize;
-        let mut _104: *mut u64;
-        let mut _105: *mut u64;
-        let mut _106: usize;
-        let mut _0: Val;
-        'b22: {
-            _86 = &raw mut _85;
-            frame_sroa_2 = _86 as *mut u8;
-            _88 = &raw mut _87;
-            frame = _88 as *mut u8;
-            _90 = &raw mut _89;
-            frame32 = _90 as *mut u8;
-            arg_payload = a0.0;
-            arg_payload1 = a1.0;
-            and = arg_payload & 255u64;
-            cmp_not_not = and == 77u64;
-            and33 = arg_payload1 & 255u64;
-            cmp_not_not34 = and33 == 77u64;
-            if cmp_not_not {
-                or_cond = cmp_not_not34;
-                break 'b22;
-            } else {
-                or_cond = false;
-                break 'b22;
+        _29 = [0u64; 2];
+        _30 = &raw mut _29;
+        frame = _30 as *mut u8;
+        _31 = [0u64; 2];
+        _32 = &raw mut _31;
+        frame73 = _32 as *mut u8;
+        arg_payload = a0.0;
+        arg_payload1 = a1.0;
+        and = arg_payload & 255u64;
+        cmp_not_not = and == 77u64;
+        and74 = arg_payload1 & 255u64;
+        cmp_not_not75 = and74 == 77u64;
+        match and {
+            77 => {
+                if cmp_not_not75 {
+                    _34 = frame73 as usize;
+                    fp = _34 as u64;
+                    fp12 = frame73.wrapping_offset(8isize);
+                    _35 = fp12 as *mut u64;
+                    (*_35) = arg_payload1;
+                    _36 = _32 as *mut u64;
+                    (*_36) = arg_payload;
+                    shl4 = fp.wrapping_shl(32u64 as u32);
+                    or5 = Val(shl4 | 4u64);
+                    to_val9 = or5;
+                    Map__a____b__ = map_new_from_linear_memory(Val::u32(1048636), to_val9, Val::u32(2));
+                    payload = Map__a____b__.0;
+                    slot8 = frame.wrapping_offset(8isize);
+                    _37 = slot8 as *mut u64;
+                    (*_37) = payload;
+                    _38 = _30 as *mut u64;
+                    (*_38) = 1852552974u64;
+                    _39 = frame as usize;
+                    fp77 = _39 as u64;
+                    shl = fp77.wrapping_shl(32u64 as u32);
+                    or = Val(shl | 4u64);
+                    to_val78 = or;
+                    vec_new_from_linear_memory_23 = vec_new_from_linear_memory(to_val78, Val::u32(2));
+                    payload79 = vec_new_from_linear_memory_23.0;
+                    has_contract_data_25 = has_contract_data(vec_new_from_linear_memory_23, StorageType::Persistent);
+                    payload81 = has_contract_data_25.0;
+                    cmp = payload81 == 1u64;
+                    zext = Val(cmp as u64);
+                    to_val = zext;
+                    return to_val;
+                }
+            }
+            _ => {
+                cmp_not_not75 = false;
             }
         }
-        if or_cond {
-            'b3: {
-                frame_sroa_2_0 = 0u64;
-                l4_053 = 0u64;
-                l1_052 = 1048652u64;
-                l2_051 = 4u64;
-                break 'b3;
-            }
-            'l3: loop {
-                'b12: {
-                    'b4: {
-                        _92 = l1_052 as usize;
-                        p = _92 as *mut u8;
-                        _93 = p as *mut u8;
-                        v = (*_93);
-                        zx = v as u64;
-                        cmp = v == 95u8;
-                        if cmp {
-                            l2_0 = 1u8;
-                            break 'b4;
-                        } else {
-                            add = zx.wrapping_add(208u64);
-                            and2 = add & 254u64;
-                            cmp3 = and2 < 10u64;
-                            if cmp3 {
-                                add24 = v.wrapping_add(210u8);
-                                l2_0 = add24;
-                                break 'b4;
-                            } else {
-                                add7 = zx.wrapping_add(191u64);
-                                and8 = add7 & 254u64;
-                                cmp9 = and8 < 26u64;
-                                if cmp9 {
-                                    add26 = v.wrapping_add(203u8);
-                                    l2_0 = add26;
-                                    break 'b4;
-                                } else {
-                                    add13 = zx.wrapping_add(159u64);
-                                    and14 = add13 & 254u64;
-                                    cmp15 = and14 < 26u64;
-                                    if cmp15 {
-                                        add22 = v.wrapping_add(197u8);
-                                        l2_0 = add22;
-                                        break 'b4;
-                                    } else {
-                                        frame_sroa_2_9_insert_shift29 = zx.wrapping_shl(8u64 as u32);
-                                        frame_sroa_2_9_insert_mask30 = frame_sroa_2_0 & 18446744073709486080u64;
-                                        frame_sroa_2_9_insert_insert31 = frame_sroa_2_9_insert_mask30 | frame_sroa_2_9_insert_shift29;
-                                        frame_sroa_2_8_insert_insert = frame_sroa_2_9_insert_insert31 | 1u64;
-                                        frame_sroa_2_1 = frame_sroa_2_8_insert_insert;
-                                        ld22 = v;
-                                        cmp937 = false;
-                                        break 'b12;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    frame_sroa_2_9_insert_ext = l2_0 as u64;
-                    frame_sroa_2_9_insert_shift = frame_sroa_2_9_insert_ext.wrapping_shl(8u64 as u32);
-                    frame_sroa_2_8_insert_insert26 = frame_sroa_2_0 & 18446744073709486080u64;
-                    frame_sroa_2_9_insert_mask = frame_sroa_2_8_insert_insert26 | frame_sroa_2_9_insert_shift;
-                    frame_sroa_2_9_insert_insert = frame_sroa_2_9_insert_mask | 255u64;
-                    frame_sroa_2_1 = frame_sroa_2_9_insert_insert;
-                    ld22 = l2_0;
-                    cmp937 = true;
-                    break 'b12;
-                }
-                'b16: {
-                    if cmp937 {
-                        add38 = l2_051.wrapping_add(18446744073709551615u64);
-                        add19 = l1_052.wrapping_add(1u64);
-                        shl21 = l4_053.wrapping_shl(6u64 as u32);
-                        zx23 = ld22 as u64;
-                        or24 = shl21 | zx23;
-                        brif2_not = add38 == 0u64;
-                        if brif2_not {
-                            _46 = or24.wrapping_shl(8u64 as u32);
-                            _47 = _46 | 14u64;
-                            _94 = 4u64 as isize;
-                            frame_sroa_2_4_sroa_idx23 = frame_sroa_2.wrapping_offset(_94);
-                            _95 = frame_sroa_2_4_sroa_idx23 as *mut u64;
-                            (*_95) = _47;
-                            break 'b16;
-                        } else {
-                            frame_sroa_2_0 = frame_sroa_2_1;
-                            l4_053 = or24;
-                            l1_052 = add19;
-                            l2_051 = add38;
-                            continue 'l3;
-                        }
-                    } else {
-                        _96 = frame_sroa_2 as *mut u64;
-                        (*_96) = frame_sroa_2_1;
-                        break 'b16;
-                    }
-                }
-                'b19: {
-                    if cmp937 {
-                        _97 = 4u64 as isize;
-                        frame_sroa_2_4_sroa_idx = frame_sroa_2.wrapping_offset(_97);
-                        _98 = frame_sroa_2_4_sroa_idx as *mut u64;
-                        frame_sroa_2_4_frame_sroa_2_8_ld7 = (*_98);
-                        ld3 = frame_sroa_2_4_frame_sroa_2_8_ld7;
-                        break 'b19;
-                    } else {
-                        v_u32_1048652 = Val(4503926044884996u64);
-                        v_u32_4 = Val(17179869188u64);
-                        Symbol__Pair__ = symbol_new_from_linear_memory(v_u32_1048652, v_u32_4);
-                        payload = Symbol__Pair__.0;
-                        ld3 = payload;
-                        break 'b19;
-                    }
-                }
-                _99 = frame32 as usize;
-                fp = _99 as u64;
-                _100 = 8u64 as isize;
-                fp12 = frame32.wrapping_offset(_100);
-                _101 = fp12 as *mut u64;
-                (*_101) = arg_payload1;
-                _102 = frame32 as *mut u64;
-                (*_102) = arg_payload;
-                shl4 = fp.wrapping_shl(32u64 as u32);
-                or5 = shl4 | 4u64;
-                v_u32_1048636 = Val(4503857325408260u64);
-                to_val9 = Val(or5);
-                v_u32_2 = Val(8589934596u64);
-                Map_BAD_tag_56__BAD_tag_57_ = map_new_from_linear_memory(v_u32_1048636, to_val9, v_u32_2);
-                payload41 = Map_BAD_tag_56__BAD_tag_57_.0;
-                _103 = 8u64 as isize;
-                slot8 = frame.wrapping_offset(_103);
-                _104 = slot8 as *mut u64;
-                (*_104) = payload41;
-                _105 = frame as *mut u64;
-                (*_105) = ld3;
-                _106 = frame as usize;
-                fp42 = _106 as u64;
-                shl = fp42.wrapping_shl(32u64 as u32);
-                or = shl | 4u64;
-                to_val43 = Val(or);
-                vec_new_from_linear_memory_76 = vec_new_from_linear_memory(to_val43, v_u32_2);
-                payload44 = vec_new_from_linear_memory_76.0;
-                to_val45 = Val(payload44);
-                Persistent = StorageType::Persistent;
-                has_contract_data_80 = has_contract_data(to_val45, Persistent);
-                payload46 = has_contract_data_80.0;
-                cmp47 = payload46 == 1u64;
-                zext = cmp47 as u64;
-                to_val = Val(zext);
-                _0 = to_val;
-                return _0;
-            }
-        } else {
-            trap();
-        }
+        trap();
     }
 }
 
 pub fn set_flag() -> Val {
     unsafe {
-        let mut v_Symbol__f__: Val;
-        let mut v_true: Val;
-        let mut Persistent: StorageType;
-        let mut put_contract_data_4: Val;
-        let mut v_void: Val;
+        let mut put_contract_data_1: Val;
         let mut _0: Val;
-        v_Symbol__f__ = Val(11022u64);
-        v_true = Val(1u64);
-        Persistent = StorageType::Persistent;
-        put_contract_data_4 = put_contract_data(v_Symbol__f__, v_true, Persistent);
-        v_void = Val(2u64);
-        _0 = v_void;
+        put_contract_data_1 = put_contract_data(Val::sym("f"), Val::TRUE, StorageType::Persistent);
+        _0 = Val::VOID;
         return _0;
     }
 }
 
 fn f37() {
     unsafe {
-        let mut v_Error_type_0__code_1_: Val;
-        let mut fail_with_error_2: Val;
-        v_Error_type_0__code_1_ = Val(4294967299u64);
-        fail_with_error_2 = fail_with_error(v_Error_type_0__code_1_);
+        let mut fail_with_error_1: Val;
+        fail_with_error_1 = fail_with_error(Val::error(0, 1));
         return;
     }
 }
 
-fn f50() {
+fn f50() -> ! {
     unsafe {
         f51();
-        unreachable!();
     }
 }
 
-fn f51() {
+fn f51() -> ! {
     unsafe {
         let mut frame: *mut u8;
         let mut slot16: *mut u8;
@@ -421,44 +242,35 @@ fn f51() {
         let mut fp: u64;
         let mut slot20: *mut u8;
         let mut t6: u32;
-        let mut _9: [u8; 32] = core::mem::zeroed();
-        let mut _10: *mut [u8; 32];
-        let mut _11: isize;
+        let mut _9: [u64; 4];
+        let mut _10: *mut [u64; 4];
+        let mut _11: *mut u32;
         let mut _12: *mut u32;
-        let mut _13: isize;
+        let mut _13: *mut u16;
         let mut _14: *mut u32;
-        let mut _15: isize;
-        let mut _16: *mut u16;
-        let mut _17: isize;
-        let mut _18: *mut u32;
-        let mut _19: usize;
-        let mut _20: isize;
-        let mut _21: *mut u32;
+        let mut _15: usize;
+        let mut _16: *mut u32;
+        _9 = [0u64; 4];
         _10 = &raw mut _9;
         frame = _10 as *mut u8;
-        _11 = 16u64 as isize;
-        slot16 = frame.wrapping_offset(_11);
-        _12 = slot16 as *mut u32;
-        (*_12) = 29u32;
-        _13 = 12u64 as isize;
-        slot12 = frame.wrapping_offset(_13);
-        _14 = slot12 as *mut u32;
-        (*_14) = 1048577u32;
-        _15 = 28u64 as isize;
-        slot28 = frame.wrapping_offset(_15);
-        _16 = slot28 as *mut u16;
-        (*_16) = 1u16;
-        _17 = 24u64 as isize;
-        slot24 = frame.wrapping_offset(_17);
-        _18 = slot24 as *mut u32;
-        (*_18) = 1048604u32;
-        _19 = slot12 as usize;
-        fp = _19 as u64;
-        _20 = 20u64 as isize;
-        slot20 = frame.wrapping_offset(_20);
+        slot16 = frame.wrapping_offset(16isize);
+        _11 = slot16 as *mut u32;
+        (*_11) = 29u32;
+        slot12 = frame.wrapping_offset(12isize);
+        _12 = slot12 as *mut u32;
+        (*_12) = 1048577u32;
+        slot28 = frame.wrapping_offset(28isize);
+        _13 = slot28 as *mut u16;
+        (*_13) = 1u16;
+        slot24 = frame.wrapping_offset(24isize);
+        _14 = slot24 as *mut u32;
+        (*_14) = 1048604u32;
+        _15 = slot12 as usize;
+        fp = _15 as u64;
+        slot20 = frame.wrapping_offset(20isize);
         t6 = fp as u32;
-        _21 = slot20 as *mut u32;
-        (*_21) = t6;
+        _16 = slot20 as *mut u32;
+        (*_16) = t6;
         trap();
     }
 }

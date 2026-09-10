@@ -93,60 +93,65 @@ no result on a 187-function contract.
 ## `ponytail-mir`: wasm -> LLVM -> MIR -> Rust
 
 From the `--inline` IR, `../ponytail-mir` (a nightly crate on `rustc_private`)
-builds real MIR: `rustc_middle::mir::Body` values inside a `TyCtxt`, typed
-with rustc's own `Ty`s. The `TyCtxt` comes from compiling a stub crate
-generated from the `.ll`'s own declarations -- `Val` and `StorageType`, one
-`extern "C"` per host function and intrinsic, one static per wasm global, one
-empty `fn` per defined function -- so every body has a `DefId` with the right
-signature. One basic block per LLVM block, split at calls; phis are copies in
-an edge block; `%Val` is the ADT, its constructor an aggregate and its payload
-a field projection; a `StorageType` literal is an enum variant, a runtime one a
-transmute; a frame is a `[u8; N]` local whose raw address is taken. Anything
-without a MIR equivalent is an error, never a guess. rustc then validates
-every body (`-Zvalidate-mir`, through its own analysis-to-runtime pipeline)
-and prints it with the printer behind `-Zdump-mir`. From `three_bugs.mir`:
+makes the MIR rustc's own. It generates a stub crate from the `.ll`'s
+declarations -- `Val` and `StorageType`, one `extern "C"` per host function
+and intrinsic, one static per wasm global, one empty `fn` per defined function
+-- compiles it in-process, and replaces rustc's `build_mir_inner_impl` hook so
+that each stub's MIR *is* the body lifted from the LLVM function of the same
+name. From there rustc treats it like any body it built itself: it
+borrow-checks it (the NLL type check verifies every statement), validates it
+after every pass (`-Zvalidate-mir`), and optimizes it with its own inliner,
+GVN, copy propagation and dead-code passes (`-Zmir-opt-level=3`).
+`optimized_mir` is what gets printed and what the Rust is emitted from.
+
+The lift itself: one basic block per LLVM block, split at calls; phis as copies
+in an edge block; `%Val` as the ADT, its constructor an aggregate and its
+payload a field projection; a `StorageType` literal an enum variant, a runtime
+one a call to `core::intrinsics::transmute` that rustc lowers to its own
+`Transmute` cast; a frame a `[u64; N]` local whose raw address is taken;
+`trunc to i1` the low bit, since MIR has no int-to-bool cast; LLVM `noreturn`
+is `-> !`. Anything without a MIR equivalent is an error, never a guess. From
+`three_bugs.mir`, after rustc's passes:
 
 ```
 fn set_flag() -> Val {
-    debug v_Symbol__f__ => _1;
-    debug v_true => _2;
-    debug Persistent => _3;
-    debug put_contract_data => _4;
-    debug v_void => _5;
+    debug v_Symbol__f__ => const Val(11022_u64);
+    debug v_true => const Val(1_u64);
+    debug Persistent => const StorageType::Persistent;
+    debug put_contract_data => _1;
+    debug v_void => const Val(2_u64);
     let mut _0: Val;
     let mut _1: Val;
-    let mut _2: Val;
-    let mut _3: StorageType;
-    let mut _4: Val;
-    let mut _5: Val;
 
     bb0: {
-        _1 = Val(const 11022_u64);
-        _2 = Val(const 1_u64);
-        _3 = StorageType::Persistent;
-        _4 = put_contract_data(copy _1, copy _2, copy _3) -> [return: bb1, unwind unreachable];
+        _1 = put_contract_data(const Val(11022_u64), const Val(1_u64), const StorageType::Persistent) -> [return: bb1, unwind unreachable];
     }
 
     bb1: {
-        _5 = Val(const 2_u64);
-        _0 = copy _5;
+        _0 = const Val(2_u64);
         return;
     }
 }
 ```
 
-`--rust` then emits Rust *from that MIR*, structured with rustc's own analyses
-over the body: reverse postorder, dominators, predecessors. A block two edges
-reach sits after its immediate dominator in a labelled block, so a jump to it
-is `break 'b`; a loop header is `'l: loop { .. }`, its back edges `continue 'l`,
-and the merge nodes of its body stay inside the loop while its exits follow it;
-every other block is written inline where its one predecessor branches. Every
-local is declared once and assigned where MIR assigns it, and rustc's
-definite-initialisation check confirms what SSA promised. `pick`, the
-five-way dispatch, from `three_bugs.rs`:
+`--rust` emits Rust from that MIR, structured with rustc's own analyses over
+the body: reverse postorder, dominators, predecessors. A block two edges reach
+sits after its immediate dominator in a labelled block, so a jump to it is
+`break 'b`; a loop header is `'l: loop { .. }`, its back edges `continue 'l`,
+the merge nodes of its body inside the loop and its exits after; every other
+block is written inline where its one predecessor branches. A jump that is the
+last thing before its target falls through, and a label nothing jumps to is
+not written. Every local is declared once and assigned where MIR assigns it,
+and rustc's definite-initialisation check confirms what MIR's borrow check
+established. Constants print through `const fn` constructors in the prelude
+(`Val::sym("persisted")`, `Val::u32(2)`, `Val::error(0, 1)`), so the encoding
+is written once and rustc checks it; a `u64` local whose every use is a
+`Val(..)` construction is typed `Val` too -- the consumer decides, as it does
+for a host-call argument -- which is how a phi merging `Symbol("a")` and
+`Error(Contract, 1)` reads. `pick`, from `three_bugs.rs`:
 
 ```rust
-pub fn pick(a0: Val) -> Val {
+pub fn pick(mut a0: Val) -> Val {
     unsafe {
         let mut arg_payload: u64;
         let mut cmp: bool;
@@ -155,29 +160,25 @@ pub fn pick(a0: Val) -> Val {
         let mut or_cond: bool;
         let mut lshr: u64;
         let mut _8: u8;
-        let mut brif_not: u64;
+        let mut brif_not: Val;
         let mut to_val: Val;
-        let mut _0: Val;
         arg_payload = a0.0;
         cmp = arg_payload < 21474836480u64;
         and = arg_payload & 255u64;
         cmp2_not = and == 4u64;
         or_cond = cmp & cmp2_not;
         if or_cond {
-            'b5: {
-                lshr = arg_payload.wrapping_shr(32u64 as u32);
-                _8 = lshr as u8;
-                match _8 {
-                    0 => { brif_not = 9742u64; break 'b5; }
-                    1 => { brif_not = 4294967299u64; break 'b5; }
-                    2 => { f37(); trap(); }
-                    3 => { f50(); unreachable!(); }
-                    _ => { brif_not = 10766u64; break 'b5; }
-                }
+            lshr = arg_payload.wrapping_shr(32u64 as u32);
+            _8 = lshr as u8;
+            match _8 {
+                0 => { brif_not = Val::sym("a"); }
+                1 => { brif_not = Val::error(0, 1); }
+                2 => { f37(); trap(); }
+                3 => { f50(); }
+                _ => { brif_not = Val::sym("e"); }
             }
-            to_val = Val(brif_not);
-            _0 = to_val;
-            return _0;
+            to_val = brif_not;
+            return to_val;
         } else {
             trap();
         }
@@ -190,11 +191,21 @@ pub fn pick(a0: Val) -> Val {
     cd ponytail-mir && cargo run --release -- ../contract.inline.ll --rust   # Rust, from the MIR
 
 Across the corpus below: 67 of 67 binaries, 1568 functions, build MIR that
-rustc validates and emit Rust that stable rustc accepts, all of it structured
-(31 s in total, 481k lines of MIR). A function whose control flow the
-structurer cannot place -- a jump into a region from outside it, which would
-mean an irreducible graph -- is emitted as a `loop { match __bb }` state
-machine with a comment saying so; the corpus has none.
+rustc accepts without a diagnostic and emit Rust that stable rustc accepts,
+all of it structured (47 s in total). Handing the passes to rustc instead of
+running a hand-picked subset cut the Rust by 15%, the locals by 20% and the
+labels by 78%, and left no raw `Val(n)` literal in 3894 constants. A function
+whose control flow the structurer cannot place -- a jump into a region from
+outside it, which would mean an irreducible graph -- is emitted as a
+`loop { match __bb }` state machine with a comment saying so; the corpus has
+none.
+
+What still reads as machine output: the two frames of `read` are `[u64; 2]`
+locals written through raw pointers, because the SDK builds the map's value
+array and the vec's element array in memory and hands the host their
+addresses; and `llvm.*` intrinsics (`memset`, `bswap`, `fshl`, 15 call sites
+in the corpus) are typed `extern "C"` declarations rather than `core::ptr` and
+`u64` methods.
 
 ## `errors.wasm` — vendored, 796 bytes
 

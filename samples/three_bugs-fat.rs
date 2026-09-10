@@ -3,10 +3,45 @@
 #![no_std]
 #![allow(unused, non_snake_case, non_camel_case_types, non_upper_case_globals, unreachable_code, unused_unsafe, bindings_with_variant_name)]
 
-/// A Soroban `Val`: 64 bits, tag in the low byte. Never an integer.
+/// A Soroban `Val`: 64 bits, tag in the low byte, body above. Never an integer.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct Val(pub u64);
+
+impl Val {
+    pub const FALSE: Val = Val(0);
+    pub const TRUE: Val = Val(1);
+    pub const VOID: Val = Val(2);
+    /// Tag 3. Type: 0 Contract, 1 WasmVm, 2 Context, 3 Storage, 4 Object,
+    /// 5 Crypto, 6 Events, 7 Budget, 8 Value, 9 Auth.
+    pub const fn error(ty: u32, code: u32) -> Val { Val(((code as u64) << 32) | (((ty & 0xff_ffff) as u64) << 8) | 3) }
+    pub const fn u32(v: u32) -> Val { Val(((v as u64) << 32) | 4) }
+    pub const fn i32(v: i32) -> Val { Val(((v as u32 as u64) << 32) | 5) }
+    /// Any other small tag with its 56-bit body: 6 U64Small, 7 I64Small,
+    /// 8 TimepointSmall, 9 DurationSmall, 10 U128Small, 11 I128Small,
+    /// 12 U256Small, 13 I256Small.
+    pub const fn small(tag: u8, body: u64) -> Val { Val((body << 8) | tag as u64) }
+    /// Tag 14, `SymbolSmall`: up to 9 chars of `_ 0-9 A-Z a-z`, 6 bits each,
+    /// the first char highest.
+    pub const fn sym(s: &str) -> Val {
+        let b = s.as_bytes();
+        let mut acc = 0u64;
+        let mut i = 0;
+        while i < b.len() {
+            let c = b[i];
+            let code = match c {
+                b'_' => 1,
+                b'0'..=b'9' => 2 + (c - b'0'),
+                b'A'..=b'Z' => 12 + (c - b'A'),
+                b'a'..=b'z' => 38 + (c - b'a'),
+                _ => panic!("not a symbol char"),
+            };
+            acc = (acc << 6) | code as u64;
+            i += 1;
+        }
+        Val((acc << 8) | 14)
+    }
+}
 
 /// `StorageType` is not a `Val`: it crosses the host boundary as a plain u64.
 #[repr(u64)]
@@ -20,8 +55,6 @@ extern "C" {
     pub fn unknown() -> Val;
     pub fn unknown_i64() -> u64;
 }
-pub static mut G0: u64 = 1048576;
-pub static mut G1: u64 = 1048652;
 
 extern "C" {
     /// wasm import `b.j`
@@ -38,7 +71,7 @@ extern "C" {
     pub fn vec_new_from_linear_memory(a0: Val, a1: Val) -> Val;
 }
 
-pub fn read(a0: Val, a1: Val) -> Val {
+pub fn read(mut a0: Val, mut a1: Val) -> Val {
     unsafe {
         let mut frame: *mut u8;
         let mut arg_payload: u64;
@@ -47,210 +80,117 @@ pub fn read(a0: Val, a1: Val) -> Val {
         let mut cmp_not: bool;
         let mut and2: u64;
         let mut cmp3_not: bool;
-        let mut or_cond: bool;
-        let mut shl47: u64;
-        let mut or48: u64;
-        let mut l1_0: u64;
-        let mut l2_0: u64;
-        let mut l3_1: u64;
-        let mut p: *mut u8;
-        let mut v: u8;
-        let mut zx: u64;
-        let mut cmp4: bool;
-        let mut l4_0: u64;
-        let mut shl30: u64;
-        let mut and32: u64;
-        let mut or33: u64;
-        let mut add35: u64;
-        let mut add37: u64;
-        let mut eqz: bool;
-        let mut add: u64;
-        let mut and12: u64;
-        let mut cmp8: bool;
-        let mut add28: u64;
-        let mut add26: u64;
-        let mut add12: u64;
-        let mut and13: u64;
-        let mut cmp14: bool;
-        let mut bottom: u64;
-        let mut brif20_not: bool;
-        let mut add22: u64;
-        let mut v_u32_1048640: Val;
-        let mut v_u32_4: Val;
+        let mut bottom_2: u64;
+        let mut brif20_not_2: bool;
+        let mut bottom_3: u64;
+        let mut brif20_not_3: bool;
+        let mut bottom_1: u64;
+        let mut brif20_not_1: bool;
         let mut Symbol__Pair__: Val;
         let mut payload: u64;
-        let mut ld11: u64;
         let mut slot8: *mut u8;
         let mut fp11: *mut u8;
         let mut fp: u64;
         let mut shl4: u64;
-        let mut or5: u64;
-        let mut v_u32_1048624: Val;
+        let mut or5: Val;
         let mut to_val9: Val;
-        let mut v_u32_2: Val;
-        let mut Map_BAD_tag_44__BAD_tag_45_: Val;
+        let mut Map__a____b__: Val;
+        let mut payload14: u64;
+        let mut vec_new_from_linear_memory_26: Val;
         let mut payload15: u64;
-        let mut vec_new_from_linear_memory_53: Val;
-        let mut payload16: u64;
-        let mut to_val17: Val;
-        let mut Persistent: StorageType;
-        let mut has_contract_data_57: Val;
-        let mut payload18: u64;
+        let mut has_contract_data_28: Val;
+        let mut payload17: u64;
         let mut cmp: bool;
-        let mut zext: u64;
+        let mut zext: Val;
+        let mut _32: [u64; 4];
+        let mut _33: *mut [u64; 4];
+        let mut _35: usize;
+        let mut _36: *mut u64;
+        let mut _37: *mut u64;
         let mut to_val: Val;
-        let mut _62: [u8; 32] = core::mem::zeroed();
-        let mut _63: *mut [u8; 32];
-        let mut _65: usize;
-        let mut _66: *mut u8;
-        let mut _67: isize;
-        let mut _68: isize;
-        let mut _69: usize;
-        let mut _70: *mut u64;
-        let mut _71: *mut u64;
-        let mut _72: *mut u64;
-        let mut _73: *mut u64;
-        let mut _0: Val;
-        'b15: {
-            _63 = &raw mut _62;
-            frame = _63 as *mut u8;
-            arg_payload = a0.0;
-            arg_payload1 = a1.0;
-            and = arg_payload & 255u64;
-            cmp_not = and == 77u64;
-            and2 = arg_payload1 & 255u64;
-            cmp3_not = and2 == 77u64;
-            if cmp_not {
-                or_cond = cmp3_not;
-                break 'b15;
-            } else {
-                or_cond = false;
-                break 'b15;
-            }
-        }
-        if or_cond {
-            'b3: {
-                l1_0 = 1048640u64;
-                l2_0 = 4u64;
-                l3_1 = 0u64;
-                break 'b3;
-            }
-            'b12: {
-                'l3: loop {
-                    'b4: {
-                        _65 = l1_0 as usize;
-                        p = _65 as *mut u8;
-                        _66 = p as *mut u8;
-                        v = (*_66);
-                        zx = v as u64;
-                        cmp4 = v == 95u8;
-                        if cmp4 {
-                            l4_0 = 1u64;
-                            break 'b4;
-                        } else {
-                            add = zx.wrapping_add(208u64);
-                            and12 = add & 254u64;
-                            cmp8 = and12 < 10u64;
-                            if cmp8 {
-                                add26 = zx.wrapping_add(18446744073709551570u64);
-                                l4_0 = add26;
-                                break 'b4;
-                            } else {
-                                add12 = zx.wrapping_add(191u64);
-                                and13 = add12 & 254u64;
-                                cmp14 = and13 < 26u64;
-                                if cmp14 {
-                                    add28 = zx.wrapping_add(18446744073709551563u64);
-                                    l4_0 = add28;
-                                    break 'b4;
-                                } else {
-                                    bottom = unknown_i64();
-                                    brif20_not = bottom == 0u64;
-                                    if brif20_not {
-                                        add22 = zx.wrapping_add(18446744073709551557u64);
-                                        l4_0 = add22;
-                                        break 'b4;
-                                    } else {
-                                        v_u32_1048640 = Val(4503874505277444u64);
-                                        v_u32_4 = Val(17179869188u64);
-                                        Symbol__Pair__ = symbol_new_from_linear_memory(v_u32_1048640, v_u32_4);
-                                        payload = Symbol__Pair__.0;
-                                        ld11 = payload;
-                                        break 'b12;
+        _32 = [0u64; 4];
+        _33 = &raw mut _32;
+        frame = _33 as *mut u8;
+        arg_payload = a0.0;
+        arg_payload1 = a1.0;
+        and = arg_payload & 255u64;
+        cmp_not = and == 77u64;
+        and2 = arg_payload1 & 255u64;
+        cmp3_not = and2 == 77u64;
+        match and {
+            77 => {
+                if cmp3_not {
+                    bottom_1 = unknown_i64();
+                    'b6: {
+                        brif20_not_1 = bottom_1 == 0u64;
+                        match bottom_1 {
+                            0 => {
+                                bottom_2 = unknown_i64();
+                                brif20_not_2 = bottom_2 == 0u64;
+                                match bottom_2 {
+                                    0 => {
+                                        bottom_3 = unknown_i64();
+                                        brif20_not_3 = bottom_3 == 0u64;
+                                        match bottom_3 {
+                                            0 => {
+                                                payload = 1852552974u64;
+                                                break 'b6;
+                                            }
+                                            _ => {}
+                                        }
                                     }
+                                    _ => {}
                                 }
                             }
+                            _ => {}
                         }
+                        Symbol__Pair__ = symbol_new_from_linear_memory(Val::u32(1048640), Val::u32(4));
+                        payload = Symbol__Pair__.0;
                     }
-                    shl30 = l3_1.wrapping_shl(6u64 as u32);
-                    and32 = l4_0 & 255u64;
-                    or33 = and32 | shl30;
-                    add35 = l1_0.wrapping_add(1u64);
-                    add37 = l2_0.wrapping_add(18446744073709551615u64);
-                    eqz = add37 == 0u64;
-                    if eqz {
-                        shl47 = or33.wrapping_shl(8u64 as u32);
-                        or48 = shl47 | 14u64;
-                        ld11 = or48;
-                        break 'b12;
-                    } else {
-                        l1_0 = add35;
-                        l2_0 = add37;
-                        l3_1 = or33;
-                        continue 'l3;
-                    }
+                    slot8 = frame.wrapping_offset(8isize);
+                    fp11 = frame.wrapping_offset(16isize);
+                    _35 = slot8 as usize;
+                    fp = _35 as u64;
+                    _36 = fp11 as *mut u64;
+                    (*_36) = arg_payload1;
+                    _37 = slot8 as *mut u64;
+                    (*_37) = arg_payload;
+                    shl4 = fp.wrapping_shl(32u64 as u32);
+                    or5 = Val(shl4 | 4u64);
+                    to_val9 = or5;
+                    Map__a____b__ = map_new_from_linear_memory(Val::u32(1048624), to_val9, Val::u32(2));
+                    payload14 = Map__a____b__.0;
+                    (*_36) = payload14;
+                    (*_37) = payload;
+                    vec_new_from_linear_memory_26 = vec_new_from_linear_memory(to_val9, Val::u32(2));
+                    payload15 = vec_new_from_linear_memory_26.0;
+                    has_contract_data_28 = has_contract_data(vec_new_from_linear_memory_26, StorageType::Persistent);
+                    payload17 = has_contract_data_28.0;
+                    cmp = payload17 == 1u64;
+                    zext = Val(cmp as u64);
+                    to_val = zext;
+                    return to_val;
                 }
             }
-            _67 = 8u64 as isize;
-            slot8 = frame.wrapping_offset(_67);
-            _68 = 16u64 as isize;
-            fp11 = frame.wrapping_offset(_68);
-            _69 = slot8 as usize;
-            fp = _69 as u64;
-            _70 = fp11 as *mut u64;
-            (*_70) = arg_payload1;
-            _71 = slot8 as *mut u64;
-            (*_71) = arg_payload;
-            shl4 = fp.wrapping_shl(32u64 as u32);
-            or5 = shl4 | 4u64;
-            v_u32_1048624 = Val(4503805785800708u64);
-            to_val9 = Val(or5);
-            v_u32_2 = Val(8589934596u64);
-            Map_BAD_tag_44__BAD_tag_45_ = map_new_from_linear_memory(v_u32_1048624, to_val9, v_u32_2);
-            payload15 = Map_BAD_tag_44__BAD_tag_45_.0;
-            _72 = fp11 as *mut u64;
-            (*_72) = payload15;
-            _73 = slot8 as *mut u64;
-            (*_73) = ld11;
-            vec_new_from_linear_memory_53 = vec_new_from_linear_memory(to_val9, v_u32_2);
-            payload16 = vec_new_from_linear_memory_53.0;
-            to_val17 = Val(payload16);
-            Persistent = StorageType::Persistent;
-            has_contract_data_57 = has_contract_data(to_val17, Persistent);
-            payload18 = has_contract_data_57.0;
-            cmp = payload18 == 1u64;
-            zext = cmp as u64;
-            to_val = Val(zext);
-            _0 = to_val;
-            return _0;
-        } else {
-            trap();
+            _ => {
+                cmp3_not = false;
+            }
         }
+        trap();
     }
 }
 
-pub fn pick(a0: Val) -> Val {
+pub fn pick(mut a0: Val) -> Val {
     unsafe {
         let mut arg_payload: u64;
         let mut and: u64;
         let mut cmp_not: bool;
         let mut cmp2: bool;
         let mut or_cond: bool;
-        let mut l0_0: u64;
-        let mut to_val: Val;
+        let mut l0_0: Val;
         let mut lshr: u64;
         let mut sel: u32;
-        let mut _0: Val;
+        let mut to_val: Val;
         arg_payload = a0.0;
         and = arg_payload & 255u64;
         cmp_not = and != 4u64;
@@ -259,75 +199,57 @@ pub fn pick(a0: Val) -> Val {
         if or_cond {
             trap();
         } else {
-            'b1: {
-                lshr = arg_payload.wrapping_shr(32u64 as u32);
-                sel = lshr as u32;
-                match sel {
-                    4 => {
-                        l0_0 = 10766u64;
-                        break 'b1;
-                    }
-                    1 => {
-                        l0_0 = 4294967299u64;
-                        break 'b1;
-                    }
-                    2 => {
-                        f15();
-                        trap();
-                    }
-                    3 => {
-                        f24();
-                        unreachable!();
-                    }
-                    _ => {
-                        l0_0 = 9742u64;
-                        break 'b1;
-                    }
+            lshr = arg_payload.wrapping_shr(32u64 as u32);
+            sel = lshr as u32;
+            match sel {
+                4 => {
+                    l0_0 = Val::sym("e");
+                }
+                1 => {
+                    l0_0 = Val::error(0, 1);
+                }
+                2 => {
+                    f15();
+                    trap();
+                }
+                3 => {
+                    f24();
+                }
+                _ => {
+                    l0_0 = Val::sym("a");
                 }
             }
-            to_val = Val(l0_0);
-            _0 = to_val;
-            return _0;
+            to_val = l0_0;
+            return to_val;
         }
     }
 }
 
 pub fn set_flag() -> Val {
     unsafe {
-        let mut v_Symbol__f__: Val;
-        let mut v_true: Val;
-        let mut Persistent: StorageType;
-        let mut put_contract_data_4: Val;
-        let mut v_void: Val;
+        let mut put_contract_data_1: Val;
         let mut _0: Val;
-        v_Symbol__f__ = Val(11022u64);
-        v_true = Val(1u64);
-        Persistent = StorageType::Persistent;
-        put_contract_data_4 = put_contract_data(v_Symbol__f__, v_true, Persistent);
-        v_void = Val(2u64);
-        _0 = v_void;
+        put_contract_data_1 = put_contract_data(Val::sym("f"), Val::TRUE, StorageType::Persistent);
+        _0 = Val::VOID;
         return _0;
     }
 }
 
 fn f15() {
     unsafe {
-        let mut v_Error_type_0__code_1_: Val;
-        let mut fail_with_error_2: Val;
-        v_Error_type_0__code_1_ = Val(4294967299u64);
-        fail_with_error_2 = fail_with_error(v_Error_type_0__code_1_);
+        let mut fail_with_error_1: Val;
+        fail_with_error_1 = fail_with_error(Val::error(0, 1));
         return;
     }
 }
 
-fn f24() {
+fn f24() -> ! {
     unsafe {
         f25();
-        unreachable!();
     }
 }
 
-fn f25() {
+fn f25() -> ! {
     unsafe {
         let mut frame: *mut u8;
         let mut slot16: *mut u8;
@@ -337,44 +259,35 @@ fn f25() {
         let mut fp: u64;
         let mut slot20: *mut u8;
         let mut t6: u32;
-        let mut _9: [u8; 32] = core::mem::zeroed();
-        let mut _10: *mut [u8; 32];
-        let mut _11: isize;
+        let mut _9: [u64; 4];
+        let mut _10: *mut [u64; 4];
+        let mut _11: *mut u32;
         let mut _12: *mut u32;
-        let mut _13: isize;
+        let mut _13: *mut u16;
         let mut _14: *mut u32;
-        let mut _15: isize;
-        let mut _16: *mut u16;
-        let mut _17: isize;
-        let mut _18: *mut u32;
-        let mut _19: usize;
-        let mut _20: isize;
-        let mut _21: *mut u32;
+        let mut _15: usize;
+        let mut _16: *mut u32;
+        _9 = [0u64; 4];
         _10 = &raw mut _9;
         frame = _10 as *mut u8;
-        _11 = 16u64 as isize;
-        slot16 = frame.wrapping_offset(_11);
-        _12 = slot16 as *mut u32;
-        (*_12) = 29u32;
-        _13 = 12u64 as isize;
-        slot12 = frame.wrapping_offset(_13);
-        _14 = slot12 as *mut u32;
-        (*_14) = 1048576u32;
-        _15 = 28u64 as isize;
-        slot28 = frame.wrapping_offset(_15);
-        _16 = slot28 as *mut u16;
-        (*_16) = 1u16;
-        _17 = 24u64 as isize;
-        slot24 = frame.wrapping_offset(_17);
-        _18 = slot24 as *mut u32;
-        (*_18) = 1048604u32;
-        _19 = slot12 as usize;
-        fp = _19 as u64;
-        _20 = 20u64 as isize;
-        slot20 = frame.wrapping_offset(_20);
+        slot16 = frame.wrapping_offset(16isize);
+        _11 = slot16 as *mut u32;
+        (*_11) = 29u32;
+        slot12 = frame.wrapping_offset(12isize);
+        _12 = slot12 as *mut u32;
+        (*_12) = 1048576u32;
+        slot28 = frame.wrapping_offset(28isize);
+        _13 = slot28 as *mut u16;
+        (*_13) = 1u16;
+        slot24 = frame.wrapping_offset(24isize);
+        _14 = slot24 as *mut u32;
+        (*_14) = 1048604u32;
+        _15 = slot12 as usize;
+        fp = _15 as u64;
+        slot20 = frame.wrapping_offset(20isize);
         t6 = fp as u32;
-        _21 = slot20 as *mut u32;
-        (*_21) = t6;
+        _16 = slot20 as *mut u32;
+        (*_16) = t6;
         trap();
     }
 }

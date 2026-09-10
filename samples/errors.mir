@@ -8,13 +8,13 @@ fn hello(_1: Val) -> Val {
     debug cmp2.not => _5;
     debug or.cond => _6;
     debug lshr => _7;
-    debug v_Symbol__persisted__ => _8;
-    debug v_true => _9;
-    debug Persistent => _10;
-    debug put_contract_data => _11;
-    debug sel => _12;
-    debug l0.0 => _13;
-    debug to_val => _14;
+    debug v_Symbol__persisted__ => const Val(3867323444879862030_u64);
+    debug v_true => const Val(1_u64);
+    debug Persistent => const StorageType::Persistent;
+    debug put_contract_data => _8;
+    debug sel => _9;
+    debug l0.0 => _10;
+    debug to_val => _0;
     let mut _0: Val;
     let mut _2: u64;
     let mut _3: bool;
@@ -23,18 +23,14 @@ fn hello(_1: Val) -> Val {
     let mut _6: bool;
     let mut _7: u64;
     let mut _8: Val;
-    let mut _9: Val;
-    let mut _10: StorageType;
-    let mut _11: Val;
-    let mut _12: u32;
-    let mut _13: u64;
-    let mut _14: Val;
-    let mut _15: !;
-    let mut _16: ();
-    let mut _17: !;
-    let mut _18: ();
-    let mut _19: ();
-    let mut _20: !;
+    let mut _9: u32;
+    let mut _10: u64;
+    let mut _11: !;
+    let mut _12: ();
+    let mut _13: !;
+    let mut _14: !;
+    let mut _15: ();
+    let mut _16: !;
 
     bb0: {
         _2 = copy (_1.0: u64);
@@ -46,60 +42,52 @@ fn hello(_1: Val) -> Val {
     }
 
     bb1: {
-        _15 = trap() -> unwind unreachable;
+        _11 = trap() -> unwind unreachable;
     }
 
     bb2: {
         _7 = Shr(copy _2, const 32_u64);
-        _8 = Val(const 3867323444879862030_u64);
-        _9 = Val(const 1_u64);
-        _10 = StorageType::Persistent;
-        _11 = put_contract_data(copy _8, copy _9, copy _10) -> [return: bb8, unwind unreachable];
+        _8 = put_contract_data(const Val(3867323444879862030_u64), const Val(1_u64), const StorageType::Persistent) -> [return: bb8, unwind unreachable];
     }
 
     bb3: {
-        _14 = Val(copy _13);
-        _0 = copy _14;
+        _0 = Val(copy _10);
         return;
     }
 
     bb4: {
-        _13 = const 196144296974_u64;
+        _10 = const 196144296974_u64;
         goto -> bb3;
     }
 
     bb5: {
-        _16 = f3(const 38654705667_u64) -> [return: bb10, unwind unreachable];
+        _12 = f3(const 38654705667_u64) -> [return: bb10, unwind unreachable];
     }
 
     bb6: {
-        _18 = f4() -> [return: bb11, unwind unreachable];
+        _14 = f4() -> unwind unreachable;
     }
 
     bb7: {
-        _19 = f3(const 4294967299_u64) -> [return: bb12, unwind unreachable];
+        _15 = f3(const 4294967299_u64) -> [return: bb11, unwind unreachable];
     }
 
     bb8: {
-        _12 = copy _7 as u32 (IntToInt);
-        switchInt(copy _12) -> [0: bb4, 1: bb9, 2: bb7, 3: bb6, otherwise: bb5];
+        _9 = copy _7 as u32 (IntToInt);
+        switchInt(copy _9) -> [0: bb4, 1: bb9, 2: bb7, 3: bb6, otherwise: bb5];
     }
 
     bb9: {
-        _13 = const 4294967299_u64;
+        _10 = const 4294967299_u64;
         goto -> bb3;
     }
 
     bb10: {
-        _17 = trap() -> unwind unreachable;
+        _13 = trap() -> unwind unreachable;
     }
 
     bb11: {
-        unreachable;
-    }
-
-    bb12: {
-        _20 = trap() -> unwind unreachable;
+        _16 = trap() -> unwind unreachable;
     }
 }
 
@@ -115,7 +103,7 @@ fn f3(_1: u64) -> () {
 
     bb0: {
         _2 = Val(copy _1);
-        _3 = fail_with_error(copy _2) -> [return: bb1, unwind unreachable];
+        _3 = fail_with_error(move _2) -> [return: bb1, unwind unreachable];
     }
 
     bb1: {
@@ -125,8 +113,8 @@ fn f3(_1: u64) -> () {
 
 // MIR for `f4` 0 ponytail
 
-fn f4() -> () {
-    let mut _0: ();
+fn f4() -> ! {
+    let mut _0: !;
     let mut _1: !;
 
     bb0: {

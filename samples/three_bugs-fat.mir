@@ -10,58 +10,37 @@ fn read(_1: Val, _2: Val) -> Val {
     debug cmp.not => _7;
     debug and2 => _8;
     debug cmp3.not => _9;
-    debug or.cond => _10;
-    debug shl47 => _11;
-    debug or48 => _12;
-    debug l1.0 => _13;
-    debug l2.0 => _14;
-    debug l3.1 => _15;
-    debug p => _16;
-    debug v => _17;
-    debug zx => _18;
-    debug cmp4 => _19;
-    debug l4.0 => _20;
-    debug shl30 => _21;
-    debug and32 => _22;
-    debug or33 => _23;
-    debug add35 => _24;
-    debug add37 => _25;
-    debug eqz => _26;
-    debug add => _27;
-    debug and12 => _28;
-    debug cmp8 => _29;
-    debug add28 => _30;
-    debug add26 => _31;
-    debug add12 => _32;
-    debug and13 => _33;
-    debug cmp14 => _34;
-    debug bottom => _35;
-    debug brif20.not => _36;
-    debug add22 => _37;
-    debug v_u32_1048640 => _38;
-    debug v_u32_4 => _39;
-    debug Symbol__Pair__ => _40;
-    debug payload => _41;
-    debug ld11 => _42;
-    debug slot8 => _43;
-    debug fp11 => _44;
-    debug fp => _45;
-    debug shl4 => _46;
-    debug or5 => _47;
-    debug v_u32_1048624 => _48;
-    debug to_val9 => _49;
-    debug v_u32_2 => _50;
-    debug Map_BAD_tag_44__BAD_tag_45_ => _51;
-    debug payload15 => _52;
-    debug vec_new_from_linear_memory => _53;
-    debug payload16 => _54;
-    debug to_val17 => _55;
-    debug Persistent => _56;
-    debug has_contract_data => _57;
-    debug payload18 => _58;
-    debug cmp => _59;
-    debug zext => _60;
-    debug to_val => _61;
+    debug or.cond => _9;
+    debug bottom.2 => _10;
+    debug brif20.not.2 => _11;
+    debug bottom.3 => _12;
+    debug brif20.not.3 => _13;
+    debug bottom.1 => _14;
+    debug brif20.not.1 => _15;
+    debug v_u32_1048640 => const Val(4503874505277444_u64);
+    debug v_u32_4 => const Val(17179869188_u64);
+    debug Symbol__Pair__ => _16;
+    debug payload => _17;
+    debug ld11 => _17;
+    debug slot8 => _18;
+    debug fp11 => _19;
+    debug fp => _20;
+    debug shl4 => _21;
+    debug or5 => _22;
+    debug v_u32_1048624 => const Val(4503805785800708_u64);
+    debug to_val9 => _23;
+    debug v_u32_2 => const Val(8589934596_u64);
+    debug Map__a____b__ => _24;
+    debug payload14 => _25;
+    debug vec_new_from_linear_memory => _26;
+    debug payload15 => _27;
+    debug to_val16 => _26;
+    debug Persistent => const StorageType::Persistent;
+    debug has_contract_data => _28;
+    debug payload17 => _29;
+    debug cmp => _30;
+    debug zext => _31;
+    debug to_val => _0;
     let mut _0: Val;
     let mut _3: *mut u8;
     let mut _4: u64;
@@ -70,241 +49,134 @@ fn read(_1: Val, _2: Val) -> Val {
     let mut _7: bool;
     let mut _8: u64;
     let mut _9: bool;
-    let mut _10: bool;
-    let mut _11: u64;
+    let mut _10: u64;
+    let mut _11: bool;
     let mut _12: u64;
-    let mut _13: u64;
+    let mut _13: bool;
     let mut _14: u64;
-    let mut _15: u64;
-    let mut _16: *mut u8;
-    let mut _17: u8;
-    let mut _18: u64;
-    let mut _19: bool;
+    let mut _15: bool;
+    let mut _16: Val;
+    let mut _17: u64;
+    let mut _18: *mut u8;
+    let mut _19: *mut u8;
     let mut _20: u64;
     let mut _21: u64;
     let mut _22: u64;
-    let mut _23: u64;
-    let mut _24: u64;
+    let mut _23: Val;
+    let mut _24: Val;
     let mut _25: u64;
-    let mut _26: bool;
+    let mut _26: Val;
     let mut _27: u64;
-    let mut _28: u64;
-    let mut _29: bool;
-    let mut _30: u64;
+    let mut _28: Val;
+    let mut _29: u64;
+    let mut _30: bool;
     let mut _31: u64;
-    let mut _32: u64;
-    let mut _33: u64;
-    let mut _34: bool;
-    let mut _35: u64;
-    let mut _36: bool;
-    let mut _37: u64;
-    let mut _38: Val;
-    let mut _39: Val;
-    let mut _40: Val;
-    let mut _41: u64;
-    let mut _42: u64;
-    let mut _43: *mut u8;
-    let mut _44: *mut u8;
-    let mut _45: u64;
-    let mut _46: u64;
-    let mut _47: u64;
-    let mut _48: Val;
-    let mut _49: Val;
-    let mut _50: Val;
-    let mut _51: Val;
-    let mut _52: u64;
-    let mut _53: Val;
-    let mut _54: u64;
-    let mut _55: Val;
-    let mut _56: StorageType;
-    let mut _57: Val;
-    let mut _58: u64;
-    let mut _59: bool;
-    let mut _60: u64;
-    let mut _61: Val;
-    let mut _62: [u8; 32];
-    let mut _63: *mut [u8; 32];
-    let mut _64: !;
-    let mut _65: usize;
-    let mut _66: *mut u8;
-    let mut _67: isize;
-    let mut _68: isize;
-    let mut _69: usize;
-    let mut _70: *mut u64;
-    let mut _71: *mut u64;
-    let mut _72: *mut u64;
-    let mut _73: *mut u64;
+    let mut _32: [u64; 4];
+    let mut _33: *mut [u64; 4];
+    let mut _34: !;
+    let mut _35: usize;
+    let mut _36: *mut u64;
+    let mut _37: *mut u64;
 
     bb0: {
-        _63 = &raw mut _62;
-        _3 = copy _63 as *mut u8 (PtrToPtr);
+        _32 = [const 0_u64; 4];
+        _33 = &raw mut _32;
+        _3 = copy _33 as *mut u8 (PtrToPtr);
         _4 = copy (_1.0: u64);
         _5 = copy (_2.0: u64);
         _6 = BitAnd(copy _4, const 255_u64);
         _7 = Eq(copy _6, const 77_u64);
         _8 = BitAnd(copy _5, const 255_u64);
         _9 = Eq(copy _8, const 77_u64);
-        switchInt(copy _7) -> [0: bb14, otherwise: bb13];
+        switchInt(copy _6) -> [77: bb7, otherwise: bb8];
     }
 
     bb1: {
-        _64 = trap() -> unwind unreachable;
+        _34 = trap() -> unwind unreachable;
     }
 
     bb2: {
-        _11 = Shl(copy _23, const 8_u64);
-        _12 = BitOr(copy _11, const 14_u64);
-        _42 = copy _12;
-        goto -> bb12;
+        _10 = unknown_i64() -> [return: bb9, unwind unreachable];
     }
 
     bb3: {
-        _65 = copy _13 as usize (IntToInt);
-        _16 = copy _65 as *mut u8 (PointerWithExposedProvenance);
-        _66 = copy _16 as *mut u8 (PtrToPtr);
-        _17 = copy (*_66);
-        _18 = copy _17 as u64 (IntToInt);
-        _19 = Eq(copy _17, const 95_u8);
-        switchInt(copy _19) -> [0: bb5, otherwise: bb17];
+        _12 = unknown_i64() -> [return: bb10, unwind unreachable];
     }
 
     bb4: {
-        _21 = Shl(copy _15, const 6_u64);
-        _22 = BitAnd(copy _20, const 255_u64);
-        _23 = BitOr(copy _22, copy _21);
-        _24 = Add(copy _13, const 1_u64);
-        _25 = Add(copy _14, const u64::MAX);
-        _26 = Eq(copy _25, const 0_u64);
-        switchInt(copy _26) -> [0: bb18, otherwise: bb2];
+        _14 = unknown_i64() -> [return: bb12, unwind unreachable];
     }
 
     bb5: {
-        _27 = Add(copy _18, const 208_u64);
-        _28 = BitAnd(copy _27, const 254_u64);
-        _29 = Lt(copy _28, const 10_u64);
-        switchInt(copy _29) -> [0: bb8, otherwise: bb7];
+        _16 = symbol_new_from_linear_memory(const Val(4503874505277444_u64), const Val(17179869188_u64)) -> [return: bb13, unwind unreachable];
     }
 
     bb6: {
-        _30 = Add(copy _18, const 18446744073709551563_u64);
-        _20 = copy _30;
-        goto -> bb4;
+        _18 = Offset(copy _3, const 8_isize);
+        _19 = Offset(copy _3, const 16_isize);
+        _35 = copy _18 as usize (PointerExposeProvenance);
+        _20 = copy _35 as u64 (IntToInt);
+        _36 = copy _19 as *mut u64 (PtrToPtr);
+        (*_36) = copy _5;
+        _37 = copy _18 as *mut u64 (PtrToPtr);
+        (*_37) = copy _4;
+        _21 = Shl(copy _20, const 32_u64);
+        _22 = BitOr(copy _21, const 4_u64);
+        _23 = Val(copy _22);
+        _24 = map_new_from_linear_memory(const Val(4503805785800708_u64), copy _23, const Val(8589934596_u64)) -> [return: bb14, unwind unreachable];
     }
 
     bb7: {
-        _31 = Add(copy _18, const 18446744073709551570_u64);
-        _20 = copy _31;
-        goto -> bb4;
+        switchInt(copy _9) -> [0: bb1, otherwise: bb4];
     }
 
     bb8: {
-        _32 = Add(copy _18, const 191_u64);
-        _33 = BitAnd(copy _32, const 254_u64);
-        _34 = Lt(copy _33, const 26_u64);
-        switchInt(copy _34) -> [0: bb9, otherwise: bb6];
+        _9 = const false;
+        goto -> bb1;
     }
 
     bb9: {
-        _35 = unknown_i64() -> [return: bb19, unwind unreachable];
+        _11 = Eq(copy _10, const 0_u64);
+        switchInt(copy _10) -> [0: bb3, otherwise: bb5];
     }
 
     bb10: {
-        _37 = Add(copy _18, const 18446744073709551557_u64);
-        _20 = copy _37;
-        goto -> bb4;
+        _13 = Eq(copy _12, const 0_u64);
+        switchInt(copy _12) -> [0: bb11, otherwise: bb5];
     }
 
     bb11: {
-        _38 = Val(const 4503874505277444_u64);
-        _39 = Val(const 17179869188_u64);
-        _40 = symbol_new_from_linear_memory(copy _38, copy _39) -> [return: bb20, unwind unreachable];
+        _17 = const 1852552974_u64;
+        goto -> bb6;
     }
 
     bb12: {
-        _67 = const 8_u64 as isize (IntToInt);
-        _43 = Offset(copy _3, copy _67);
-        _68 = const 16_u64 as isize (IntToInt);
-        _44 = Offset(copy _3, copy _68);
-        _69 = copy _43 as usize (PointerExposeProvenance);
-        _45 = copy _69 as u64 (IntToInt);
-        _70 = copy _44 as *mut u64 (PtrToPtr);
-        (*_70) = copy _5;
-        _71 = copy _43 as *mut u64 (PtrToPtr);
-        (*_71) = copy _4;
-        _46 = Shl(copy _45, const 32_u64);
-        _47 = BitOr(copy _46, const 4_u64);
-        _48 = Val(const 4503805785800708_u64);
-        _49 = Val(copy _47);
-        _50 = Val(const 8589934596_u64);
-        _51 = map_new_from_linear_memory(copy _48, copy _49, copy _50) -> [return: bb21, unwind unreachable];
+        _15 = Eq(copy _14, const 0_u64);
+        switchInt(copy _14) -> [0: bb2, otherwise: bb5];
     }
 
     bb13: {
-        _10 = copy _9;
-        goto -> bb15;
+        _17 = copy (_16.0: u64);
+        goto -> bb6;
     }
 
     bb14: {
-        _10 = const false;
-        goto -> bb15;
+        _25 = copy (_24.0: u64);
+        (*_36) = copy _25;
+        (*_37) = copy _17;
+        _26 = vec_new_from_linear_memory(move _23, const Val(8589934596_u64)) -> [return: bb15, unwind unreachable];
     }
 
     bb15: {
-        switchInt(copy _10) -> [0: bb1, otherwise: bb16];
+        _27 = copy (_26.0: u64);
+        _28 = has_contract_data(move _26, const StorageType::Persistent) -> [return: bb16, unwind unreachable];
     }
 
     bb16: {
-        _13 = const 1048640_u64;
-        _14 = const 4_u64;
-        _15 = const 0_u64;
-        goto -> bb3;
-    }
-
-    bb17: {
-        _20 = const 1_u64;
-        goto -> bb4;
-    }
-
-    bb18: {
-        _13 = copy _24;
-        _14 = copy _25;
-        _15 = copy _23;
-        goto -> bb3;
-    }
-
-    bb19: {
-        _36 = Eq(copy _35, const 0_u64);
-        switchInt(copy _36) -> [0: bb11, otherwise: bb10];
-    }
-
-    bb20: {
-        _41 = copy (_40.0: u64);
-        _42 = copy _41;
-        goto -> bb12;
-    }
-
-    bb21: {
-        _52 = copy (_51.0: u64);
-        _72 = copy _44 as *mut u64 (PtrToPtr);
-        (*_72) = copy _52;
-        _73 = copy _43 as *mut u64 (PtrToPtr);
-        (*_73) = copy _42;
-        _53 = vec_new_from_linear_memory(copy _49, copy _50) -> [return: bb22, unwind unreachable];
-    }
-
-    bb22: {
-        _54 = copy (_53.0: u64);
-        _55 = Val(copy _54);
-        _56 = StorageType::Persistent;
-        _57 = has_contract_data(copy _55, copy _56) -> [return: bb23, unwind unreachable];
-    }
-
-    bb23: {
-        _58 = copy (_57.0: u64);
-        _59 = Eq(copy _58, const 1_u64);
-        _60 = copy _59 as u64 (IntToInt);
-        _61 = Val(copy _60);
-        _0 = copy _61;
+        _29 = copy (_28.0: u64);
+        _30 = Eq(copy _29, const 1_u64);
+        _31 = copy _30 as u64 (IntToInt);
+        _0 = Val(copy _31);
         return;
     }
 }
@@ -319,9 +191,9 @@ fn pick(_1: Val) -> Val {
     debug cmp2 => _5;
     debug or.cond => _6;
     debug l0.0 => _7;
-    debug to_val => _8;
-    debug lshr => _9;
-    debug sel => _10;
+    debug to_val => _0;
+    debug lshr => _8;
+    debug sel => _9;
     let mut _0: Val;
     let mut _2: u64;
     let mut _3: u64;
@@ -329,13 +201,12 @@ fn pick(_1: Val) -> Val {
     let mut _5: bool;
     let mut _6: bool;
     let mut _7: u64;
-    let mut _8: Val;
-    let mut _9: u64;
-    let mut _10: u32;
+    let mut _8: u64;
+    let mut _9: u32;
+    let mut _10: !;
     let mut _11: ();
-    let mut _12: ();
+    let mut _12: !;
     let mut _13: !;
-    let mut _14: !;
 
     bb0: {
         _2 = copy (_1.0: u64);
@@ -347,8 +218,7 @@ fn pick(_1: Val) -> Val {
     }
 
     bb1: {
-        _8 = Val(copy _7);
-        _0 = copy _8;
+        _0 = Val(copy _7);
         return;
     }
 
@@ -363,32 +233,28 @@ fn pick(_1: Val) -> Val {
     }
 
     bb4: {
-        _11 = f24() -> [return: bb8, unwind unreachable];
+        _10 = f24() -> unwind unreachable;
     }
 
     bb5: {
-        _12 = f15() -> [return: bb9, unwind unreachable];
+        _11 = f15() -> [return: bb8, unwind unreachable];
     }
 
     bb6: {
-        _14 = trap() -> unwind unreachable;
-    }
-
-    bb7: {
-        _9 = Shr(copy _2, const 32_u64);
-        _10 = copy _9 as u32 (IntToInt);
-        switchInt(copy _10) -> [4: bb3, 1: bb10, 2: bb5, 3: bb4, otherwise: bb2];
-    }
-
-    bb8: {
-        unreachable;
-    }
-
-    bb9: {
         _13 = trap() -> unwind unreachable;
     }
 
-    bb10: {
+    bb7: {
+        _8 = Shr(copy _2, const 32_u64);
+        _9 = copy _8 as u32 (IntToInt);
+        switchInt(copy _9) -> [4: bb3, 1: bb9, 2: bb5, 3: bb4, otherwise: bb2];
+    }
+
+    bb8: {
+        _12 = trap() -> unwind unreachable;
+    }
+
+    bb9: {
         _7 = const 4294967299_u64;
         goto -> bb1;
     }
@@ -397,28 +263,20 @@ fn pick(_1: Val) -> Val {
 // MIR for `set_flag` 0 ponytail
 
 fn set_flag() -> Val {
-    debug v_Symbol__f__ => _1;
-    debug v_true => _2;
-    debug Persistent => _3;
-    debug put_contract_data => _4;
-    debug v_void => _5;
+    debug v_Symbol__f__ => const Val(11022_u64);
+    debug v_true => const Val(1_u64);
+    debug Persistent => const StorageType::Persistent;
+    debug put_contract_data => _1;
+    debug v_void => const Val(2_u64);
     let mut _0: Val;
     let mut _1: Val;
-    let mut _2: Val;
-    let mut _3: StorageType;
-    let mut _4: Val;
-    let mut _5: Val;
 
     bb0: {
-        _1 = Val(const 11022_u64);
-        _2 = Val(const 1_u64);
-        _3 = StorageType::Persistent;
-        _4 = put_contract_data(copy _1, copy _2, copy _3) -> [return: bb1, unwind unreachable];
+        _1 = put_contract_data(const Val(11022_u64), const Val(1_u64), const StorageType::Persistent) -> [return: bb1, unwind unreachable];
     }
 
     bb1: {
-        _5 = Val(const 2_u64);
-        _0 = copy _5;
+        _0 = const Val(2_u64);
         return;
     }
 }
@@ -426,15 +284,13 @@ fn set_flag() -> Val {
 // MIR for `f15` 0 ponytail
 
 fn f15() -> () {
-    debug v_Error_type_0__code_1_ => _1;
-    debug fail_with_error => _2;
+    debug v_Error_type_0__code_1_ => const Val(4294967299_u64);
+    debug fail_with_error => _1;
     let mut _0: ();
     let mut _1: Val;
-    let mut _2: Val;
 
     bb0: {
-        _1 = Val(const 4294967299_u64);
-        _2 = fail_with_error(copy _1) -> [return: bb1, unwind unreachable];
+        _1 = fail_with_error(const Val(4294967299_u64)) -> [return: bb1, unwind unreachable];
     }
 
     bb1: {
@@ -444,22 +300,18 @@ fn f15() -> () {
 
 // MIR for `f24` 0 ponytail
 
-fn f24() -> () {
-    let mut _0: ();
-    let mut _1: ();
+fn f24() -> ! {
+    let mut _0: !;
+    let mut _1: !;
 
     bb0: {
-        _1 = f25() -> [return: bb1, unwind unreachable];
-    }
-
-    bb1: {
-        unreachable;
+        _1 = f25() -> unwind unreachable;
     }
 }
 
 // MIR for `f25` 0 ponytail
 
-fn f25() -> () {
+fn f25() -> ! {
     debug frame => _1;
     debug slot16 => _2;
     debug slot12 => _3;
@@ -468,7 +320,7 @@ fn f25() -> () {
     debug fp => _6;
     debug slot20 => _7;
     debug t6 => _8;
-    let mut _0: ();
+    let mut _0: !;
     let mut _1: *mut u8;
     let mut _2: *mut u8;
     let mut _3: *mut u8;
@@ -477,48 +329,39 @@ fn f25() -> () {
     let mut _6: u64;
     let mut _7: *mut u8;
     let mut _8: u32;
-    let mut _9: [u8; 32];
-    let mut _10: *mut [u8; 32];
-    let mut _11: isize;
+    let mut _9: [u64; 4];
+    let mut _10: *mut [u64; 4];
+    let mut _11: *mut u32;
     let mut _12: *mut u32;
-    let mut _13: isize;
+    let mut _13: *mut u16;
     let mut _14: *mut u32;
-    let mut _15: isize;
-    let mut _16: *mut u16;
-    let mut _17: isize;
-    let mut _18: *mut u32;
-    let mut _19: usize;
-    let mut _20: isize;
-    let mut _21: *mut u32;
-    let mut _22: !;
+    let mut _15: usize;
+    let mut _16: *mut u32;
+    let mut _17: !;
 
     bb0: {
+        _9 = [const 0_u64; 4];
         _10 = &raw mut _9;
         _1 = copy _10 as *mut u8 (PtrToPtr);
-        _11 = const 16_u64 as isize (IntToInt);
-        _2 = Offset(copy _1, copy _11);
-        _12 = copy _2 as *mut u32 (PtrToPtr);
-        (*_12) = const 29_u32;
-        _13 = const 12_u64 as isize (IntToInt);
-        _3 = Offset(copy _1, copy _13);
-        _14 = copy _3 as *mut u32 (PtrToPtr);
-        (*_14) = const 1048576_u32;
-        _15 = const 28_u64 as isize (IntToInt);
-        _4 = Offset(copy _1, copy _15);
-        _16 = copy _4 as *mut u16 (PtrToPtr);
-        (*_16) = const 1_u16;
-        _17 = const 24_u64 as isize (IntToInt);
-        _5 = Offset(copy _1, copy _17);
-        _18 = copy _5 as *mut u32 (PtrToPtr);
-        (*_18) = const 1048604_u32;
-        _19 = copy _3 as usize (PointerExposeProvenance);
-        _6 = copy _19 as u64 (IntToInt);
-        _20 = const 20_u64 as isize (IntToInt);
-        _7 = Offset(copy _1, copy _20);
+        _2 = Offset(copy _1, const 16_isize);
+        _11 = copy _2 as *mut u32 (PtrToPtr);
+        (*_11) = const 29_u32;
+        _3 = Offset(copy _1, const 12_isize);
+        _12 = copy _3 as *mut u32 (PtrToPtr);
+        (*_12) = const 1048576_u32;
+        _4 = Offset(copy _1, const 28_isize);
+        _13 = copy _4 as *mut u16 (PtrToPtr);
+        (*_13) = const 1_u16;
+        _5 = Offset(copy _1, const 24_isize);
+        _14 = copy _5 as *mut u32 (PtrToPtr);
+        (*_14) = const 1048604_u32;
+        _15 = copy _3 as usize (PointerExposeProvenance);
+        _6 = copy _15 as u64 (IntToInt);
+        _7 = Offset(copy _1, const 20_isize);
         _8 = copy _6 as u32 (IntToInt);
-        _21 = copy _7 as *mut u32 (PtrToPtr);
-        (*_21) = copy _8;
-        _22 = trap() -> unwind unreachable;
+        _16 = copy _7 as *mut u32 (PtrToPtr);
+        (*_16) = copy _8;
+        _17 = trap() -> unwind unreachable;
     }
 }
 
