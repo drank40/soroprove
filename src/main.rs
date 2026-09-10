@@ -39,6 +39,8 @@ use inkwell::values::{
 use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 use wasmparser::{ExternalKind, Operator, Parser, Payload};
 
+mod spec;
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum VT {
     /// A tagged 64-bit Soroban value. Lowers to `%Val`.
@@ -1375,7 +1377,7 @@ fn strip_inline_suffixes(m: &Module) {
 /// literal reads as the Val it is, a StorageType literal as its variant, and a
 /// `*_from_linear_memory` call with constant position and length as the
 /// symbol, string or Val list sitting in the data segment.
-fn rename_decoded(m: &Module, mem: &Mem) {
+fn rename_decoded(m: &Module, mem: &Mem, spec: &spec::Spec) {
     let b = m.get_context().create_builder();
     let st = m.get_function("soroban.storage_type").unwrap_or_else(|| {
         // O1 strips unused declarations; bring it back for the literals below.
@@ -1407,7 +1409,7 @@ fn rename_decoded(m: &Module, mem: &Mem) {
                 let new = match name.as_str() {
                     "soroban.val.from_payload" => args.first().copied().flatten().map(val_name),
                     "soroban.storage_type" => args.first().copied().flatten().map(|c| storage_name(c as i64)),
-                    n => decode_lm(n, &args, mem),
+                    n => decode_lm(n, &args, mem, spec),
                 };
                 if let (Some(n), ValueKind::Basic(v)) = (new, cs.try_as_basic_value()) {
                     v.set_name(&n);
@@ -1431,7 +1433,7 @@ fn const_arg(i: InstructionValue, k: u32) -> Option<u64> {
     }
 }
 
-fn decode_lm(name: &str, args: &[Option<u64>], mem: &Mem) -> Option<String> {
+fn decode_lm(name: &str, args: &[Option<u64>], mem: &Mem, spec: &spec::Spec) -> Option<String> {
     // Positions and lengths cross the boundary as U32Vals: tag 4, value in the top 32 bits.
     let u = |k: usize| args.get(k).copied().flatten().filter(|p| p & 0xff == 4).map(|p| p >> 32);
     let text = |k: usize| -> Option<String> {
@@ -1460,8 +1462,23 @@ fn decode_lm(name: &str, args: &[Option<u64>], mem: &Mem) -> Option<String> {
             format!("Bytes({hex})")
         }
         "vec.vec_new_from_linear_memory" => format!("Vec[{}]", vals(u(0)?, u(1)?)?.join(", ")),
-        // The values are runtime Vals, not decoded here.
-        "map.map_new_from_linear_memory" => format!("Map{{{}}}", slices(u(0)?, u(2)?)?.join(", ")),
+        // The values are runtime Vals, not decoded here. A named struct is a
+        // map whose keys are its field names (soroban-sdk-macros): when the
+        // key set is exactly one spec struct's field set, this is that struct.
+        "map.map_new_from_linear_memory" => {
+            let keys = slices(u(0)?, u(2)?)?;
+            let mut sorted: Vec<String> = keys.iter().map(|k| k.trim_matches('"').to_string()).collect();
+            sorted.sort();
+            let mut matches = spec.structs.iter().filter(|(_, fs)| {
+                let mut f = fs.clone();
+                f.sort();
+                f == sorted
+            });
+            match (matches.next(), matches.next()) {
+                (Some((s, _)), None) => return Some(spec::snake(s)),
+                _ => format!("Map{{{}}}", keys.join(", ")),
+            }
+        }
         _ => return None,
     };
     Some(ident(&s))
@@ -1480,6 +1497,7 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
     let mut func_types: Vec<u32> = Vec::new();
     let mut types = Types(Vec::new());
     let mut mem = Mem::default();
+    let mut spec = spec::Spec::default();
 
     for p in Parser::new(0).parse_all(wasm) {
         match p.expect("parse") {
@@ -1540,6 +1558,7 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
                     .collect();
                 bodies.push((n_locals, ops));
             }
+            Payload::CustomSection(c) if c.name() == "contractspecv0" => spec = spec::parse(c.data()),
             Payload::DataSection(r) => {
                 for d in r {
                     let d = d.expect("data");
@@ -1576,6 +1595,11 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
     let ctx = Context::create();
     let m = ctx.create_module("ponytail");
     let rt = Rt::new(&ctx, &m);
+    // The declared ABI rides along as named metadata, one line per entry.
+    for l in &spec.lines {
+        let node = ctx.metadata_node(&[ctx.metadata_string(l).into()]);
+        m.add_global_metadata("soroban.spec", &node).expect("named metadata takes nodes");
+    }
     for (i, (v, mutable)) in md.mem.globals.iter().enumerate() {
         let g = m.add_global(rt.i64t, None, &format!("g{i}"));
         g.set_initializer(&rt.i64t.const_int(*v as u64, false));
@@ -1664,6 +1688,19 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
             None => m.add_function(name, fty, None),
         };
         wasm_type_attrs(&ctx, f, md.wasm_sigs.get(fidx));
+        // An export's declared parameter names and types, from the spec.
+        if let Some((_, params, ret)) = spec.fns.iter().find(|(n, ..)| n == name) {
+            for (i, (pn, pt)) in params.iter().enumerate() {
+                f.add_attribute(AttributeLoc::Param(i as u32), ctx.create_string_attribute("spec.name", pn));
+                f.add_attribute(AttributeLoc::Param(i as u32), ctx.create_string_attribute("spec.type", pt));
+            }
+            if let Some(r) = ret {
+                f.add_attribute(AttributeLoc::Return, ctx.create_string_attribute("spec.type", r));
+            }
+            if let Some(line) = spec.lines.iter().find(|l| l.starts_with(&format!("fn {name}("))) {
+                f.add_attribute(AttributeLoc::Function, ctx.create_string_attribute("spec.sig", line));
+            }
+        }
         plan.push((f, local, np, nr, val_abi));
     }
 
@@ -1738,7 +1775,7 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
         optimize(&m, &md.mem)?;
         strip_inline_suffixes(&m);
     }
-    rename_decoded(&m, &md.mem);
+    rename_decoded(&m, &md.mem, &spec);
 
     // The real check, and the reason for inkwell: a Val/i64 confusion at a call
     // site is a verifier error here. In hand-written text it never can be.

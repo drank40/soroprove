@@ -1,7 +1,7 @@
 // MIR for `pick` 0 ponytail
 
 fn pick(_1: Val) -> Val {
-    debug a0 => _1;
+    debug f => _1;
     debug arg_payload => _2;
     debug cmp => _3;
     debug and => _4;
@@ -79,8 +79,8 @@ fn pick(_1: Val) -> Val {
 // MIR for `read` 0 ponytail
 
 fn read(_1: Val, _2: Val) -> Val {
-    debug a0 => _1;
-    debug a1 => _2;
+    debug a => _1;
+    debug b => _2;
     debug frame => _3;
     debug frame73 => _4;
     debug arg_payload => _5;
@@ -97,7 +97,7 @@ fn read(_1: Val, _2: Val) -> Val {
     debug v_u32_1048636 => const Val(4503857325408260_u64);
     debug to_val9 => _32;
     debug v_u32_2 => const Val(8589934596_u64);
-    debug Map__a____b__ => _15;
+    debug pair_key => _15;
     debug payload => _16;
     debug slot8 => _17;
     debug fp77 => _18;

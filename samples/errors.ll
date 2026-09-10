@@ -54,7 +54,7 @@ declare %Val @context.fail_with_error(%Val) #3
 ; Function Attrs: memory(inaccessiblemem: readwrite)
 declare %Val @ledger.put_contract_data(%Val, %Val, i64) #4
 
-define "wasm.type"="i64" %Val @hello(%Val "wasm.type"="i64" %0) {
+define "spec.type"="Result<Symbol, Error>" "wasm.type"="i64" %Val @hello(%Val "spec.name"="flag" "spec.type"="Flag" "wasm.type"="i64" %0) #5 {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -150,3 +150,10 @@ attributes #1 = { memory(inaccessiblemem: readwrite) }
 attributes #2 = { noreturn }
 attributes #3 = { memory(inaccessiblemem: readwrite) "soroban.import"="x.5" "soroban.sig"="(Error) -> Void" }
 attributes #4 = { memory(inaccessiblemem: readwrite) "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }
+attributes #5 = { "spec.sig"="fn hello(flag: Flag) -> Result<Symbol, Error>" }
+
+!soroban.spec = !{!0, !1, !2}
+
+!0 = !{!"enum Flag { A = 0, B = 1, C = 2, D = 3, E = 4 }"}
+!1 = !{!"error Error { AnError = 1 }"}
+!2 = !{!"fn hello(flag: Flag) -> Result<Symbol, Error>"}

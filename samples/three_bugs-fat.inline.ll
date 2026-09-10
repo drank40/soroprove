@@ -34,7 +34,7 @@ declare %Val @map.map_new_from_linear_memory(%Val, %Val, %Val) local_unnamed_add
 
 declare %Val @vec.vec_new_from_linear_memory(%Val, %Val) local_unnamed_addr #8
 
-define "wasm.type"="i64" %Val @read(%Val "wasm.type"="i64" %0, %Val "wasm.type"="i64" %1) local_unnamed_addr {
+define "spec.type"="bool" "wasm.type"="i64" %Val @read(%Val "spec.name"="a" "spec.type"="Address" "wasm.type"="i64" %0, %Val "spec.name"="b" "spec.type"="Address" "wasm.type"="i64" %1) local_unnamed_addr #9 {
 entry:
   %frame = alloca [32 x i8], align 1
   %arg_payload = tail call i64 @soroban.val.payload(%Val %0)
@@ -85,8 +85,8 @@ f14.exit:                                         ; preds = %fall15.3, %f23.exit
   %v_u32_1048624 = call %Val @soroban.val.from_payload(i64 4503805785800708)
   %to_val9 = call %Val @soroban.val.from_payload(i64 %or5)
   %v_u32_2 = call %Val @soroban.val.from_payload(i64 8589934596)
-  %Map__a____b__ = call %Val @map.map_new_from_linear_memory(%Val %v_u32_1048624, %Val %to_val9, %Val %v_u32_2)
-  %payload14 = call i64 @soroban.val.payload(%Val %Map__a____b__)
+  %pair_key = call %Val @map.map_new_from_linear_memory(%Val %v_u32_1048624, %Val %to_val9, %Val %v_u32_2)
+  %payload14 = call i64 @soroban.val.payload(%Val %pair_key)
   store i64 %payload14, ptr %fp11, align 1
   store i64 %ld11, ptr %slot8, align 1
   %vec_new_from_linear_memory = call %Val @vec.vec_new_from_linear_memory(%Val %to_val9, %Val %v_u32_2)
@@ -102,7 +102,7 @@ f14.exit:                                         ; preds = %fall15.3, %f23.exit
   ret %Val %to_val
 }
 
-define "wasm.type"="i64" %Val @pick(%Val "wasm.type"="i64" %0) local_unnamed_addr {
+define "spec.type"="Result<Symbol, Error>" "wasm.type"="i64" %Val @pick(%Val "spec.name"="f" "spec.type"="Flag" "wasm.type"="i64" %0) local_unnamed_addr #10 {
 entry:
   %arg_payload = tail call i64 @soroban.val.payload(%Val %0)
   %and = and i64 %arg_payload, 255
@@ -147,7 +147,7 @@ fall8:                                            ; preds = %entry
 }
 
 ; Function Attrs: memory(inaccessiblemem: readwrite)
-define "wasm.type"="i64" %Val @set_flag() local_unnamed_addr #1 {
+define "wasm.type"="i64" %Val @set_flag() local_unnamed_addr #11 {
 entry:
   %v_Symbol__f__ = tail call %Val @soroban.val.from_payload(i64 11022)
   %v_true = tail call %Val @soroban.val.from_payload(i64 1)
@@ -193,10 +193,10 @@ entry:
 }
 
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
-declare void @llvm.lifetime.start.p0(i64 immarg, ptr nocapture) #9
+declare void @llvm.lifetime.start.p0(i64 immarg, ptr nocapture) #12
 
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
-declare void @llvm.lifetime.end.p0(i64 immarg, ptr nocapture) #9
+declare void @llvm.lifetime.end.p0(i64 immarg, ptr nocapture) #12
 
 declare i64 @soroban.storage_type(i64)
 
@@ -209,4 +209,17 @@ attributes #5 = { memory(inaccessiblemem: readwrite) "soroban.import"="l.0" "sor
 attributes #6 = { memory(inaccessiblemem: readwrite) "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }
 attributes #7 = { "soroban.import"="m.9" "soroban.sig"="(U32Val, U32Val, U32Val) -> MapObject" }
 attributes #8 = { "soroban.import"="v.g" "soroban.sig"="(U32Val, U32Val) -> VecObject" }
-attributes #9 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
+attributes #9 = { "spec.sig"="fn read(a: Address, b: Address) -> bool" }
+attributes #10 = { "spec.sig"="fn pick(f: Flag) -> Result<Symbol, Error>" }
+attributes #11 = { memory(inaccessiblemem: readwrite) "spec.sig"="fn set_flag()" }
+attributes #12 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
+
+!soroban.spec = !{!0, !1, !2, !3, !4, !5, !6}
+
+!0 = !{!"enum Flag { A = 0, B = 1, C = 2, D = 3, E = 4 }"}
+!1 = !{!"error Error { AnError = 1 }"}
+!2 = !{!"union DataKey { Pair(PairKey), Single(Address) }"}
+!3 = !{!"struct PairKey { a: Address, b: Address }"}
+!4 = !{!"fn pick(f: Flag) -> Result<Symbol, Error>"}
+!5 = !{!"fn read(a: Address, b: Address) -> bool"}
+!6 = !{!"fn set_flag()"}

@@ -71,6 +71,15 @@ extern "C" {
     pub fn unknown_i64() -> u64;
 }
 
+// contractspecv0, the ABI the contract declares. ScVal shapes, not memory layout.
+//   enum Flag { A = 0, B = 1, C = 2, D = 3, E = 4 }
+//   error Error { AnError = 1 }
+//   union DataKey { Pair(PairKey), Single(Address) }
+//   struct PairKey { a: Address, b: Address }
+//   fn pick(f: Flag) -> Result<Symbol, Error>
+//   fn read(a: Address, b: Address) -> bool
+//   fn set_flag()
+
 extern "C" {
     /// wasm import `b.j`
     pub fn symbol_new_from_linear_memory(a0: Val, a1: Val) -> Val;
@@ -86,7 +95,8 @@ extern "C" {
     pub fn vec_new_from_linear_memory(a0: Val, a1: Val) -> Val;
 }
 
-pub fn read(mut a0: Val, mut a1: Val) -> Val {
+/// spec: fn read(a: Address, b: Address) -> bool
+pub fn read(mut a: Val, mut b: Val) -> Val {
     unsafe {
         let mut frame: *mut u8;
         let mut arg_payload: u64;
@@ -98,7 +108,7 @@ pub fn read(mut a0: Val, mut a1: Val) -> Val {
         let mut bottom_1: u64;
         let mut Symbol__Pair__: Val;
         let mut payload: u64;
-        let mut Map__a____b__: Val;
+        let mut pair_key: Val;
         let mut vec_new_from_linear_memory_25: Val;
         let mut has_contract_data_27: Val;
         let mut _31: [u64; 4];
@@ -106,8 +116,8 @@ pub fn read(mut a0: Val, mut a1: Val) -> Val {
         let mut to_val: Val;
         _31 = [0u64; 4];
         frame = (&raw mut _31) as *mut u8;
-        arg_payload = a0.0;
-        arg_payload1 = a1.0;
+        arg_payload = a.0;
+        arg_payload1 = b.0;
         and = arg_payload & 255u64;
         cmp3_not = (arg_payload1 & 255u64) == Tag::AddressObject;
         match and {
@@ -140,8 +150,8 @@ pub fn read(mut a0: Val, mut a1: Val) -> Val {
                     _31[2] = arg_payload1;
                     _31[1] = arg_payload;
                     to_val9 = Val::u32((frame.wrapping_offset(8isize) as u64) as u32);
-                    Map__a____b__ = map_new_from_linear_memory(Val::u32(1048624), to_val9, Val::u32(2));
-                    _31[2] = Map__a____b__.0;
+                    pair_key = map_new_from_linear_memory(Val::u32(1048624), to_val9, Val::u32(2));
+                    _31[2] = pair_key.0;
                     _31[1] = payload;
                     vec_new_from_linear_memory_25 = vec_new_from_linear_memory(to_val9, Val::u32(2));
                     has_contract_data_27 = has_contract_data(vec_new_from_linear_memory_25, StorageType::Persistent);
@@ -157,27 +167,28 @@ pub fn read(mut a0: Val, mut a1: Val) -> Val {
     }
 }
 
-pub fn pick(mut a0: Val) -> Val {
+/// spec: fn pick(f: Flag) -> Result<Symbol, Error>
+pub fn pick(mut f: Val) -> Val {
     unsafe {
         let mut arg_payload: u64;
         let mut l0_0: Val;
         let mut to_val: Val;
-        arg_payload = a0.0;
+        arg_payload = f.0;
         if (arg_payload > 21474836479u64) | ((arg_payload & 255u64) != Tag::U32Val) {
             trap();
         } else {
             match (arg_payload.wrapping_shr(32u64 as u32)) as u32 {
-                4 => {
+                4 /* Flag::E */ => {
                     l0_0 = Val::sym("e");
                 }
-                1 => {
-                    l0_0 = Val::error(0, 1);
+                1 /* Flag::B */ => {
+                    l0_0 = Val::error(0, 1) /* Error::AnError */;
                 }
-                2 => {
+                2 /* Flag::C */ => {
                     f15();
                     trap();
                 }
-                3 => {
+                3 /* Flag::D */ => {
                     f24();
                 }
                 _ => {
@@ -190,6 +201,7 @@ pub fn pick(mut a0: Val) -> Val {
     }
 }
 
+/// spec: fn set_flag()
 pub fn set_flag() -> Val {
     unsafe {
         let mut _0: Val;
@@ -201,7 +213,7 @@ pub fn set_flag() -> Val {
 
 fn f15() {
     unsafe {
-        fail_with_error(Val::error(0, 1));
+        fail_with_error(Val::error(0, 1) /* Error::AnError */);
         return;
     }
 }

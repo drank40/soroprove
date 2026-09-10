@@ -31,18 +31,25 @@ fn rust_from_mir_is_structured_decoded_and_typechecks() {
     assert!(ok, "{err}");
     // Constants read as what they are, through constructors rustc checks.
     assert!(rs.contains("put_contract_data(Val::sym(\"f\"), Val::TRUE, StorageType::Persistent)"), "{rs}");
-    // read: the Symbol("Pair") encoding loop folded to its constant, a u64
-    // stored into a frame slot; the frame's address travels as a U32Val.
+    // read: the Symbol("Pair") encoding loop folded to its constant, stored
+    // into a frame the host reads Vals from, so it is written as the symbol
+    // and the union case it names; the frame's address travels as a U32Val.
     let read = body_of(&rs, "pub fn read");
-    assert!(!read.contains("loop") && read.contains("[0] = 1852552974u64;") && read.contains("Val::u32("), "{read}");
+    assert!(!read.contains("loop") && read.contains("[0] = Val::sym(\"Pair\") /* DataKey::Pair */.0;") && read.contains("Val::u32("), "{read}");
     // f37: its parameterless body hands a decoded error to the host; the
     // unread result is not kept.
-    assert!(body_of(&rs, "fn f37").contains("fail_with_error(Val::error(0, 1));"), "{rs}");
+    assert!(body_of(&rs, "fn f37").contains("fail_with_error(Val::error(0, 1) /* Error::AnError */);"), "{rs}");
     // pick: a five-way dispatch, structured, no state machine, no dead labels,
     // and the phi that merges the arms' results is typed as the Val it feeds.
     let pick = body_of(&rs, "pub fn pick");
     assert!(pick.contains("match ") && !pick.contains("__bb") && !pick.contains("'b"), "{pick}");
-    assert!(pick.contains("= Val::sym(\"a\");") && pick.contains("= Val::error(0, 1);"), "{pick}");
+    assert!(pick.contains("= Val::sym(\"a\");") && pick.contains("= Val::error(0, 1) /* Error::AnError */;"), "{pick}");
+    // contractspecv0: the parameter is named and typed as declared, the
+    // dispatch arms are the enum's cases, the map is the struct it builds.
+    assert!(rs.contains("/// spec: fn pick(f: Flag) -> Result<Symbol, Error>\npub fn pick(mut f: Val) -> Val"), "{rs}");
+    assert!(pick.contains("3 /* Flag::D */ =>"), "{pick}");
+    assert!(read.contains("pair_key = map_new_from_linear_memory("), "{read}");
+    assert!(rs.contains("//   struct PairKey { a: Address, b: Address }"), "{rs}");
     // stable rustc is the type checker for the output.
     let dir = std::env::temp_dir().join(format!("ponytail-mir-e2e-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

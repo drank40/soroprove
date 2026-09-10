@@ -863,8 +863,13 @@ pub fn build<'a, 'tcx>(env: &'a Env<'tcx>, f: FunctionValue<'a>, def_id: DefId, 
         if let Some(k) = kind.filter(|k| *k != PTy::Int && env.ty(p.get_type()).ok() != Some(env.pty(*k))) {
             b.kinds.insert(l, k);
         }
+        // The spec names an export's parameters; a helper's are positional.
+        let pname = f
+            .get_string_attribute(AttributeLoc::Param(n as u32), "spec.name")
+            .map(|a| a.get_string_value().to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("a{n}"));
         b.debug.push(VarDebugInfo {
-            name: Symbol::intern(&format!("a{n}")),
+            name: Symbol::intern(&pname),
             source_info: si,
             composite: None,
             value: VarDebugInfoContents::Place(Place::from(l)),

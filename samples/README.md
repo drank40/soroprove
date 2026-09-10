@@ -120,6 +120,31 @@ Across the corpus below, of 3100 lifted parameters 544 are pointers, 1466 Vals,
 the MIR built with these types, so a wrong inference is a compile error, never
 a silent one.
 
+**The spec.** `contractspecv0` is the one section that names things: the
+exported functions' parameters and declared types, and the user-defined
+types -- structs with field names, unions with cases, integer and error enums
+with values. `ponytail-wasm` decodes it (`stellar-xdr`, protocol 25) and
+carries it into the IR: per export, `spec.name`/`spec.type` on each parameter
+and a `spec.sig`; module-wide, one named-metadata line per entry. The MIR
+stage then names the parameters (`pick(mut f: Val)`, `read(mut a: Val, mut b:
+Val)`), puts the declared signature above each export as `/// spec: fn pick(f:
+Flag) -> Result<Symbol, Error>`, prints the whole spec as a comment block in
+the header, and decodes against it wherever the derivation is exact: a
+contract error code with exactly one case of that value (`Val::error(0, 1) /*
+Error::AnError */`); the `match` on `(param.0 >> 32) as u8` of a parameter
+declared as an integer enum (`3 /* Flag::D */ =>`); a symbol that is exactly
+one union's case name (`Val::sym("Pair") /* DataKey::Pair */`); a map built
+from linear memory whose key set is exactly one struct's field set, named for
+it (`pair_key = map_new_from_linear_memory(..)`, the join `Map{"a", "b"}` ~
+`struct PairKey { a, b }`); and a constant stored into a frame whose address
+the host is given as a position it reads Vals from, written as the Val it is
+(`_27[0] = Val::sym("Pair") /* DataKey::Pair */.0`). `read`'s storage key
+thus reads as what the source wrote: `DataKey::Pair(PairKey { a, b })`. Across
+the corpus, 65 of 67 binaries carry a spec; 709 of 731 exports get their
+declared signature, 723 error codes their name, 114 maps their struct and 147
+frame-slot constants their Val.
+
+
 The lift itself: one basic block per LLVM block, split at calls; phis as copies
 in an edge block; `%Val` as the ADT, its constructor an aggregate and its
 payload a field projection; a `StorageType` literal an enum variant, a runtime
@@ -213,12 +238,12 @@ machine with a comment saying so; the corpus has none.
 
 What still reads as machine output: sub-word frame writes
 (`*(frame.wrapping_offset(16) as *mut u32) = 29`, a panic `Location`), because
-only whole aligned words become array elements; `u64` payloads stored into
-frames the host will read as Vals (`_27[0] = 1852552974u64`, which is
-`Symbol("Pair")`), because memory is untyped; `llvm.*` intrinsics (15 call
-sites) as typed `extern "C"` declarations; and a pointer parameter's pointee,
-whose layout the accesses give (`+0: u64, +8: u64`) but whose name would need
-matching against `contractspecv0`.
+only whole aligned words become array elements; `llvm.*` intrinsics (15 call
+sites) as typed `extern "C"` declarations; a pointer parameter's pointee,
+whose layout the accesses give (`+0: u64, +8: u64`) but whose name the spec
+does not give, since it describes ScVal shapes, not memory; and a Val stored
+into a frame the host is not handed (a local `Option<Val>`), which stays a
+`u64` because nothing says it is a Val.
 
 ## `errors.wasm` — vendored, 796 bytes
 

@@ -31,7 +31,7 @@ declare %Val @map.map_new_from_linear_memory(%Val, %Val, %Val) local_unnamed_add
 
 declare %Val @vec.vec_new_from_linear_memory(%Val, %Val) local_unnamed_addr #7
 
-define "wasm.type"="i64" %Val @pick(%Val "wasm.type"="i64" %0) local_unnamed_addr {
+define "spec.type"="Result<Symbol, Error>" "wasm.type"="i64" %Val @pick(%Val "spec.name"="f" "spec.type"="Flag" "wasm.type"="i64" %0) local_unnamed_addr #8 {
 entry:
   %arg_payload = tail call i64 @soroban.val.payload(%Val %0)
   %cmp = icmp ult i64 %arg_payload, 21474836480
@@ -75,7 +75,7 @@ f12.exit:                                         ; preds = %c4, %f12.exit.sink.
   ret %Val %to_val
 }
 
-define "wasm.type"="i64" %Val @read(%Val "wasm.type"="i64" %0, %Val "wasm.type"="i64" %1) local_unnamed_addr {
+define "spec.type"="bool" "wasm.type"="i64" %Val @read(%Val "spec.name"="a" "spec.type"="Address" "wasm.type"="i64" %0, %Val "spec.name"="b" "spec.type"="Address" "wasm.type"="i64" %1) local_unnamed_addr #9 {
 entry:
   %frame = alloca [16 x i8], align 8
   %frame73 = alloca [16 x i8], align 8
@@ -103,8 +103,8 @@ fall2:                                            ; preds = %entry
   %v_u32_1048636 = call %Val @soroban.val.from_payload(i64 4503857325408260)
   %to_val9 = call %Val @soroban.val.from_payload(i64 %or5)
   %v_u32_2 = call %Val @soroban.val.from_payload(i64 8589934596)
-  %Map__a____b__ = call %Val @map.map_new_from_linear_memory(%Val %v_u32_1048636, %Val %to_val9, %Val %v_u32_2)
-  %payload = call i64 @soroban.val.payload(%Val %Map__a____b__)
+  %pair_key = call %Val @map.map_new_from_linear_memory(%Val %v_u32_1048636, %Val %to_val9, %Val %v_u32_2)
+  %payload = call i64 @soroban.val.payload(%Val %pair_key)
   call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %frame73)
   call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %frame)
   %slot8 = getelementptr inbounds i8, ptr %frame, i64 8
@@ -127,7 +127,7 @@ fall2:                                            ; preds = %entry
   ret %Val %to_val
 }
 
-define "wasm.type"="i64" %Val @set_flag() local_unnamed_addr {
+define "wasm.type"="i64" %Val @set_flag() local_unnamed_addr #10 {
 entry:
   %v_Symbol__f__ = call %Val @soroban.val.from_payload(i64 11022)
   %v_true = call %Val @soroban.val.from_payload(i64 1)
@@ -138,7 +138,7 @@ entry:
 }
 
 ; Function Attrs: memory(inaccessiblemem: readwrite)
-define internal fastcc "wasm.type"="i64" void @f37() unnamed_addr #8 {
+define internal fastcc "wasm.type"="i64" void @f37() unnamed_addr #11 {
 entry:
   %v_Error_type_0__code_1_ = tail call %Val @soroban.val.from_payload(i64 4294967299)
   %fail_with_error = tail call %Val @context.fail_with_error(%Val %v_Error_type_0__code_1_)
@@ -173,10 +173,10 @@ entry:
 }
 
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
-declare void @llvm.lifetime.start.p0(i64 immarg, ptr nocapture) #9
+declare void @llvm.lifetime.start.p0(i64 immarg, ptr nocapture) #12
 
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
-declare void @llvm.lifetime.end.p0(i64 immarg, ptr nocapture) #9
+declare void @llvm.lifetime.end.p0(i64 immarg, ptr nocapture) #12
 
 declare i64 @soroban.storage_type(i64)
 
@@ -188,5 +188,18 @@ attributes #4 = { memory(inaccessiblemem: readwrite) "soroban.import"="l.0" "sor
 attributes #5 = { memory(inaccessiblemem: readwrite) "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }
 attributes #6 = { "soroban.import"="m.9" "soroban.sig"="(U32Val, U32Val, U32Val) -> MapObject" }
 attributes #7 = { "soroban.import"="v.g" "soroban.sig"="(U32Val, U32Val) -> VecObject" }
-attributes #8 = { memory(inaccessiblemem: readwrite) }
-attributes #9 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
+attributes #8 = { "spec.sig"="fn pick(f: Flag) -> Result<Symbol, Error>" }
+attributes #9 = { "spec.sig"="fn read(a: Address, b: Address) -> bool" }
+attributes #10 = { "spec.sig"="fn set_flag()" }
+attributes #11 = { memory(inaccessiblemem: readwrite) }
+attributes #12 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
+
+!soroban.spec = !{!0, !1, !2, !3, !4, !5, !6}
+
+!0 = !{!"enum Flag { A = 0, B = 1, C = 2, D = 3, E = 4 }"}
+!1 = !{!"error Error { AnError = 1 }"}
+!2 = !{!"union DataKey { Pair(PairKey), Single(Address) }"}
+!3 = !{!"struct PairKey { a: Address, b: Address }"}
+!4 = !{!"fn pick(f: Flag) -> Result<Symbol, Error>"}
+!5 = !{!"fn read(a: Address, b: Address) -> bool"}
+!6 = !{!"fn set_flag()"}

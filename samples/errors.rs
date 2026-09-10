@@ -71,6 +71,11 @@ extern "C" {
     pub fn unknown_i64() -> u64;
 }
 
+// contractspecv0, the ABI the contract declares. ScVal shapes, not memory layout.
+//   enum Flag { A = 0, B = 1, C = 2, D = 3, E = 4 }
+//   error Error { AnError = 1 }
+//   fn hello(flag: Flag) -> Result<Symbol, Error>
+
 extern "C" {
     /// wasm import `x.5`
     pub fn fail_with_error(a0: Val) -> Val;
@@ -78,28 +83,29 @@ extern "C" {
     pub fn put_contract_data(a0: Val, a1: Val, a2: StorageType) -> Val;
 }
 
-pub fn hello(mut a0: Val) -> Val {
+/// spec: fn hello(flag: Flag) -> Result<Symbol, Error>
+pub fn hello(mut flag: Val) -> Val {
     unsafe {
         let mut arg_payload: u64;
         let mut lshr: u64;
         let mut l0_0: Val;
         let mut to_val: Val;
-        arg_payload = a0.0;
+        arg_payload = flag.0;
         if (arg_payload < 21474836480u64) & ((arg_payload & 255u64) == Tag::U32Val) {
             lshr = arg_payload.wrapping_shr(32u64 as u32);
             put_contract_data(Val::sym("persisted"), Val::TRUE, StorageType::Persistent);
             match lshr as u32 {
-                0 => {
+                0 /* Flag::A */ => {
                     l0_0 = Val::sym("hello");
                 }
-                1 => {
-                    l0_0 = Val::error(0, 1);
+                1 /* Flag::B */ => {
+                    l0_0 = Val::error(0, 1) /* Error::AnError */;
                 }
-                2 => {
-                    f3(Val::error(0, 1));
+                2 /* Flag::C */ => {
+                    f3(Val::error(0, 1) /* Error::AnError */);
                     trap();
                 }
-                3 => {
+                3 /* Flag::D */ => {
                     f4();
                 }
                 _ => {

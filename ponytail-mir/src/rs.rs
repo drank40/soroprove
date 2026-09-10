@@ -24,13 +24,116 @@ use crate::mir::Env;
 
 type R<T> = Result<T, String>;
 
-pub fn emit<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, header: &str, bodies: &[&Body<'tcx>]) -> R<String> {
+pub fn emit<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, header: &str, bodies: &[&Body<'tcx>], spec: &Spec) -> R<String> {
     let mut out = String::from(header);
     for body in bodies {
         out.push('\n');
-        out.push_str(&Fn_::new(tcx, env, body).emit()?);
+        out.push_str(&Fn_::new(tcx, env, body, spec).emit()?);
     }
     Ok(out)
+}
+
+/// What `contractspecv0` declares, recovered from the lines ponytail-wasm
+/// rendered: enough to name error codes, enum discriminants, union cases and
+/// export signatures. The shapes are ScVal shapes, not memory layout.
+#[derive(Default)]
+pub struct Spec {
+    /// `fn name(..) -> ..` lines, by function name.
+    sigs: HashMap<String, String>,
+    /// Function -> the declared type of each parameter.
+    params: HashMap<String, Vec<String>>,
+    /// Integer enum -> (case, value).
+    enums: HashMap<String, Vec<(String, u32)>>,
+    /// (error enum, case, value).
+    errors: Vec<(String, String, u32)>,
+    /// (union, case name).
+    union_cases: Vec<(String, String)>,
+}
+
+/// Split on `sep` outside any brackets.
+fn split_top(s: &str, sep: char) -> Vec<String> {
+    let (mut depth, mut cur, mut out) = (0i32, String::new(), Vec::new());
+    for c in s.chars() {
+        match c {
+            '(' | '<' | '{' => depth += 1,
+            ')' | '>' | '}' => depth -= 1,
+            _ => {}
+        }
+        if c == sep && depth == 0 {
+            out.push(cur.trim().to_string());
+            cur.clear();
+        } else {
+            cur.push(c);
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur.trim().to_string());
+    }
+    out
+}
+
+impl Spec {
+    pub fn parse(lines: Vec<String>) -> Spec {
+        let mut s = Spec::default();
+        let body = |l: &str| -> (String, Vec<String>) {
+            let name = l.split_whitespace().nth(1).unwrap_or("").trim_end_matches('{').to_string();
+            let inner = l.find('{').map(|i| &l[i + 1..l.rfind('}').unwrap_or(l.len())]).unwrap_or("");
+            (name, split_top(inner, ','))
+        };
+        let cases = |items: &[String]| -> Vec<(String, u32)> {
+            items.iter().filter_map(|c| {
+                let (n, v) = c.split_once('=')?;
+                Some((n.trim().to_string(), v.trim().parse().ok()?))
+            }).collect()
+        };
+        for l in lines {
+            if let Some(rest) = l.strip_prefix("fn ") {
+                let name = rest.split('(').next().unwrap_or("").to_string();
+                let inner = rest.find('(').map(|i| &rest[i + 1..rest.rfind(')').unwrap_or(rest.len())]).unwrap_or("");
+                let types = split_top(inner, ',').iter().map(|p| p.split_once(": ").map(|(_, t)| t.to_string()).unwrap_or_default()).collect();
+                s.params.insert(name.clone(), types);
+                s.sigs.insert(name, l.clone());
+            } else if l.starts_with("enum ") {
+                let (name, items) = body(&l);
+                s.enums.insert(name, cases(&items));
+            } else if l.starts_with("error ") {
+                let (name, items) = body(&l);
+                s.errors.extend(cases(&items).into_iter().map(|(c, v)| (name.clone(), c, v)));
+            } else if l.starts_with("union ") {
+                let (name, items) = body(&l);
+                s.union_cases.extend(items.iter().map(|c| (name.clone(), c.split('(').next().unwrap_or(c).to_string())));
+            }
+        }
+        s
+    }
+
+    /// `Error::AnError` for a contract error code, when exactly one case has it.
+    fn error_name(&self, code: u64) -> Option<String> {
+        let mut it = self.errors.iter().filter(|(_, _, v)| *v as u64 == code);
+        match (it.next(), it.next()) {
+            (Some((e, c, _)), None) => Some(format!("{e}::{c}")),
+            _ => None,
+        }
+    }
+
+    /// `DataKey::Pair` for a symbol that is exactly one union's case name.
+    fn union_case(&self, sym: &str) -> Option<String> {
+        let mut it = self.union_cases.iter().filter(|(_, c)| c == sym);
+        match (it.next(), it.next()) {
+            (Some((u, c)), None) => Some(format!("{u}::{c}")),
+            _ => None,
+        }
+    }
+
+    /// The enum a function's parameter is declared as, if it is an integer enum.
+    fn param_enum(&self, f: &str, i: usize) -> Option<&str> {
+        let t = self.params.get(f)?.get(i)?;
+        self.enums.contains_key(t).then_some(t.as_str())
+    }
+
+    fn enum_case(&self, e: &str, v: u64) -> Option<&str> {
+        self.enums.get(e)?.iter().find(|(_, x)| *x as u64 == v).map(|(c, _)| c.as_str())
+    }
 }
 
 fn ty_str<'tcx>(tcx: TyCtxt<'tcx>, t: Ty<'tcx>) -> String {
@@ -252,6 +355,8 @@ struct Fn_<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
     env: &'a Env<'tcx>,
     body: &'a Body<'tcx>,
+    spec: &'a Spec,
+    fname: String,
     names: HashMap<Local, String>,
     payloads: HashSet<Local>,
     rpo: HashMap<BasicBlock, usize>,
@@ -259,6 +364,10 @@ struct Fn_<'a, 'tcx> {
     uses: HashMap<Local, usize>,
     /// The one rvalue assigned to a local that is assigned exactly once.
     single_def: HashMap<Local, Rvalue<'tcx>>,
+    /// Frame arrays whose address goes to the host as a position it reads
+    /// Vals from (`vec_new_from_linear_memory`, the values of `map_new_..`):
+    /// their slots hold Vals, so a constant stored into one is decoded.
+    val_arrays: HashSet<Local>,
     /// Single-use temporaries written into their one use instead of on a
     /// line of their own: the expression, and the rvalue it came from so a
     /// consumer can still see its shape.
@@ -274,7 +383,8 @@ struct Fn_<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Fn_<'a, 'tcx> {
-    fn new(tcx: TyCtxt<'tcx>, env: &'a Env<'tcx>, body: &'a Body<'tcx>) -> Self {
+    fn new(tcx: TyCtxt<'tcx>, env: &'a Env<'tcx>, body: &'a Body<'tcx>, spec: &'a Spec) -> Self {
+        let fname = tcx.item_name(body.source.def_id()).to_string();
         let mut names = HashMap::new();
         // A local must not shadow a function or static it might share a name
         // with: LLVM named the result of put_contract_data after its callee.
@@ -306,21 +416,65 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 _ => None,
             })
             .collect();
-        Fn_ {
+        let mut me = Fn_ {
             tcx,
             env,
             body,
+            spec,
+            fname,
             names,
             payloads,
             rpo,
             defs,
             uses,
             single_def,
+            val_arrays: HashSet::new(),
             folded: HashMap::new(),
             out: Vec::new(),
             depth: 0,
             open: Vec::new(),
             used: HashSet::new(),
+        };
+        me.val_arrays = me.find_val_arrays();
+        me
+    }
+
+    /// Arrays handed to the host at a Val-reading position. The position is
+    /// `Val::u32(frame as u32)`: walk that back to the `&raw mut` it came from.
+    fn find_val_arrays(&self) -> HashSet<Local> {
+        let mut set = HashSet::new();
+        for bb in self.body.basic_blocks.iter() {
+            let Some(Terminator { kind: TerminatorKind::Call { func, args, .. }, .. }) = &bb.terminator else { continue };
+            let Some(Operand::Constant(c)) = Some(func) else { continue };
+            let ty::FnDef(d, _) = c.const_.ty().kind() else { continue };
+            let pos = match self.tcx.item_name(*d).as_str() {
+                "vec_new_from_linear_memory" => 0,
+                "map_new_from_linear_memory" | "map_unpack_to_linear_memory" => match self.tcx.item_name(*d).as_str() {
+                    "map_new_from_linear_memory" => 1,
+                    _ => 2,
+                },
+                "vec_unpack_to_linear_memory" => 1,
+                _ => continue,
+            };
+            let Some(arg) = args.get(pos) else { continue };
+            if let Some(arr) = self.array_behind(&arg.node, 0) {
+                set.insert(arr);
+            }
+        }
+        set
+    }
+
+    /// `Val((ptr as u64) << 32 | 4)`, `ptr = &raw mut arr as *mut u8` -> `arr`.
+    fn array_behind(&self, o: &Operand<'tcx>, depth: u8) -> Option<Local> {
+        if depth > 8 {
+            return None;
+        }
+        match self.def_of(o)? {
+            Rvalue::Aggregate(_, fs) => self.array_behind(fs.iter().next()?, depth + 1),
+            Rvalue::BinaryOp(BinOp::BitOr | BinOp::Shl, ab) => self.array_behind(&ab.0, depth + 1),
+            Rvalue::Cast(_, inner, _) | Rvalue::Use(inner) => self.array_behind(inner, depth + 1),
+            Rvalue::RawPtr(_, p) => p.as_local().filter(|l| self.body.local_decls[*l].ty.is_array()),
+            _ => None,
         }
     }
 
@@ -377,7 +531,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 let bits = i.to_bits(i.size());
                 match ty.kind() {
                     ty::Bool => (bits != 0).to_string(),
-                    ty::Adt(def, _) if def.did() == self.env.val_def => val_expr(bits as u64),
+                    ty::Adt(def, _) if def.did() == self.env.val_def => self.val_str(bits as u64),
                     ty::Adt(def, _) if def.is_enum() => {
                         let (v, _) = def.discriminants(tcx).find(|(_, d)| d.val == bits).ok_or("enum constant without a variant")?;
                         format!("{}::{}", tcx.item_name(def.did()), def.variant(v).name)
@@ -410,9 +564,23 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             Rvalue::Repeat(o, n) => format!("[{}; {}]", self.operand(o)?, n.try_to_target_usize(tcx).ok_or("array length")?),
             Rvalue::BinaryOp(op, ab) => {
                 let (a, mut b) = (self.operand(&ab.0)?, self.operand(&ab.1)?);
-                if matches!(op, BinOp::Eq | BinOp::Ne) && self.is_tag(&ab.0) {
-                    if let Some(n) = self.konst_u64(&ab.1).and_then(tag_name) {
-                        b = format!("Tag::{n}");
+                if matches!(op, BinOp::Eq | BinOp::Ne) {
+                    if let Some(k) = self.konst_u64(&ab.1) {
+                        if self.is_tag(&ab.0) {
+                            if let Some(n) = tag_name(k) {
+                                b = format!("Tag::{n}");
+                            }
+                        } else if let Some(i) = self.payload_of_param(&ab.0) {
+                            // A parameter's payload against a literal: the literal is a Val.
+                            b = format!("{}.0", self.val_str(k));
+                            if let Some(c) = self.spec.param_enum(&self.fname, i).and_then(|e| self.spec.enum_case(e, k >> 32).map(|c| format!("{e}::{c}"))) {
+                                if k & 0xff == 4 {
+                                    b = format!("{b} /* {c} */");
+                                }
+                            }
+                        } else if let Some(c) = self.enum_of(&ab.0).and_then(|e| self.spec.enum_case(e, k).map(|c| format!("{e}::{c}"))) {
+                            b = format!("{b} /* {c} */");
+                        }
                     }
                 }
                 match op {
@@ -480,7 +648,14 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             // Assigning a payload local: the value is a Val.
             (Some(_), Rvalue::Use(Operand::Constant(c))) => {
                 let bits = c.const_.try_to_scalar_int().ok_or("payload constant")?;
-                val_expr(bits.to_bits(bits.size()) as u64)
+                self.val_str(bits.to_bits(bits.size()) as u64)
+            }
+            // A constant into a slot of a frame the host reads Vals from.
+            (None, Rvalue::Use(Operand::Constant(c)))
+                if self.val_arrays.contains(&pl.local) && matches!(pl.projection.as_slice(), [PlaceElem::ConstantIndex { .. }]) =>
+            {
+                let bits = c.const_.try_to_scalar_int().ok_or("slot constant")?;
+                format!("{}.0", self.val_str(bits.to_bits(bits.size()) as u64))
             }
             (Some(_), Rvalue::Use(Operand::Copy(p) | Operand::Move(p))) if p.as_local().is_some_and(|l| self.payloads.contains(&l)) => self.place(p),
             (Some(_), _) => self.val_of_expr(rv)?,
@@ -512,6 +687,59 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             }
         }
         Ok(format!("Val({})", self.rvalue(rv)?))
+    }
+
+    /// A Val constant, with what the spec says about it.
+    fn val_str(&self, bits: u64) -> String {
+        let base = val_expr(bits);
+        let (tag, body) = (bits & 0xff, bits >> 8);
+        let note = match tag {
+            3 if body & 0xff_ffff == 0 => self.spec.error_name(body >> 24),
+            14 => sym_str(body).and_then(|s| self.spec.union_case(&s)),
+            _ => None,
+        };
+        match note {
+            Some(n) => format!("{base} /* {n} */"),
+            None => base,
+        }
+    }
+
+    /// The rvalue that defines a plain-local operand, folded or single-def.
+    fn def_of(&self, o: &Operand<'tcx>) -> Option<&Rvalue<'tcx>> {
+        let l = match o {
+            Operand::Copy(p) | Operand::Move(p) => p.as_local()?,
+            _ => return None,
+        };
+        self.folded.get(&l).map(|(_, rv)| rv).or_else(|| self.single_def.get(&l))
+    }
+
+    /// If this operand is the payload of an exported parameter (`param.0`,
+    /// possibly through a copy), that parameter's index.
+    fn payload_of_param(&self, o: &Operand<'tcx>) -> Option<usize> {
+        let p = match o {
+            Operand::Copy(p) | Operand::Move(p) => p,
+            _ => return None,
+        };
+        if let [PlaceElem::Field(f, _)] = p.projection.as_slice() {
+            let i = p.local.as_usize();
+            return (f.as_usize() == 0 && i >= 1 && i <= self.body.arg_count).then_some(i - 1);
+        }
+        match self.def_of(o)? {
+            Rvalue::Use(inner) => self.payload_of_param(inner),
+            _ => None,
+        }
+    }
+
+    /// If this operand is the U32Val body of a parameter declared as an
+    /// integer enum -- `(param.0 >> 32) as uN` -- that enum's name.
+    fn enum_of(&self, o: &Operand<'tcx>) -> Option<&str> {
+        match self.def_of(o)? {
+            Rvalue::Cast(CastKind::IntToInt, inner, _) | Rvalue::Use(inner) => self.enum_of(inner),
+            Rvalue::BinaryOp(BinOp::Shr, xy) if self.konst_u64(&xy.1) == Some(32) => {
+                self.spec.param_enum(&self.fname, self.payload_of_param(&xy.0)?)
+            }
+            _ => None,
+        }
     }
 
     /// Is this operand `x & 0xff`, a Val's tag? Then constants compared with
@@ -809,10 +1037,15 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                     self.line(format!("match {d} {{"));
                     self.depth += 1;
                     let tag = self.is_tag(discr);
+                    let en = self.enum_of(discr).map(str::to_string);
                     for (v, t) in targets.iter() {
                         let lines = self.capture(|s| s.branch(bb, t, tail))?;
-                        let pat = match tag_name(v as u64) {
-                            Some(n) if tag => format!("Tag::{n}"),
+                        let pat = match (tag_name(v as u64), &en) {
+                            (Some(n), _) if tag => format!("Tag::{n}"),
+                            (_, Some(e)) => match self.spec.enum_case(e, v as u64) {
+                                Some(c) => format!("{v} /* {e}::{c} */"),
+                                None => v.to_string(),
+                            },
                             _ => v.to_string(),
                         };
                         self.arm(format!("{pat} =>"), lines);
@@ -907,7 +1140,9 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         }
         let code = std::mem::take(&mut self.out);
 
-        let mut s = format!("{vis}fn {name}({}){ret} {{\n    unsafe {{\n", params.join(", "));
+        // The declared signature, from contractspecv0, above the ABI one.
+        let doc = self.spec.sigs.get(&self.fname).map(|sig| format!("/// spec: {sig}\n")).unwrap_or_default();
+        let mut s = format!("{doc}{vis}fn {name}({}){ret} {{\n    unsafe {{\n", params.join(", "));
         let init = if zeroed { " = core::mem::zeroed()" } else { "" };
         for l in self.body.vars_and_temps_iter().chain((!ret_ty.is_unit()).then_some(Local::ZERO)) {
             let t = self.body.local_decls[l].ty;

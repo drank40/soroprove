@@ -1,7 +1,7 @@
 // MIR for `hello` 0 ponytail
 
 fn hello(_1: Val) -> Val {
-    debug a0 => _1;
+    debug flag => _1;
     debug arg_payload => _2;
     debug cmp => _3;
     debug and => _4;

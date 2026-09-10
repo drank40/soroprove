@@ -61,7 +61,7 @@ declare %Val @map.map_new_from_linear_memory(%Val, %Val, %Val) #7
 
 declare %Val @vec.vec_new_from_linear_memory(%Val, %Val) #8
 
-define "wasm.type"="i64" %Val @pick(%Val "wasm.type"="i64" %0) {
+define "spec.type"="Result<Symbol, Error>" "wasm.type"="i64" %Val @pick(%Val "spec.name"="f" "spec.type"="Flag" "wasm.type"="i64" %0) #9 {
 entry:
   %l0 = alloca i64, align 8
   %arg_payload = call i64 @soroban.val.payload(%Val %0)
@@ -73,7 +73,7 @@ entry:
   ret %Val %to_val
 }
 
-define "wasm.type"="i64" %Val @read(%Val "wasm.type"="i64" %0, %Val "wasm.type"="i64" %1) {
+define "spec.type"="bool" "wasm.type"="i64" %Val @read(%Val "spec.name"="a" "spec.type"="Address" "wasm.type"="i64" %0, %Val "spec.name"="b" "spec.type"="Address" "wasm.type"="i64" %1) #10 {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -89,7 +89,7 @@ entry:
   ret %Val %to_val
 }
 
-define "wasm.type"="i64" %Val @set_flag() {
+define "wasm.type"="i64" %Val @set_flag() #11 {
 entry:
   call void @f33()
   call void @f17()
@@ -1426,3 +1426,16 @@ attributes #5 = { memory(inaccessiblemem: readwrite) "soroban.import"="l.0" "sor
 attributes #6 = { memory(inaccessiblemem: readwrite) "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }
 attributes #7 = { "soroban.import"="m.9" "soroban.sig"="(U32Val, U32Val, U32Val) -> MapObject" }
 attributes #8 = { "soroban.import"="v.g" "soroban.sig"="(U32Val, U32Val) -> VecObject" }
+attributes #9 = { "spec.sig"="fn pick(f: Flag) -> Result<Symbol, Error>" }
+attributes #10 = { "spec.sig"="fn read(a: Address, b: Address) -> bool" }
+attributes #11 = { "spec.sig"="fn set_flag()" }
+
+!soroban.spec = !{!0, !1, !2, !3, !4, !5, !6}
+
+!0 = !{!"enum Flag { A = 0, B = 1, C = 2, D = 3, E = 4 }"}
+!1 = !{!"error Error { AnError = 1 }"}
+!2 = !{!"union DataKey { Pair(PairKey), Single(Address) }"}
+!3 = !{!"struct PairKey { a: Address, b: Address }"}
+!4 = !{!"fn pick(f: Flag) -> Result<Symbol, Error>"}
+!5 = !{!"fn read(a: Address, b: Address) -> bool"}
+!6 = !{!"fn set_flag()"}

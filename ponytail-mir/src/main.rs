@@ -205,10 +205,31 @@ fn sig(f: FunctionValue, sigs: &infer::Sigs) -> Result<(Vec<String>, String), St
     Ok((params, ret))
 }
 
-/// The stub crate's header: types, externs, statics. Shared by the stub and
-/// by the Rust output, which appends the lifted bodies to it.
+/// The `contractspecv0` lines ponytail-wasm attached as named metadata.
+pub fn spec_lines(m: &Module) -> Vec<String> {
+    m.get_global_metadata("soroban.spec")
+        .iter()
+        .filter_map(|n| match n.get_node_values()?.first()? {
+            inkwell::values::BasicMetadataValueEnum::MetadataValue(s) => {
+                s.get_string_value().map(|b| String::from_utf8_lossy(b).into_owned())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The stub crate's header: types, externs, statics, and the declared ABI as
+/// a comment. Shared by the stub and by the Rust output, which appends the
+/// lifted bodies to it.
 pub fn header(m: &Module, sigs: &infer::Sigs) -> Result<String, String> {
     let mut s = String::from(PRELUDE);
+    let spec = spec_lines(m);
+    if !spec.is_empty() {
+        s.push_str("\n// contractspecv0, the ABI the contract declares. ScVal shapes, not memory layout.\n");
+        for l in &spec {
+            let _ = writeln!(s, "//   {l}");
+        }
+    }
     let mut g = m.get_first_global();
     while let Some(gv) = g {
         g = gv.get_next_global();
@@ -333,7 +354,8 @@ impl Callbacks for Lift {
         let mut out = std::io::stdout().lock();
         if self.rust {
             let head = llvm(|l| header(&l.m, &l.sigs)).unwrap_or_else(|e| fatal(&e));
-            let text = rs::emit(tcx, &env, &head, &bodies).unwrap_or_else(|e| fatal(&e));
+            let spec = rs::Spec::parse(llvm(|l| spec_lines(&l.m)));
+            let text = rs::emit(tcx, &env, &head, &bodies, &spec).unwrap_or_else(|e| fatal(&e));
             std::io::Write::write_all(&mut out, text.as_bytes()).expect("write");
         } else {
             for body in &bodies {

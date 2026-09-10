@@ -27,7 +27,7 @@ declare %Val @context.fail_with_error(%Val) local_unnamed_addr #2
 ; Function Attrs: memory(inaccessiblemem: readwrite)
 declare %Val @ledger.put_contract_data(%Val, %Val, i64) local_unnamed_addr #3
 
-define "wasm.type"="i64" %Val @hello(%Val "wasm.type"="i64" %0) local_unnamed_addr {
+define "spec.type"="Result<Symbol, Error>" "wasm.type"="i64" %Val @hello(%Val "spec.name"="flag" "spec.type"="Flag" "wasm.type"="i64" %0) local_unnamed_addr #4 {
 entry:
   %arg_payload = tail call i64 @soroban.val.payload(%Val %0)
   %cmp = icmp ult i64 %arg_payload, 21474836480
@@ -78,7 +78,7 @@ c9:                                               ; preds = %fall4
 }
 
 ; Function Attrs: memory(inaccessiblemem: readwrite)
-define internal fastcc void @f3(i64 "wasm.type"="i64" %0) unnamed_addr #4 {
+define internal fastcc void @f3(i64 "wasm.type"="i64" %0) unnamed_addr #5 {
 entry:
   %to_val = tail call %Val @soroban.val.from_payload(i64 %0)
   %fail_with_error = tail call %Val @context.fail_with_error(%Val %to_val)
@@ -96,4 +96,11 @@ attributes #0 = { mustprogress nofree nosync nounwind willreturn memory(none) }
 attributes #1 = { noreturn }
 attributes #2 = { memory(inaccessiblemem: readwrite) "soroban.import"="x.5" "soroban.sig"="(Error) -> Void" }
 attributes #3 = { memory(inaccessiblemem: readwrite) "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }
-attributes #4 = { memory(inaccessiblemem: readwrite) }
+attributes #4 = { "spec.sig"="fn hello(flag: Flag) -> Result<Symbol, Error>" }
+attributes #5 = { memory(inaccessiblemem: readwrite) }
+
+!soroban.spec = !{!0, !1, !2}
+
+!0 = !{!"enum Flag { A = 0, B = 1, C = 2, D = 3, E = 4 }"}
+!1 = !{!"error Error { AnError = 1 }"}
+!2 = !{!"fn hello(flag: Flag) -> Result<Symbol, Error>"}

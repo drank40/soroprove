@@ -71,6 +71,15 @@ extern "C" {
     pub fn unknown_i64() -> u64;
 }
 
+// contractspecv0, the ABI the contract declares. ScVal shapes, not memory layout.
+//   enum Flag { A = 0, B = 1, C = 2, D = 3, E = 4 }
+//   error Error { AnError = 1 }
+//   union DataKey { Pair(PairKey), Single(Address) }
+//   struct PairKey { a: Address, b: Address }
+//   fn pick(f: Flag) -> Result<Symbol, Error>
+//   fn read(a: Address, b: Address) -> bool
+//   fn set_flag()
+
 extern "C" {
     /// wasm import `x.5`
     pub fn fail_with_error(a0: Val) -> Val;
@@ -84,25 +93,26 @@ extern "C" {
     pub fn vec_new_from_linear_memory(a0: Val, a1: Val) -> Val;
 }
 
-pub fn pick(mut a0: Val) -> Val {
+/// spec: fn pick(f: Flag) -> Result<Symbol, Error>
+pub fn pick(mut f: Val) -> Val {
     unsafe {
         let mut arg_payload: u64;
         let mut brif_not: Val;
         let mut to_val: Val;
-        arg_payload = a0.0;
+        arg_payload = f.0;
         if (arg_payload < 21474836480u64) & ((arg_payload & 255u64) == Tag::U32Val) {
             match (arg_payload.wrapping_shr(32u64 as u32)) as u8 {
-                0 => {
+                0 /* Flag::A */ => {
                     brif_not = Val::sym("a");
                 }
-                1 => {
-                    brif_not = Val::error(0, 1);
+                1 /* Flag::B */ => {
+                    brif_not = Val::error(0, 1) /* Error::AnError */;
                 }
-                2 => {
+                2 /* Flag::C */ => {
                     f37();
                     trap();
                 }
-                3 => {
+                3 /* Flag::D */ => {
                     f50();
                 }
                 _ => {
@@ -117,7 +127,8 @@ pub fn pick(mut a0: Val) -> Val {
     }
 }
 
-pub fn read(mut a0: Val, mut a1: Val) -> Val {
+/// spec: fn read(a: Address, b: Address) -> bool
+pub fn read(mut a: Val, mut b: Val) -> Val {
     unsafe {
         let mut frame: *mut u8;
         let mut frame73: *mut u8;
@@ -125,7 +136,7 @@ pub fn read(mut a0: Val, mut a1: Val) -> Val {
         let mut arg_payload1: u64;
         let mut and: u64;
         let mut cmp_not_not75: bool;
-        let mut Map__a____b__: Val;
+        let mut pair_key: Val;
         let mut vec_new_from_linear_memory_21: Val;
         let mut has_contract_data_23: Val;
         let mut _27: [u64; 2];
@@ -135,8 +146,8 @@ pub fn read(mut a0: Val, mut a1: Val) -> Val {
         frame = (&raw mut _27) as *mut u8;
         _29 = [0u64; 2];
         frame73 = (&raw mut _29) as *mut u8;
-        arg_payload = a0.0;
-        arg_payload1 = a1.0;
+        arg_payload = a.0;
+        arg_payload1 = b.0;
         and = arg_payload & 255u64;
         cmp_not_not75 = (arg_payload1 & 255u64) == Tag::AddressObject;
         match and {
@@ -144,9 +155,9 @@ pub fn read(mut a0: Val, mut a1: Val) -> Val {
                 if cmp_not_not75 {
                     _29[1] = arg_payload1;
                     _29[0] = arg_payload;
-                    Map__a____b__ = map_new_from_linear_memory(Val::u32(1048636), Val::u32((frame73 as u64) as u32), Val::u32(2));
-                    _27[1] = Map__a____b__.0;
-                    _27[0] = 1852552974u64;
+                    pair_key = map_new_from_linear_memory(Val::u32(1048636), Val::u32((frame73 as u64) as u32), Val::u32(2));
+                    _27[1] = pair_key.0;
+                    _27[0] = Val::sym("Pair") /* DataKey::Pair */.0;
                     vec_new_from_linear_memory_21 = vec_new_from_linear_memory(Val::u32((frame as u64) as u32), Val::u32(2));
                     has_contract_data_23 = has_contract_data(vec_new_from_linear_memory_21, StorageType::Persistent);
                     to_val = Val((has_contract_data_23.0 == 1u64) as u64);
@@ -161,6 +172,7 @@ pub fn read(mut a0: Val, mut a1: Val) -> Val {
     }
 }
 
+/// spec: fn set_flag()
 pub fn set_flag() -> Val {
     unsafe {
         let mut _0: Val;
@@ -172,7 +184,7 @@ pub fn set_flag() -> Val {
 
 fn f37() {
     unsafe {
-        fail_with_error(Val::error(0, 1));
+        fail_with_error(Val::error(0, 1) /* Error::AnError */);
         return;
     }
 }
