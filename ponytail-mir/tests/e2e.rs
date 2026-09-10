@@ -37,8 +37,8 @@ fn rust_from_mir_is_structured_decoded_and_typechecks() {
     // terms and appears in the storage schema.
     let read = body_of(&rs, "pub fn read");
     assert!(!read.contains("loop"), "{read}");
-    assert!(read.contains("pair_key = map_new_from_linear_memory(Val::u32(1048636) /* \"a\", \"b\" */, pos(&[a, b]), Val::u32(2)); // PairKey { a, b }"), "{read}");
-    assert!(read.contains("vec_new_from_linear_memory(pos(&[Val::sym(\"Pair\") /* DataKey::Pair */, pair_key]), Val::u32(2)); // DataKey::Pair(PairKey { a, b })"), "{read}");
+    assert!(read.contains("pair_key = Val::map(&[\"a\", \"b\"], &[a, b]); // PairKey { a, b }"), "{read}");
+    assert!(read.contains("Val::vec(&[Val::sym(\"Pair\") /* DataKey::Pair */, pair_key]); // DataKey::Pair(PairKey { a, b })"), "{read}");
     assert!(rs.contains("//   persistent  DataKey::Pair(PairKey { a, b })   [has: read]"), "{rs}");
     assert!(rs.contains("//   persistent  Val::sym(\"f\")   [put(Val::TRUE): set_flag]"), "{rs}");
     // f37: its parameterless body hands a decoded error to the host; the

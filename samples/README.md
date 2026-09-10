@@ -240,13 +240,19 @@ machine with a comment saying so; the corpus has none.
 Vals from (`vec_new_from_linear_memory`, the values of `map_new_..`) is a Val
 array, and when every slot is stored exactly once in the block of the one call
 that takes it, with every pointer derived from it flowing into that call and
-nowhere else, it is written as the literal at the call, through the prelude's
-`pos`, which is what the SDK's `Vec::from_array` does. Frame words are array
-elements otherwise. `read`'s key thus reads as the source wrote it:
+nowhere else, it is written as the literal at the call. Frame words are array
+elements otherwise. The linear-memory imports are then the SDK constructors
+they implement, with the data as the literals the source had: `Val::vec(&[..])`
+for `Vec::from_array`, `Val::map(&["a", "b"], &[..])` for a struct,
+`Val::symbol("..")` and `Val::string("..")` with the text read from the data
+section, and a lifted helper that builds a symbol from two of its parameters
+is `Symbol::new` taking a `&str`. Each is defined in the header as the host
+call it is: the host reads the same bytes. `read`'s key thus reads as the
+source wrote it:
 
 ```rust
-pair_key = map_new_from_linear_memory(Val::u32(1048636) /* "a", "b" */, pos(&[a, b]), Val::u32(2)); // PairKey { a, b }
-vec_new_from_linear_memory_21 = vec_new_from_linear_memory(pos(&[Val::sym("Pair") /* DataKey::Pair */, pair_key]), Val::u32(2)); // DataKey::Pair(PairKey { a, b })
+pair_key = Val::map(&["a", "b"], &[a, b]); // PairKey { a, b }
+vec_new_from_linear_memory_21 = Val::vec(&[Val::sym("Pair") /* DataKey::Pair */, pair_key]); // DataKey::Pair(PairKey { a, b })
 has_contract_data_23 = has_contract_data(vec_new_from_linear_memory_21, StorageType::Persistent);
 ```
 

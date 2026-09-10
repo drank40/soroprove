@@ -74,6 +74,8 @@ extern "C" {
 /// The linear-memory position of a value array, as the host takes one: the
 /// SDK's `Vec::from_array` and struct-to-map conversions pass exactly this.
 pub fn pos<const N: usize>(a: &[Val; N]) -> Val { Val::u32(a.as_ptr() as usize as u32) }
+/// Text at a linear-memory position, as the `&str` the SDK passed down.
+pub unsafe fn str_at<'a>(pos: u64, len: u64) -> &'a str { core::str::from_utf8_unchecked(core::slice::from_raw_parts(pos as usize as *const u8, len as usize)) }
 
 // contractspecv0, the ABI the contract declares. ScVal shapes, not memory layout.
 //   enum Flag { A = 0, B = 1, C = 2, D = 3, E = 4 }
@@ -95,6 +97,14 @@ extern "C" {
     pub fn map_new_from_linear_memory(a0: Val, a1: Val, a2: Val) -> Val;
     /// wasm import `v.g`
     pub fn vec_new_from_linear_memory(a0: Val, a1: Val) -> Val;
+}
+
+/// The SDK constructors the imports above implement, their data as literals: the host reads the same bytes.
+impl Val {
+    /// `Vec::from_array`.
+    pub fn vec<const N: usize>(a: &[Val; N]) -> Val { unsafe { vec_new_from_linear_memory(pos(a), Val::u32(N as u32)) } }
+    /// A struct as the map it becomes, field names sorted: `&[&str; N]` is the (position, length) array the host reads the keys from.
+    pub fn map<const N: usize>(keys: &[&str; N], vals: &[Val; N]) -> Val { unsafe { map_new_from_linear_memory(Val::u32(keys.as_ptr() as usize as u32), pos(vals), Val::u32(N as u32)) } }
 }
 
 // storage, from every put/get/has/del/extend_ttl call: durability, key, uses.
@@ -153,8 +163,8 @@ pub fn read(mut a: Val, mut b: Val) -> Val {
         match and {
             Tag::AddressObject => {
                 if cmp_not_not75 {
-                    pair_key = map_new_from_linear_memory(Val::u32(1048636) /* "a", "b" */, pos(&[a, b]), Val::u32(2)); // PairKey { a, b }
-                    vec_new_from_linear_memory_21 = vec_new_from_linear_memory(pos(&[Val::sym("Pair") /* DataKey::Pair */, pair_key]), Val::u32(2)); // DataKey::Pair(PairKey { a, b })
+                    pair_key = Val::map(&["a", "b"], &[a, b]); // PairKey { a, b }
+                    vec_new_from_linear_memory_21 = Val::vec(&[Val::sym("Pair") /* DataKey::Pair */, pair_key]); // DataKey::Pair(PairKey { a, b })
                     has_contract_data_23 = has_contract_data(vec_new_from_linear_memory_21, StorageType::Persistent);
                     to_val = Val((has_contract_data_23.0 == 1u64) as u64);
                     return to_val;

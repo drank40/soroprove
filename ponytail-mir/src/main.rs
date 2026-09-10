@@ -116,7 +116,19 @@ extern "C" {
 /// The linear-memory position of a value array, as the host takes one: the
 /// SDK's `Vec::from_array` and struct-to-map conversions pass exactly this.
 pub fn pos<const N: usize>(a: &[Val; N]) -> Val { Val::u32(a.as_ptr() as usize as u32) }
+/// Text at a linear-memory position, as the `&str` the SDK passed down.
+pub unsafe fn str_at<'a>(pos: u64, len: u64) -> &'a str { core::str::from_utf8_unchecked(core::slice::from_raw_parts(pos as usize as *const u8, len as usize)) }
 "#;
+
+/// The SDK constructors the linear-memory imports implement, taking their
+/// data as literals: the host reads the same bytes. On `Val`, out of the way
+/// of exports named `symbol` or `string`.
+const CONSTRUCTORS: [(&str, &str); 4] = [
+    ("symbol_new_from_linear_memory", "    /// `Symbol::new`.\n    pub fn symbol(s: &str) -> Val { unsafe { symbol_new_from_linear_memory(Val::u32(s.as_ptr() as usize as u32), Val::u32(s.len() as u32)) } }\n"),
+    ("string_new_from_linear_memory", "    /// `String::from_str`.\n    pub fn string(s: &str) -> Val { unsafe { string_new_from_linear_memory(Val::u32(s.as_ptr() as usize as u32), Val::u32(s.len() as u32)) } }\n"),
+    ("vec_new_from_linear_memory", "    /// `Vec::from_array`.\n    pub fn vec<const N: usize>(a: &[Val; N]) -> Val { unsafe { vec_new_from_linear_memory(pos(a), Val::u32(N as u32)) } }\n"),
+    ("map_new_from_linear_memory", "    /// A struct as the map it becomes, field names sorted: `&[&str; N]` is the (position, length) array the host reads the keys from.\n    pub fn map<const N: usize>(keys: &[&str; N], vals: &[Val; N]) -> Val { unsafe { map_new_from_linear_memory(Val::u32(keys.as_ptr() as usize as u32), pos(vals), Val::u32(N as u32)) } }\n"),
+];
 
 /// LLVM name -> Rust identifier: the part after the module dot for host and
 /// runtime functions, the whole name for `llvm.*` intrinsics.
@@ -248,6 +260,7 @@ pub fn header(m: &Module, sigs: &infer::Sigs) -> Result<String, String> {
         let _ = writeln!(s, "pub static mut {}: u64 = {init};", gv.get_name().to_string_lossy().to_uppercase());
     }
     let mut ext = String::new();
+    let mut imported: Vec<String> = Vec::new();
     for f in m.get_functions() {
         let name = f.get_name().to_string_lossy().into_owned();
         if f.count_basic_blocks() > 0
@@ -265,9 +278,14 @@ pub fn header(m: &Module, sigs: &infer::Sigs) -> Result<String, String> {
             let _ = writeln!(ext, "    /// wasm import `{}`", a.get_string_value().to_string_lossy());
         }
         let _ = writeln!(ext, "    pub fn {}({}){ret};", rs_name(&name), params.join(", "));
+        imported.push(rs_name(&name));
     }
     if !ext.is_empty() {
         let _ = write!(s, "\nextern \"C\" {{\n{ext}}}\n");
+    }
+    let ctors: String = CONSTRUCTORS.iter().filter(|(i, _)| imported.iter().any(|x| x == i)).map(|(_, c)| *c).collect();
+    if !ctors.is_empty() {
+        let _ = write!(s, "\n/// The SDK constructors the imports above implement, their data as literals: the host reads the same bytes.\nimpl Val {{\n{ctors}}}\n");
     }
     Ok(s)
 }

@@ -41,6 +41,22 @@ struct Inter {
     param_accesses: HashMap<String, Vec<(usize, String, String)>>,
     called: HashSet<String>,
     schema: Vec<Access>,
+    /// fn -> (text position param, length param, "Symbol" | "String"): a
+    /// helper that is the SDK's `Symbol::new` / `String::from_str`. Read off
+    /// the final summaries.
+    text_helpers: HashMap<String, (usize, usize, &'static str)>,
+}
+
+/// `Symbol(@Val::u32(a0 as u32), Val::u32(a1 as u32))`, every return of the
+/// helper: it builds its result from the text at two of its parameters.
+fn text_params(template: &str, params: &[String]) -> Option<(usize, usize, &'static str)> {
+    let kind = if template.starts_with("Symbol(@") { "Symbol" } else if template.starts_with("String(@") { "String" } else { return None };
+    let mut idx = template.split("Val::u32(").skip(1).map(|r| {
+        let w: String = r.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+        params.iter().position(|p| *p == w)
+    });
+    let (Some(Some(i)), Some(Some(j)), None) = (idx.next(), idx.next(), idx.next()) else { return None };
+    (i != j).then_some((i, j, kind))
 }
 
 pub fn emit<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, header: &str, bodies: &[&Body<'tcx>], spec: &Spec) -> R<String> {
@@ -63,6 +79,15 @@ pub fn emit<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, header: &str, bodies: &[&B
             break;
         }
     }
+    prev.text_helpers = prev
+        .ret_shapes
+        .iter()
+        .filter_map(|(f, ts)| {
+            let mut ps = ts.iter().map(|(t, params)| text_params(t, params));
+            let first = ps.next()??;
+            ps.all(|p| p == Some(first)).then(|| (f.clone(), first))
+        })
+        .collect();
     let inter = RefCell::new(Inter::default());
     let mut fns = String::new();
     for body in bodies {
@@ -1427,6 +1452,10 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         let mut elems: Option<Vec<(String, Option<Local>)>> = None;
         let mut keys: Option<Vec<String>> = None;
         let mut text: Option<String> = None;
+        // The text the code can carry as a literal; the array length behind a `pos(..)`.
+        let mut literal: Option<String> = None;
+        let mut pos_len: Option<u64> = None;
+        let arg_ops: Vec<Operand<'tcx>> = args.iter().map(|a| a.node.clone()).collect();
         for (k, arg) in args.iter().enumerate() {
             // The position of a Val array: the array itself, as a literal
             // when it is written whole right here, else by name.
@@ -1435,15 +1464,16 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                     if let Some(lits) = self.array_lits.get(&arr).filter(|l| off == 0 && l.iter().all(Option::is_some)) {
                         let es: Vec<(String, Option<Local>)> = lits.iter().flatten().cloned().collect();
                         a.push(format!("pos(&[{}])", es.iter().map(|(e, _)| e.as_str()).collect::<Vec<_>>().join(", ")));
+                        pos_len = Some(es.len() as u64);
                         elems = Some(es);
                         continue;
                     }
-                    if off == 0 && self.val_arrays.contains_key(&arr) {
+                    if let Some(&n) = self.val_arrays.get(&arr).filter(|_| off == 0) {
                         a.push(format!("pos(&{})", self.raw_name(arr)));
+                        pos_len = Some(n);
                         continue;
                     }
                     // Part of a frame: the slots it covers, if they are plainly written here.
-                    let arg_ops: Vec<Operand<'tcx>> = args.iter().map(|a| a.node.clone()).collect();
                     if let Some(len) = self.len_arg(&f, &arg_ops) {
                         if off % 8 == 0 {
                             elems = self.range_shape(bb, arr, off / 8, len);
@@ -1470,11 +1500,49 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                     _ => None,
                 };
                 if let Some(t) = t {
+                    if len == Some(t.len() as u64) {
+                        literal = Some(t.clone());
+                    }
                     s = format!("{s} /* {t:?} */");
                     text = Some(t);
                 }
             }
             a.push(s);
+        }
+        // The SDK constructor the call is, with its data as the literal the
+        // source had: the host reads the same bytes. `show` is the callee as
+        // written; `f` stays the callee as lifted.
+        let mut show = f.clone();
+        if let Some(&(i, j, _)) = self.prev.text_helpers.get(&f) {
+            let is_param = |o: &Operand<'tcx>, idx: usize| matches!(o, Operand::Copy(p) | Operand::Move(p) if p.as_local() == Some(Local::from_usize(idx + 1)));
+            let own = self.prev.text_helpers.get(&self.fname).is_some_and(|&(si, sj, _)| is_param(&arg_ops[i], si) && is_param(&arg_ops[j], sj));
+            literal = match (self.konst_u64(&arg_ops[i]), self.konst_u64(&arg_ops[j])) {
+                (Some(p), Some(l)) => self.spec.text_at(p, l),
+                _ => None,
+            };
+            a[i] = match (&literal, own) {
+                (Some(t), _) => format!("{t:?}"),
+                (None, true) => "s".into(),
+                (None, false) => format!("str_at({} as u64, {} as u64)", a[i], a[j]),
+            };
+            a.remove(j);
+        } else if let Some(t) = &literal {
+            show = if f.starts_with("symbol") { "Val::symbol".into() } else { "Val::string".into() };
+            a = vec![format!("{t:?}")];
+        } else if let Some(n) = pos_len.filter(|n| self.len_arg(&f, &arg_ops) == Some(*n)) {
+            let inner = |s: &str| s[4..s.len() - 1].to_string(); // `pos(X)` -> `X`
+            match f.as_str() {
+                "vec_new_from_linear_memory" => {
+                    show = "Val::vec".into();
+                    a = vec![inner(&a[0])];
+                }
+                "map_new_from_linear_memory" if keys.as_ref().is_some_and(|k| k.len() as u64 == n) => {
+                    show = "Val::map".into();
+                    let ks = keys.clone().unwrap_or_default().iter().map(|k| format!("{k:?}")).collect::<Vec<_>>().join(", ");
+                    a = vec![format!("&[{ks}]"), inner(&a[1])];
+                }
+                _ => {}
+            }
         }
         // What was just built, in the contract's own terms.
         let shape = match (f.as_str(), &elems, &keys) {
@@ -1539,12 +1607,19 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         let dty = self.body.local_decls[destination.local].ty;
         let unread = destination.as_local().is_some_and(|l| self.uses.get(&l).copied().unwrap_or(0) == 0);
         let mut s = if dty.is_unit() || dty.is_never() || unread {
-            format!("{f}({});", a.join(", "))
+            format!("{show}({});", a.join(", "))
         } else {
-            format!("{} = {f}({});", self.place(destination), a.join(", "))
+            format!("{} = {show}({});", self.place(destination), a.join(", "))
         };
         if let Some(sh) = &shape {
-            s = format!("{s} // {sh}");
+            // Text already in the code needs only what the spec calls it.
+            let note = match &literal {
+                Some(t) => self.spec.union_case(t),
+                None => Some(sh.clone()),
+            };
+            if let Some(n) = note {
+                s = format!("{s} // {n}");
+            }
             if let Some(l) = destination.as_local() {
                 self.push_shape(l, sh.clone());
                 if l == Local::ZERO {
@@ -1936,8 +2011,20 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         let name = tcx.item_name(def_id);
         let vis = if tcx.visibility(def_id).is_public() { "pub " } else { "" };
         // `mut`: rustc's copy propagation may reuse an argument local.
-        let params: Vec<String> =
+        let mut params: Vec<String> =
             self.body.args_iter().map(|l| format!("mut {}: {}", self.local(l), ty_str(tcx, self.body.local_decls[l].ty))).collect();
+        // The SDK's text constructor: its position and length are one `&str`.
+        let mut prologue = String::new();
+        let mut doc = String::new();
+        if let Some(&(i, j, kind)) = self.prev.text_helpers.get(&self.fname) {
+            let ty = |l: Local| ty_str(tcx, self.body.local_decls[l].ty);
+            let (pi, pj) = (Local::from_usize(i + 1), Local::from_usize(j + 1));
+            let ptr = if ty(pi).starts_with('*') { format!("s.as_ptr() as {}", ty(pi)) } else { format!("s.as_ptr() as usize as {}", ty(pi)) };
+            prologue = format!("        let mut {}: {} = {ptr};\n        let mut {}: {} = s.len() as {};\n", self.local(pi), ty(pi), self.local(pj), ty(pj), ty(pj));
+            doc = format!("/// The SDK's `{}`.\n", if kind == "Symbol" { "Symbol::new" } else { "String::from_str" });
+            params[i] = "s: &str".into();
+            params.remove(j);
+        }
         let ret_ty = self.body.local_decls[Local::ZERO].ty;
         let ret = if ret_ty.is_unit() { String::new() } else { format!(" -> {}", ty_str(tcx, ret_ty)) };
 
@@ -1959,8 +2046,8 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         let code = std::mem::take(&mut self.out);
 
         // The declared signature, from contractspecv0, above the ABI one.
-        let doc = self.spec.sigs.get(&self.fname).map(|sig| format!("/// spec: {sig}\n")).unwrap_or_default();
-        let mut s = format!("{doc}{vis}fn {name}({}){ret} {{\n    unsafe {{\n", params.join(", "));
+        doc.push_str(&self.spec.sigs.get(&self.fname).map(|sig| format!("/// spec: {sig}\n")).unwrap_or_default());
+        let mut s = format!("{doc}{vis}fn {name}({}){ret} {{\n    unsafe {{\n{prologue}", params.join(", "));
         let init = if zeroed { " = core::mem::zeroed()" } else { "" };
         for l in self.body.vars_and_temps_iter().chain((!ret_ty.is_unit()).then_some(Local::ZERO)) {
             let t = self.body.local_decls[l].ty;

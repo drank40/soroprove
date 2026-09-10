@@ -74,6 +74,8 @@ extern "C" {
 /// The linear-memory position of a value array, as the host takes one: the
 /// SDK's `Vec::from_array` and struct-to-map conversions pass exactly this.
 pub fn pos<const N: usize>(a: &[Val; N]) -> Val { Val::u32(a.as_ptr() as usize as u32) }
+/// Text at a linear-memory position, as the `&str` the SDK passed down.
+pub unsafe fn str_at<'a>(pos: u64, len: u64) -> &'a str { core::str::from_utf8_unchecked(core::slice::from_raw_parts(pos as usize as *const u8, len as usize)) }
 
 // contractspecv0, the ABI the contract declares. ScVal shapes, not memory layout.
 //   enum Flag { A = 0, B = 1, C = 2, D = 3, E = 4 }
@@ -97,6 +99,16 @@ extern "C" {
     pub fn map_new_from_linear_memory(a0: Val, a1: Val, a2: Val) -> Val;
     /// wasm import `v.g`
     pub fn vec_new_from_linear_memory(a0: Val, a1: Val) -> Val;
+}
+
+/// The SDK constructors the imports above implement, their data as literals: the host reads the same bytes.
+impl Val {
+    /// `Symbol::new`.
+    pub fn symbol(s: &str) -> Val { unsafe { symbol_new_from_linear_memory(Val::u32(s.as_ptr() as usize as u32), Val::u32(s.len() as u32)) } }
+    /// `Vec::from_array`.
+    pub fn vec<const N: usize>(a: &[Val; N]) -> Val { unsafe { vec_new_from_linear_memory(pos(a), Val::u32(N as u32)) } }
+    /// A struct as the map it becomes, field names sorted: `&[&str; N]` is the (position, length) array the host reads the keys from.
+    pub fn map<const N: usize>(keys: &[&str; N], vals: &[Val; N]) -> Val { unsafe { map_new_from_linear_memory(Val::u32(keys.as_ptr() as usize as u32), pos(vals), Val::u32(N as u32)) } }
 }
 
 // storage, from every put/get/has/del/extend_ttl call: durability, key, uses.
@@ -152,7 +164,7 @@ pub fn read(mut a: Val, mut b: Val) -> Val {
                             }
                             _ => {}
                         }
-                        Symbol__Pair__ = symbol_new_from_linear_memory(Val::u32(1048640) /* "Pair" */, Val::u32(4)); // Symbol("Pair") /* DataKey::Pair */
+                        Symbol__Pair__ = Val::symbol("Pair"); // DataKey::Pair
                         payload = Symbol__Pair__.0;
                     }
                     _31[2] = arg_payload1;
