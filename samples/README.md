@@ -311,6 +311,37 @@ that is a helper's result the shape pass could not follow -- a value loaded
 from memory, a symbol computed at run time, a multi-value block -- which the
 schema lists as `f66::lc`, the function's own local, rather than as a shape.
 
+## `ponytail-mir --contract`: back to soroban-sdk source
+
+The other output of the same analysis: the contract as the source it was
+compiled from, as far as the shapes carry. The spec's types become their
+`#[contracttype]` and `#[contracterror]` items; each export gets the spec's
+signature with `env: Env` first; in the body a host storage call is the
+`env.storage().persistent().has(&key)` it came from with the key as its shape,
+a symbol is `symbol_short!("f")` or `Symbol::new(&env, "..")`, an error or
+union case is its path, a returned value is wrapped as the return type wants
+(`Ok`, `Err`, `Some`, `None`), a switch on an integer-enum parameter is a
+`match` over its cases, the SDK's own argument checks -- tag tests whose other
+arm traps -- are gone, and a `panic_with_error!` wrapper is called by its
+error. `three_bugs.contract.rs` is `three_bugs/src/lib.rs` up to two
+`.clone()`s and a `match` where the source had an `if` chain:
+
+```rust
+pub fn read(env: Env, a: Address, b: Address) -> bool {
+    env.storage().persistent().has(&DataKey::Pair(PairKey { a: a.clone(), b: b.clone() }))
+}
+```
+
+The proof that it is a contract: `build.sh` drops it into `contract/` and
+cargo builds it against soroban-sdk for `wasm32v1-none`; the e2e test does
+the same. An export the source level cannot say yet -- a call into a lifted
+helper that is business logic, an i128 or bytes conversion, a `Vec`/`Map`
+operation, a branch on a value it did not reconstruct -- is a `todo!()` with
+the first such thing named, so the file still builds. Across the corpus 62 of
+713 exports reconstruct whole today; the reasons left are, in order, calls
+into the contract's own helpers, the i128 and u64 conversions, `Bytes`, `Vec`
+and `Map` operations.
+
 ## `errors.wasm` — vendored, 796 bytes
 
 The canonical case: it exhibits all three shapes in one exported function, and

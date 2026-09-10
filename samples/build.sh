@@ -54,3 +54,9 @@ if (cd ../ponytail-mir && cargo build --release -q 2>/dev/null); then
 else
     echo "ponytail-mir did not build (nightly with rustc-dev missing?); .mir/.rs goldens left as they were" >&2
 fi
+
+# The contract as soroban-sdk source, and the proof that it is one: it builds
+# against soroban-sdk for the contract target (offline; the sample's SDK is cached).
+(cd ../ponytail-mir && cargo run --release -q -- ../samples/three_bugs.inline.ll --contract) > three_bugs.contract.rs
+mkdir -p contract/src && cp three_bugs.contract.rs contract/src/lib.rs
+(cd contract && rustup run stable cargo build --release --target wasm32v1-none --offline -q) && echo "three_bugs.contract.rs -> builds as a contract"

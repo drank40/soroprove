@@ -9,6 +9,29 @@ fn run(args: &[&str]) -> (bool, String, String) {
 
 const LL: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../samples/three_bugs.inline.ll");
 
+/// `--contract`: the sample as soroban-sdk source -- the spec's types, the
+/// exports with SDK calls where the host calls were -- and the proof that it
+/// is one: cargo builds it against soroban-sdk for the contract target.
+fn contract_builds(dir: &std::path::Path) {
+    let (ok, src, err) = run(&[LL, "--contract"]);
+    assert!(ok, "{err}");
+    assert!(src.contains("pub fn set_flag(env: Env) {\n        env.storage().persistent().set(&symbol_short!(\"f\"), &true);\n    }"), "{src}");
+    assert!(src.contains("pub fn read(env: Env, a: Address, b: Address) -> bool {\n        env.storage().persistent().has(&DataKey::Pair(PairKey { a: a.clone(), b: b.clone() }))\n    }"), "{src}");
+    assert!(src.contains("Flag::B => {\n                brif_not = Err(Error::AnError);") && src.contains("Flag::C => {\n                panic_with_error!(&env, Error::AnError);"), "{src}");
+    assert!(src.contains("#[contracttype]\n#[derive(Clone)]\npub enum DataKey {\n    Pair(PairKey),\n    Single(Address),\n}"), "{src}");
+    let crate_dir = dir.join("contract");
+    std::fs::create_dir_all(crate_dir.join("src")).unwrap();
+    std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/../samples/contract/Cargo.toml"), crate_dir.join("Cargo.toml")).unwrap();
+    std::fs::write(crate_dir.join("src/lib.rs"), &src).unwrap();
+    let out = Command::new("rustup")
+        .args(["run", "stable", "cargo", "build", "--release", "--target", "wasm32v1-none", "--offline", "-q"])
+        .current_dir(&crate_dir)
+        .env("CARGO_TARGET_DIR", concat!(env!("CARGO_MANIFEST_DIR"), "/../samples/contract/target"))
+        .output()
+        .expect("cargo");
+    assert!(out.status.success(), "{}\n{src}", String::from_utf8_lossy(&out.stderr));
+}
+
 fn body_of<'a>(text: &'a str, head: &str) -> String {
     text.lines().skip_while(|l| !l.starts_with(head)).take_while(|l| !l.starts_with('}')).collect::<Vec<_>>().join("\n")
 }
@@ -68,6 +91,7 @@ fn rust_from_mir_is_structured_decoded_and_typechecks() {
     // stable rustc is the type checker for the output.
     let dir = std::env::temp_dir().join(format!("ponytail-mir-e2e-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
+    contract_builds(&dir);
     let src = dir.join("three_bugs.rs");
     std::fs::write(&src, &rs).unwrap();
     let out = Command::new("rustc")

@@ -361,6 +361,7 @@ fn lifted_build_mir<'tcx>(tcx: TyCtxt<'tcx>, def: LocalDefId) -> Body<'tcx> {
 
 struct Lift {
     rust: bool,
+    contract: bool,
 }
 
 impl Callbacks for Lift {
@@ -388,16 +389,21 @@ impl Callbacks for Lift {
             .map(|&d| tcx.optimized_mir(d))
             .collect();
         let mut out = std::io::stdout().lock();
-        if self.rust {
-            let head = llvm(|l| header(&l.m, &l.sigs)).unwrap_or_else(|e| fatal(&e));
+        if self.rust || self.contract {
+            let lines = llvm(|l| spec_lines(&l.m));
             let spec = rs::Spec::parse(
-                llvm(|l| spec_lines(&l.m)),
+                lines.clone(),
                 llvm(|l| meta_lines(&l.m, "soroban.keys")),
                 llvm(|l| meta_lines(&l.m, "soroban.strings")),
                 llvm(|l| meta_lines(&l.m, "soroban.rodata")),
                 llvm(|l| sdk_names(&l.m)),
             );
-            let text = rs::emit(tcx, &env, &head, &bodies, &spec).unwrap_or_else(|e| fatal(&e));
+            let text = if self.contract {
+                rs::emit_contract(tcx, &env, &bodies, &spec, &lines).unwrap_or_else(|e| fatal(&e))
+            } else {
+                let head = llvm(|l| header(&l.m, &l.sigs)).unwrap_or_else(|e| fatal(&e));
+                rs::emit(tcx, &env, &head, &bodies, &spec).unwrap_or_else(|e| fatal(&e))
+            };
             std::io::Write::write_all(&mut out, text.as_bytes()).expect("write");
         } else {
             for body in &bodies {
@@ -421,10 +427,11 @@ fn fatal(msg: &str) -> ! {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let ll = args.get(1).filter(|a| !a.starts_with("--")).cloned().unwrap_or_else(|| {
-        eprintln!("usage: ponytail-mir <contract.inline.ll> [--rust] [--no-validate]");
+        eprintln!("usage: ponytail-mir <contract.inline.ll> [--rust|--contract] [--no-validate]");
         std::process::exit(2)
     });
     let rust = args.iter().any(|a| a == "--rust");
+    let contract = args.iter().any(|a| a == "--contract");
     let validate = !args.iter().any(|a| a == "--no-validate");
 
     let ctx: &'static Context = Box::leak(Box::new(Context::create()));
@@ -463,7 +470,7 @@ fn main() {
     if validate {
         rustc_args.push("-Zvalidate-mir".into());
     }
-    rustc_driver::run_compiler(&rustc_args, &mut Lift { rust });
+    rustc_driver::run_compiler(&rustc_args, &mut Lift { rust, contract });
     let _ = std::fs::remove_dir_all(scratch);
 }
 

@@ -49,6 +49,10 @@ struct Inter {
     /// fn -> (identifier, doc) for helpers recognised as `#[contracttype]`
     /// derives. Filled once the summaries are final.
     renames: HashMap<String, (String, String)>,
+    /// fn -> the error it hands the host: a `panic_with_error!` wrapper.
+    fails: HashMap<String, String>,
+    /// fns with no return: every path traps.
+    diverges: HashSet<String>,
     /// fn -> (parameter index used as key, operation, durability).
     param_accesses: HashMap<String, Vec<(usize, String, String)>>,
     called: HashSet<String>,
@@ -75,7 +79,9 @@ fn text_params(template: &str, params: &[String]) -> Option<(usize, usize, &'sta
     (i != j).then_some((i, j, kind))
 }
 
-pub fn emit<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, header: &str, bodies: &[&Body<'tcx>], spec: &Spec) -> R<String> {
+/// Every function's summaries, iterated to a fixpoint, then what is read off
+/// them: the text helpers, the derive renames, the functions that never return.
+fn summaries<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'tcx>], spec: &Spec) -> R<Inter> {
     // Helpers' return shapes and key parameters are known to their callers
     // only once every body has been seen, and a helper's own summary
     // sharpens once its callees' are known: each pass reads the previous
@@ -89,7 +95,7 @@ pub fn emit<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, header: &str, bodies: &[&B
             Fn_::new(tcx, env, body, spec, &prev, &cur, false).emit()?;
         }
         let cur = cur.into_inner();
-        let stable = cur.ret_shapes == prev.ret_shapes && cur.param_accesses == prev.param_accesses && cur.called == prev.called && cur.unpacks == prev.unpacks && cur.param_writes == prev.param_writes;
+        let stable = cur.ret_shapes == prev.ret_shapes && cur.param_accesses == prev.param_accesses && cur.called == prev.called && cur.unpacks == prev.unpacks && cur.param_writes == prev.param_writes && cur.fails == prev.fails;
         prev = cur;
         if stable {
             break;
@@ -137,6 +143,16 @@ pub fn emit<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, header: &str, bodies: &[&B
         }
     }
     prev.renames = renames;
+    prev.diverges = bodies
+        .iter()
+        .filter(|b| !b.basic_blocks.iter().any(|bb| matches!(bb.terminator().kind, TerminatorKind::Return)))
+        .map(|b| tcx.item_name(b.source.def_id()).to_string())
+        .collect();
+    Ok(prev)
+}
+
+pub fn emit<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, header: &str, bodies: &[&Body<'tcx>], spec: &Spec) -> R<String> {
+    let prev = summaries(tcx, env, bodies, spec)?;
     let inter = RefCell::new(Inter::default());
     let mut fns = String::new();
     for body in bodies {
@@ -573,6 +589,208 @@ fn alternatives(shapes: Vec<String>) -> String {
     shapes.join(" | ")
 }
 
+/// The local an rvalue passes on unchanged: a copy, or `Val(x)` / `Val(x.0)`.
+fn ret_source<'tcx>(env: &Env<'tcx>, rv: &Rvalue<'tcx>) -> Option<Local> {
+    match rv {
+        Rvalue::Use(Operand::Copy(p) | Operand::Move(p)) => p.as_local(),
+        Rvalue::Aggregate(k, fs) if matches!(**k, AggregateKind::Adt(d, ..) if d == env.val_def) => match fs.iter().next() {
+            Some(Operand::Copy(p) | Operand::Move(p)) => Some(p.local),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `panic!()`, `unreachable!()`, `panic_with_error!(..)`: a line after which nothing runs.
+fn is_diverging(l: &str) -> bool {
+    l == "panic!();" || l == "unreachable!();" || l.starts_with("panic_with_error!(")
+}
+
+/// Source-level tidying: a trap right after a return or a panic is the guard
+/// the SDK's dispatch had, gone; a trailing bare `return;` is the end.
+fn tidy(lines: &mut Vec<(usize, String)>) {
+    let mut i = 1;
+    while i < lines.len() {
+        let prev_ends = lines[i - 1].1.starts_with("return") || is_diverging(&lines[i - 1].1);
+        if (lines[i].1 == "panic!();" || lines[i].1 == "unreachable!();") && lines[i - 1].0 == lines[i].0 && prev_ends {
+            lines.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+    if lines.last().is_some_and(|(d, l)| *d == 2 && l == "return;") {
+        lines.pop();
+    }
+    if let Some((2, l)) = lines.last_mut() {
+        if let Some(e) = l.strip_prefix("return ").and_then(|e| e.strip_suffix(';')) {
+            *l = e.to_string();
+        }
+    }
+}
+
+/// Where the expression ending at the end of `head` begins: back over
+/// balanced brackets to a separator.
+fn expr_start(head: &str) -> usize {
+    let mut depth = 0i32;
+    for (i, c) in head.char_indices().rev() {
+        match c {
+            ')' | ']' | '}' => depth += 1,
+            '(' | '[' | '{' => {
+                if depth == 0 {
+                    return i + 1;
+                }
+                depth -= 1;
+            }
+            ',' | ' ' if depth == 0 => return i + 1,
+            _ => {}
+        }
+    }
+    0
+}
+
+/// Every `pat<args>)` in `s` rewritten by `f(args)`, innermost args first.
+fn rewrite_calls(s: &str, pat: &str, f: &dyn Fn(&str) -> String) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(i) = rest.find(pat) {
+        // not a longer name ending in `pat`
+        if i > 0 && rest.as_bytes()[i - 1].is_ascii_alphanumeric() || (i > 0 && rest.as_bytes()[i - 1] == b':' && !pat.starts_with("Val::")) {
+            out.push_str(&rest[..i + pat.len()]);
+            rest = &rest[i + pat.len()..];
+            continue;
+        }
+        let open = i + pat.len() - 1;
+        let mut depth = 0i32;
+        let mut close = None;
+        for (j, c) in rest[open..].char_indices() {
+            match c {
+                '(' | '[' => depth += 1,
+                ')' | ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + j);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(close) = close else { break };
+        let inner = rewrite_calls(&rest[open + 1..close], pat, f);
+        out.push_str(&rest[..i]);
+        out.push_str(&f(&inner));
+        rest = &rest[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `S { a, b }` -> `S { a: a, b: b }`, so the values can then be cloned.
+fn expand_shorthand(s: &str) -> String {
+    let Some(open) = s.find('{') else { return s.to_string() };
+    let mut depth = 0i32;
+    let mut close = s.len();
+    for (j, c) in s[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = open + j;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let items: Vec<String> = split_top(&s[open + 1..close], ',')
+        .iter()
+        .map(|it| {
+            let it = it.trim();
+            if !it.is_empty() && it.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                format!("{it}: {it}")
+            } else if let Some((k, v)) = it.split_once(": ") {
+                format!("{k}: {}", expand_shorthand(v))
+            } else {
+                expand_shorthand(it)
+            }
+        })
+        .collect();
+    format!("{}{{ {} }}{}", &s[..open], items.join(", "), expand_shorthand(s.get(close + 1..).unwrap_or("")))
+}
+
+/// `fn name(a: T) -> R` from the spec -> `pub fn name(env: Env, a: T) -> R {`.
+fn sdk_header(sig: &str) -> R<String> {
+    let rest = sig.strip_prefix("fn ").unwrap_or(sig);
+    let (name_params, ret) = rest.split_once(" -> ").map(|(a, b)| (a, format!(" -> {b}"))).unwrap_or((rest, String::new()));
+    let (name, params) = name_params.split_once('(').ok_or("spec signature")?;
+    let params = params.trim_end_matches(')');
+    Ok(format!("pub fn {name}(env: Env{}{params}){ret} {{", if params.is_empty() { "" } else { ", " }))
+}
+
+/// A spec type as the `#[contracttype]` item that declared it.
+fn type_item(l: &str) -> String {
+    let (kw, rest) = l.split_once(' ').unwrap_or((l, ""));
+    let name = rest.split(|c| c == ' ' || c == '{').next().unwrap_or("");
+    let inner = l.find('{').map(|i| &l[i + 1..l.rfind('}').unwrap_or(l.len())]).unwrap_or("");
+    let items: Vec<String> = split_top(inner, ',').iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let body = |items: &[String]| items.iter().map(|i| format!("    {i},\n")).collect::<String>();
+    match kw {
+        "struct" if items.first().is_some_and(|f| f.starts_with("0:")) => {
+            let tys: Vec<String> = items.iter().filter_map(|f| f.split_once(": ").map(|(_, t)| format!("pub {t}"))).collect();
+            format!("#[contracttype]\n#[derive(Clone)]\npub struct {name}({});\n\n", tys.join(", "))
+        }
+        "struct" => format!("#[contracttype]\n#[derive(Clone)]\npub struct {name} {{\n{}}}\n\n", body(&items.iter().map(|f| format!("pub {f}")).collect::<Vec<_>>())),
+        "union" => format!("#[contracttype]\n#[derive(Clone)]\npub enum {name} {{\n{}}}\n\n", body(&items)),
+        "enum" => format!("#[contracttype]\n#[derive(Clone, Copy, PartialEq, Eq)]\npub enum {name} {{\n{}}}\n\n", body(&items)),
+        "error" => format!("#[contracterror]\n#[derive(Clone, Copy, PartialEq, Eq)]\npub enum {name} {{\n{}}}\n\n", body(&items)),
+        "event" => format!("// event {name}: a #[contractevent] type, not reconstructed.\n\n"),
+        _ => String::new(),
+    }
+}
+
+const CONTRACT_HEAD: &str = "#![no_std]
+//! Reconstructed by ponytail-mir --contract: the contract as soroban-sdk source.
+//! An export that could not be said at this level is a `todo!()` naming why.
+#![allow(unused_imports, unused_mut, unused_variables, unreachable_code, unused_parens, non_snake_case, clippy::all)]
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, vec, Address, Bytes, BytesN, Duration, Env, I256,
+    Map, MuxedAddress, String, Symbol, Timepoint, U256, Val, Vec,
+};
+
+";
+
+/// The contract as soroban-sdk source: its types from the spec, its exports
+/// from the shapes. An export the source level cannot say is a `todo!()`
+/// that names the first thing it could not.
+pub fn emit_contract<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'tcx>], spec: &Spec, lines: &[String]) -> R<String> {
+    let prev = summaries(tcx, env, bodies, spec)?;
+    let inter = RefCell::new(Inter::default());
+    let mut out = String::from(CONTRACT_HEAD);
+    for l in lines {
+        out.push_str(&type_item(l));
+    }
+    out.push_str("#[contract]\npub struct Contract;\n\n#[contractimpl]\nimpl Contract {\n");
+    for body in bodies {
+        let def_id = body.source.def_id();
+        let name = tcx.item_name(def_id).to_string();
+        if !tcx.visibility(def_id).is_public() || name == "_" {
+            continue;
+        }
+        let Some(sig) = spec.sigs.get(&name).cloned() else {
+            out.push_str(&format!("    // {name}: exported, not in the spec.\n\n"));
+            continue;
+        };
+        match Fn_::new(tcx, env, body, spec, &prev, &inter, true).emit_sdk() {
+            Ok(s) => out.push_str(&s),
+            Err(why) => out.push_str(&format!("    {}\n        // not reconstructed: {why}\n        todo!()\n    }}\n", sdk_header(&sig)?)),
+        }
+        out.push('\n');
+    }
+    let trimmed = out.trim_end().to_string();
+    Ok(format!("{trimmed}\n}}\n"))
+}
+
 /// `a0@8` left in a template -- a word the caller did not write here -- is
 /// unknown: `_`.
 fn blank_words(t: &str) -> String {
@@ -694,6 +912,16 @@ struct Fn_<'a, 'tcx> {
     shapes: HashMap<Local, Vec<(Vec<Cond>, String)>>,
     /// The block being emitted, for those arms.
     cur_bb: BasicBlock,
+    /// Source level: SDK calls and spec types, no Vals.
+    sdk: bool,
+    /// Locals bound by name in SDK output; results inlined at their one use.
+    declared: HashSet<Local>,
+    inlined: HashMap<Local, String>,
+    /// Locals whose value flows to the return unchanged; whether `_0` is
+    /// always assigned right before a `return`.
+    ret_locals: HashSet<Local>,
+    ret_inline: bool,
+    ret_expr: Option<String>,
     /// The previous pass's summaries, read; this pass's, written.
     prev: &'a Inter,
     inter: &'a RefCell<Inter>,
@@ -778,6 +1006,12 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             call_def,
             shapes: HashMap::new(),
             cur_bb: START_BLOCK,
+            sdk: false,
+            declared: HashSet::new(),
+            inlined: HashMap::new(),
+            ret_locals: HashSet::new(),
+            ret_inline: false,
+            ret_expr: None,
             prev,
             inter,
             final_pass,
@@ -1696,10 +1930,14 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 if pl.ty(&self.body.local_decls, self.tcx).ty.is_unit() {
                     return Ok(()); // `_x = const ()`, or the destination of a void call
                 }
-                let s = format!("{} = {};", self.place(pl), self.assign_expr(pl, rv)?);
-                self.line(s);
-                if let [PlaceElem::Deref] = pl.projection.as_slice() {
-                    self.wrote_through(&Operand::Copy(Place::from(pl.local)), Some(8));
+                if self.sdk {
+                    self.sdk_stmt(pl, rv)?;
+                } else {
+                    let s = format!("{} = {};", self.place(pl), self.assign_expr(pl, rv)?);
+                    self.line(s);
+                    if let [PlaceElem::Deref] = pl.projection.as_slice() {
+                        self.wrote_through(&Operand::Copy(Place::from(pl.local)), Some(8));
+                    }
                 }
                 // A shape travels through a copy, a phi copy or a `Val(..)`
                 // of a payload local included; what reaches `_0` is what
@@ -1760,6 +1998,13 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         let val_pos = Self::val_position(&f);
         let keys_pos = Self::keys_position(&f);
         self.inter.borrow_mut().called.insert(f.clone());
+        // A function that hands the host a constant error is a panic wrapper.
+        if f == "fail_with_error" {
+            if let Some(e) = args.first().and_then(|a| self.konst_u64(&a.node)) {
+                let e = self.val_str(e);
+                self.inter.borrow_mut().fails.entry(self.fname.clone()).or_insert(e);
+            }
+        }
         let mut a: Vec<String> = Vec::new();
         let mut elems: Option<Vec<(String, Option<Local>)>> = None;
         let mut keys: Option<Vec<String>> = None;
@@ -1972,7 +2217,11 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 }
             }
         }
-        self.line(s);
+        if self.sdk {
+            self.sdk_call(&f, args, destination, shape.as_deref())?;
+        } else {
+            self.line(s);
+        }
         // A helper that uses a parameter as a storage key: the access is the
         // caller's, with the caller's key.
         let param_accesses = self.prev.param_accesses.get(&f).cloned().unwrap_or_default();
@@ -2187,6 +2436,491 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         self.operand(o)
     }
 
+    // ---- source level ----------------------------------------------------
+
+    /// An assignment in SDK terms. A store into a frame and pure plumbing
+    /// say nothing: the shapes carry them. A value bound for the return is
+    /// wrapped as the spec's return type wants. A Val assigned or read more
+    /// than once is bound to its name.
+    fn sdk_stmt(&mut self, pl: &Place<'tcx>, rv: &Rvalue<'tcx>) -> R<()> {
+        let Some(dst) = pl.as_local() else { return Ok(()) };
+        // A constant written to a payload local is the Val it encodes.
+        let value = |me: &Self| -> R<String> {
+            match rv {
+                Rvalue::Use(Operand::Constant(c)) if me.payloads.contains(&dst) => match c.const_.try_to_scalar_int() {
+                    Some(i) => me.sdk_value(&me.val_str(i.to_bits(i.size()) as u64)),
+                    None => me.sdk_rvalue(rv),
+                },
+                _ => me.sdk_rvalue(rv),
+            }
+        };
+        if dst == Local::ZERO || self.ret_locals.contains(&dst) {
+            let from_ret = ret_source(self.env, rv).is_some_and(|l| self.ret_locals.contains(&l));
+            let e = value(self)?;
+            let e = if from_ret { e } else { self.wrap_ret(e) };
+            return Ok(self.sdk_bind(dst, e));
+        }
+        let is_val = self.body.local_decls[dst].ty == self.env.val || self.payloads.contains(&dst);
+        let (defs, uses) = (self.defs.get(&dst).copied().unwrap_or(0), self.live_uses(dst));
+        if is_val && uses > 0 && (defs > 1 || uses > 1) {
+            let e = value(self)?;
+            let n = self.sdk_name(dst);
+            self.line(format!("{n} = {e};"));
+            self.declared.insert(dst);
+        }
+        Ok(())
+    }
+
+    /// A value for a return-bound local: the return expression itself when
+    /// `_0` is assigned right before every `return`, else a named binding.
+    fn sdk_bind(&mut self, dst: Local, e: String) {
+        if dst == Local::ZERO && self.ret_inline {
+            self.ret_expr = Some(e);
+        } else {
+            let n = self.sdk_name(dst);
+            self.line(format!("{n} = {e};"));
+            self.declared.insert(dst);
+        }
+    }
+
+    /// Uses of `l` by statements that matter: a pure statement nothing reads
+    /// is rustc's debuginfo, not a use.
+    fn live_uses(&self, l: Local) -> usize {
+        let mut n = self.uses.get(&l).copied().unwrap_or(0);
+        for (bb, data) in self.body.basic_blocks.iter_enumerated() {
+            for (si, st) in data.statements.iter().enumerate() {
+                if let StatementKind::Assign(a) = &st.kind {
+                    if pure(&a.1) && a.0.as_local().is_some_and(|d| self.uses.get(&d).copied().unwrap_or(0) == 0) && mentions(self.body, bb, si).contains(&l) {
+                        n = n.saturating_sub(1);
+                    }
+                }
+            }
+        }
+        n
+    }
+
+    fn sdk_name(&self, l: Local) -> String {
+        let n = self.raw_name(l);
+        if l == Local::ZERO && n == "_0" { "ret".into() } else { n }
+    }
+
+    fn sdk_arg(&self, args: &[Spanned<Operand<'tcx>>], i: usize) -> R<String> {
+        self.sdk_operand(&args.get(i).ok_or("missing argument")?.node)
+    }
+
+    fn sdk_dur(&self, args: &[Spanned<Operand<'tcx>>], i: usize) -> R<&'static str> {
+        match args.get(i).and_then(|a| self.konst_u64(&a.node)) {
+            Some(0) => Ok("temporary"),
+            Some(1) => Ok("persistent"),
+            Some(2) => Ok("instance"),
+            _ => Err("durability is not a constant".into()),
+        }
+    }
+
+    /// A call in SDK terms: storage, auth, events and ledger reads as the
+    /// `Env` methods they are; a constructor or derive by the shape it
+    /// builds; a panic wrapper by its error. A result read once is inlined
+    /// at its use, read more it is bound to its name.
+    fn sdk_call(&mut self, f: &str, args: &[Spanned<Operand<'tcx>>], destination: &Place<'tcx>, shape: Option<&str>) -> R<()> {
+        let mut expr: Option<String> = None;
+        let line = match f {
+            "put_contract_data" => Some(format!("env.storage().{}().set(&{}, &{});", self.sdk_dur(args, 2)?, self.sdk_arg(args, 0)?, self.sdk_arg(args, 1)?)),
+            "del_contract_data" => Some(format!("env.storage().{}().remove(&{});", self.sdk_dur(args, 1)?, self.sdk_arg(args, 0)?)),
+            "extend_contract_data_ttl" => Some(format!(
+                "env.storage().{}().extend_ttl(&{}, {}, {});",
+                self.sdk_dur(args, 1)?,
+                self.sdk_arg(args, 0)?,
+                self.sdk_arg(args, 2)?,
+                self.sdk_arg(args, 3)?
+            )),
+            "extend_current_contract_instance_and_code_ttl" => Some(format!("env.storage().instance().extend_ttl({}, {});", self.sdk_arg(args, 0)?, self.sdk_arg(args, 1)?)),
+            "require_auth" => Some(format!("{}.require_auth();", self.sdk_arg(args, 0)?)),
+            "fail_with_error" => Some(format!("panic_with_error!(&env, {});", self.sdk_arg(args, 0)?)),
+            "trap" => Some("panic!();".to_string()),
+            "contract_event" => {
+                let topics = self.sdk_value(&self.key_shape(&args[0].node)?)?;
+                let topics = topics.strip_prefix("vec![&env, ").and_then(|t| t.strip_suffix(']')).map(|t| format!("({t},)")).ok_or("event topics")?;
+                Some(format!("env.events().publish({topics}, {});", self.sdk_arg(args, 1)?))
+            }
+            "has_contract_data" => {
+                expr = Some(format!("env.storage().{}().has(&{})", self.sdk_dur(args, 1)?, self.sdk_arg(args, 0)?));
+                None
+            }
+            "get_contract_data" => {
+                expr = Some(format!("env.storage().{}().get(&{}).unwrap()", self.sdk_dur(args, 1)?, self.sdk_arg(args, 0)?));
+                None
+            }
+            "get_current_contract_address" => {
+                expr = Some("env.current_contract_address()".into());
+                None
+            }
+            "get_ledger_timestamp" => {
+                expr = Some("env.ledger().timestamp()".into());
+                None
+            }
+            "get_ledger_sequence" => {
+                expr = Some("env.ledger().sequence()".into());
+                None
+            }
+            _ if self.prev.fails.contains_key(f) => Some(format!("panic_with_error!(&env, {});", self.sdk_value(&self.prev.fails[f])?)),
+            _ if self.prev.diverges.contains(f) => Some("panic!();".to_string()),
+            _ => match shape.map(|sh| self.sdk_value(sh)) {
+                Some(Ok(e)) => {
+                    expr = Some(e);
+                    None
+                }
+                _ => return Err(format!("call to {}", self.display(f))),
+            },
+        };
+        if let Some(l) = line {
+            self.line(l);
+        }
+        let (Some(e), Some(l)) = (expr, destination.as_local()) else { return Ok(()) };
+        let (defs, uses) = (self.defs.get(&l).copied().unwrap_or(0), self.live_uses(l));
+        if l == Local::ZERO || self.ret_locals.contains(&l) {
+            let e = self.wrap_ret(e);
+            self.sdk_bind(l, e);
+        } else if uses == 1 && defs <= 1 {
+            // ponytail: a storage read inlined at its one use; a write in between would reorder it. Not seen.
+            self.inlined.insert(l, e);
+        } else if uses > 0 {
+            let n = self.sdk_name(l);
+            self.line(format!("{n} = {e};"));
+            self.declared.insert(l);
+        }
+        Ok(())
+    }
+
+    /// A branch in SDK terms. On a bool, or a bool the host returned: `if`.
+    /// On an integer enum parameter: `match` over its cases. On anything the
+    /// source never saw -- a tag check, a payload bound -- a guard: the one
+    /// arm that goes on is the code, the arms that trap are the SDK's.
+    fn sdk_switch(&mut self, bb: BasicBlock, discr: &Operand<'tcx>, targets: &SwitchTargets, tail: Option<BasicBlock>) -> R<()> {
+        let is_bool = discr.ty(&self.body.local_decls, self.tcx).is_bool();
+        let cond = if is_bool {
+            self.sdk_operand(discr).ok()
+        } else {
+            self.bool_val(discr).and_then(|l| self.sdk_operand(&Operand::Copy(Place::from(l))).ok())
+        };
+        if let Some(c) = cond {
+            let (mut then, mut els) = (targets.otherwise(), targets.otherwise());
+            for (v, t) in targets.iter() {
+                if v == 0 {
+                    els = t
+                } else {
+                    then = t
+                }
+            }
+            let then_lines = self.capture(|s| s.branch(bb, then, tail))?;
+            let else_lines = self.capture(|s| s.branch(bb, els, tail))?;
+            let c = strip_parens(c);
+            match (then_lines.is_empty(), else_lines.is_empty()) {
+                (true, true) => {}
+                (false, true) => self.arm(format!("if {c}"), then_lines),
+                (true, false) => self.arm(format!("if !{c}"), else_lines),
+                (false, false) => {
+                    self.arm(format!("if {c}"), then_lines);
+                    let n = self.out.len();
+                    self.out[n - 1].1 = "} else {".into();
+                    self.out.extend(else_lines);
+                    self.line("}");
+                }
+            }
+            return Ok(());
+        }
+        let tail_dead = tail.is_some_and(|t| self.diverges_at(t, 0));
+        let dead = |lines: &[(usize, String)]| lines.iter().all(|(_, l)| is_diverging(l)) && (!lines.is_empty() || tail_dead);
+        if let Some((p, e)) = self.enum_param(discr) {
+            self.line(format!("match {} {{", self.local(p)));
+            self.depth += 1;
+            let mut seen: Vec<String> = Vec::new();
+            for (v, t) in targets.iter() {
+                let lines = self.capture(|s| s.branch(bb, t, tail))?;
+                let case = self.spec.enum_case(&e, v as u64).ok_or(format!("{e} has no case {v}"))?.to_string();
+                seen.push(case.clone());
+                self.arm(format!("{e}::{case} =>"), lines);
+            }
+            let lines = self.capture(|s| s.branch(bb, targets.otherwise(), tail))?;
+            let rest: Vec<String> = self.spec.enums.get(&e).map(|cs| cs.iter().filter(|(c, _)| !seen.contains(c)).map(|(c, _)| c.clone()).collect()).unwrap_or_default();
+            match rest.as_slice() {
+                [] if dead(&lines) => {} // exhaustive; the trap for a value outside the enum is the SDK's
+                [one] => self.arm(format!("{e}::{one} =>"), lines),
+                _ => self.arm("_ =>".into(), lines),
+            }
+            self.depth -= 1;
+            self.line("}");
+            return Ok(());
+        }
+        let mut arms: Vec<Vec<(usize, String)>> = Vec::new();
+        for (_, t) in targets.iter() {
+            arms.push(self.capture(|s| s.branch(bb, t, tail))?);
+        }
+        arms.push(self.capture(|s| s.branch(bb, targets.otherwise(), tail))?);
+        let mut live: Vec<Vec<(usize, String)>> = arms.into_iter().filter(|a| !dead(a)).collect();
+        match live.len() {
+            0 => self.line("panic!();"),
+            1 => {
+                // The guard's one live arm, at this depth.
+                let mut lines = live.pop().unwrap_or_default();
+                let min = lines.iter().map(|(d, _)| *d).min().unwrap_or(self.depth);
+                for l in &mut lines {
+                    l.0 = l.0 - min + self.depth;
+                }
+                self.out.extend(lines);
+            }
+            _ => return Err(format!("branch on {}", self.operand(discr).unwrap_or_default())),
+        }
+        Ok(())
+    }
+
+    /// Does control reaching `bb` never return? A trap, an unreachable, a
+    /// call that never returns, or a straight path to one.
+    fn diverges_at(&self, bb: BasicBlock, depth: u8) -> bool {
+        if depth > 6 {
+            return false;
+        }
+        match &self.body.basic_blocks[bb].terminator().kind {
+            TerminatorKind::Unreachable => true,
+            TerminatorKind::Goto { target } => self.diverges_at(*target, depth + 1),
+            TerminatorKind::Call { func, target, .. } => {
+                let name = self.callee_name(func).unwrap_or_default();
+                target.is_none() || name == "trap" || self.prev.diverges.contains(&name) || self.prev.fails.contains_key(&name) || target.is_some_and(|t| self.diverges_at(t, depth + 1))
+            }
+            _ => false,
+        }
+    }
+
+    /// The bool Val the host returned that this payload is: `has_contract_data`.
+    fn bool_val(&self, o: &Operand<'tcx>) -> Option<Local> {
+        let l = self.val_source(o)?;
+        (self.call_def.get(&l)?.0 == "has_contract_data").then_some(l)
+    }
+
+    /// `(param.0 >> 32) as uN` of a parameter declared as an integer enum:
+    /// the parameter and its enum.
+    fn enum_param(&self, o: &Operand<'tcx>) -> Option<(Local, String)> {
+        match self.def_of(o)? {
+            Rvalue::Cast(CastKind::IntToInt, inner, _) | Rvalue::Use(inner) => self.enum_param(inner),
+            Rvalue::BinaryOp(BinOp::Shr, xy) if self.konst_u64(&xy.1) == Some(32) => {
+                let i = self.payload_of_param(&xy.0)?;
+                let e = self.spec.param_enum(&self.fname, i)?;
+                Some((Local::from_usize(i + 1), e.to_string()))
+            }
+            _ => None,
+        }
+    }
+
+    /// An operand as the source wrote it: a parameter by name (cloned when
+    /// its type is not Copy), a constant decoded, a bound name, an inlined
+    /// result, a shape; else what it was defined as.
+    fn sdk_operand(&self, o: &Operand<'tcx>) -> R<String> {
+        if let Operand::Constant(c) = o {
+            if c.const_.ty() == self.env.val {
+                if let Some(i) = c.const_.try_to_scalar_int() {
+                    return self.sdk_value(&self.val_str(i.to_bits(i.size()) as u64));
+                }
+            }
+            return self.operand(o);
+        }
+        let (Operand::Copy(p) | Operand::Move(p)) = o else { return Err("operand".into()) };
+        if let Some(i) = self.payload_of_param(o) {
+            return Ok(self.param_expr(Local::from_usize(i + 1)));
+        }
+        let Some(l) = p.as_local() else { return Err(format!("not reconstructed: {}", self.place(p))) };
+        if (1..=self.body.arg_count).contains(&l.as_usize()) {
+            return Ok(self.param_expr(l));
+        }
+        if self.declared.contains(&l) {
+            return Ok(self.sdk_name(l));
+        }
+        if let Some(e) = self.inlined.get(&l) {
+            return Ok(e.clone());
+        }
+        if let Some(sh) = self.shape_of(l) {
+            return self.sdk_value(&sh);
+        }
+        if let Some(src) = self.val_source(o).filter(|s| *s != l) {
+            return self.sdk_operand(&Operand::Copy(Place::from(src)));
+        }
+        if let Some(rv) = self.def_of(o) {
+            return self.sdk_rvalue(rv);
+        }
+        Err(format!("not reconstructed: {}", self.local(l)))
+    }
+
+    fn sdk_rvalue(&self, rv: &Rvalue<'tcx>) -> R<String> {
+        match rv {
+            Rvalue::Use(o) => self.sdk_operand(o),
+            Rvalue::Aggregate(k, fs) if matches!(**k, AggregateKind::Adt(d, ..) if d == self.env.val_def) => {
+                let o = fs.iter().next().ok_or("Val without a payload")?;
+                // `Val((b.0 == 1) as u64)`: a bool re-encoded is the bool.
+                if let Some(Rvalue::Cast(_, inner, _)) = self.def_of(o) {
+                    if let Some(Rvalue::BinaryOp(BinOp::Eq, ab)) = self.def_of(inner) {
+                        if self.konst_u64(&ab.1) == Some(1) {
+                            if let Some(src) = self.val_source(&ab.0) {
+                                return self.sdk_operand(&Operand::Copy(Place::from(src)));
+                            }
+                        }
+                    }
+                }
+                self.sdk_operand(o)
+            }
+            _ => Err(format!("not reconstructed: {}", self.rvalue(rv)?)),
+        }
+    }
+
+    /// A parameter as an expression: `.clone()` unless its type is Copy.
+    fn param_expr(&self, l: Local) -> String {
+        let n = self.local(l);
+        if self.copy_param(&n) { n } else { format!("{n}.clone()") }
+    }
+
+    fn copy_param(&self, name: &str) -> bool {
+        let Some(i) = self.body.args_iter().position(|l| self.local(l) == name) else { return true };
+        let ty = self.spec.params.get(&self.fname).and_then(|ps| ps.get(i)).map(String::as_str).unwrap_or("Val");
+        matches!(ty, "bool" | "u32" | "i32" | "u64" | "i64" | "u128" | "i128" | "Val") || self.spec.enums.contains_key(ty)
+    }
+
+    /// The return value as the spec's return type wants it: `Ok`/`Err` for a
+    /// `Result`, `Some`/`None` for an `Option`, nothing for `()`.
+    fn wrap_ret(&self, e: String) -> String {
+        let ret = self.spec.sigs.get(&self.fname).and_then(|s| s.split_once(" -> ")).map(|(_, r)| r.trim()).unwrap_or("()");
+        if ret.starts_with("Result<") {
+            if self.spec.errors.iter().any(|(en, case, _)| e == format!("{en}::{case}")) {
+                format!("Err({e})")
+            } else {
+                format!("Ok({e})")
+            }
+        } else if ret.starts_with("Option<") {
+            if e == "()" { "None".into() } else { format!("Some({e})") }
+        } else if ret == "()" {
+            String::new()
+        } else {
+            e
+        }
+    }
+
+    /// A shape or decoded constant as the source wrote it: `symbol_short!`,
+    /// `Symbol::new`, the error and union cases by name, struct literals with
+    /// their fields, parameters cloned. Anything not fully known is an error.
+    fn sdk_value(&self, s: &str) -> R<String> {
+        let own = format!("{}::", self.display(&self.fname));
+        let hole = s.split(|c: char| !c.is_alphanumeric() && c != '_').any(|w| w == "_");
+        if hole || s.contains("Val(") || s.contains("::{") || s.contains(" | ") || s.contains('@') || s.contains("(at ") || s.contains("Map{") || s.contains(&own) {
+            return Err(format!("value not reconstructed: {s}"));
+        }
+        // `X /* Path */` is Path -- an error case, a unit union case; other comments go.
+        let mut t = String::new();
+        let mut rest = s;
+        while let Some(i) = rest.find(" /* ") {
+            let end = i + rest[i..].find(" */").ok_or("comment")?;
+            let (head, c) = (&rest[..i], &rest[i + 4..end]);
+            if c.contains("::") && !c.contains(' ') {
+                t.push_str(&head[..expr_start(head)]);
+                t.push_str(c);
+            } else {
+                t.push_str(head);
+            }
+            rest = &rest[end + 3..];
+        }
+        t.push_str(rest);
+        if t.contains("Val::error(") || t.contains("Val::small(") {
+            return Err(format!("value not reconstructed: {s}"));
+        }
+        let t = rewrite_calls(&t, "Val::sym(", &|a| format!("symbol_short!({a})"));
+        let t = rewrite_calls(&t, "Val::symbol(", &|a| format!("Symbol::new(&env, {a})"));
+        let t = rewrite_calls(&t, "Symbol(", &|a| format!("Symbol::new(&env, {a})"));
+        let t = rewrite_calls(&t, "Val::string(", &|a| format!("String::from_str(&env, {a})"));
+        let t = rewrite_calls(&t, "String(", &|a| format!("String::from_str(&env, {a})"));
+        let t = rewrite_calls(&t, "Val::u32(", &|a| a.to_string());
+        let t = rewrite_calls(&t, "Val::i32(", &|a| a.to_string());
+        let t = t.replace("Val::TRUE", "true").replace("Val::FALSE", "false").replace("Val::VOID", "()");
+        let t = rewrite_calls(&t.replace("Vec[", "Vec("), "Vec(", &|a| format!("vec![&env, {a}]"));
+        let t = expand_shorthand(&t);
+        Ok(self.clone_params(&t))
+    }
+
+    /// Non-Copy parameters used as values get `.clone()`: not field names,
+    /// not paths, not inside string literals.
+    fn clone_params(&self, s: &str) -> String {
+        let b = s.as_bytes();
+        let (mut out, mut i) = (String::new(), 0);
+        while i < b.len() {
+            let c = b[i] as char;
+            if c == '"' {
+                let end = s[i + 1..].find('"').map(|e| i + 1 + e).unwrap_or(b.len() - 1);
+                out.push_str(&s[i..=end]);
+                i = end + 1;
+                continue;
+            }
+            if c.is_ascii_alphabetic() || c == '_' {
+                let mut j = i;
+                while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+                    j += 1;
+                }
+                let word = &s[i..j];
+                let key = s[j..].trim_start().starts_with(':') && !s[j..].trim_start().starts_with("::");
+                let path = out.ends_with("::") || out.ends_with('.');
+                let is_param = self.body.args_iter().any(|l| self.local(l) == word);
+                out.push_str(word);
+                if is_param && !key && !path && !self.copy_param(word) {
+                    out.push_str(".clone()");
+                }
+                i = j;
+                continue;
+            }
+            out.push(c);
+            i += 1;
+        }
+        out
+    }
+
+    /// The contract function as soroban-sdk source: the spec's signature with
+    /// `env: Env` first, the body from the shapes. Err names the first thing
+    /// the source level could not say.
+    fn emit_sdk(mut self) -> R<String> {
+        self.sdk = true;
+        let sig = self.spec.sigs.get(&self.fname).cloned().ok_or("no spec signature")?;
+        // What flows to the return unchanged, and whether `_0` is assigned right before every return.
+        let mut ret: HashSet<Local> = [Local::ZERO].into_iter().collect();
+        loop {
+            let n = ret.len();
+            for st in self.body.basic_blocks.iter().flat_map(|b| &b.statements) {
+                let StatementKind::Assign(a) = &st.kind else { continue };
+                if !a.0.as_local().is_some_and(|d| ret.contains(&d)) {
+                    continue;
+                }
+                if let Some(l) = ret_source(self.env, &a.1).filter(|l| l.as_usize() > self.body.arg_count) {
+                    ret.insert(l);
+                }
+            }
+            if ret.len() == n {
+                break;
+            }
+        }
+        self.ret_locals = ret;
+        self.ret_inline = self.body.basic_blocks.iter().all(|b| {
+            !b.statements.iter().any(|st| matches!(&st.kind, StatementKind::Assign(a) if a.0.as_local() == Some(Local::ZERO))) || matches!(b.terminator().kind, TerminatorKind::Return)
+        });
+        self.depth = 2;
+        self.node(START_BLOCK, None)?;
+        let mut lines = std::mem::take(&mut self.out);
+        tidy(&mut lines);
+        let mut s = format!("    {}\n", sdk_header(&sig)?);
+        for l in self.body.vars_and_temps_iter().chain(Some(Local::ZERO)) {
+            if self.declared.contains(&l) {
+                s.push_str(&format!("        let mut {};\n", self.sdk_name(l)));
+            }
+        }
+        for (depth, text) in lines {
+            s.push_str(&"    ".repeat(depth));
+            s.push_str(&text);
+            s.push('\n');
+        }
+        s.push_str("    }\n");
+        Ok(s)
+    }
+
     // ---- structure -------------------------------------------------------
 
     fn is_merge(&self, bb: BasicBlock) -> bool {
@@ -2337,7 +3071,14 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         match &t.kind {
             TerminatorKind::Goto { target } => self.branch(bb, *target, tail)?,
             TerminatorKind::Return => {
-                let s = if self.body.local_decls[Local::ZERO].ty.is_unit() { "return;".to_string() } else { format!("return {};", self.local(Local::ZERO)) };
+                let s = if self.sdk {
+                    let e = if self.ret_inline { self.ret_expr.take().unwrap_or_default() } else { self.sdk_name(Local::ZERO) };
+                    if e.is_empty() || self.body.local_decls[Local::ZERO].ty.is_unit() { "return;".to_string() } else { format!("return {e};") }
+                } else if self.body.local_decls[Local::ZERO].ty.is_unit() {
+                    "return;".to_string()
+                } else {
+                    format!("return {};", self.local(Local::ZERO))
+                };
                 self.line(s);
             }
             TerminatorKind::Unreachable => self.line("unreachable!();"),
@@ -2347,6 +3088,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                     self.branch(bb, *t, tail)?;
                 }
             }
+            TerminatorKind::SwitchInt { discr, targets } if self.sdk => self.sdk_switch(bb, discr, targets, tail)?,
             TerminatorKind::SwitchInt { discr, targets } => {
                 let d = strip_parens(self.operand(discr)?);
                 if discr.ty(&self.body.local_decls, self.tcx).is_bool() {
