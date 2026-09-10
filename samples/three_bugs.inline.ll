@@ -195,6 +195,8 @@ attributes #11 = { memory(inaccessiblemem: readwrite) }
 attributes #12 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
 
 !soroban.spec = !{!0, !1, !2, !3, !4, !5, !6}
+!soroban.keys = !{!7}
+!soroban.rodata = !{!8}
 
 !0 = !{!"enum Flag { A = 0, B = 1, C = 2, D = 3, E = 4 }"}
 !1 = !{!"error Error { AnError = 1 }"}
@@ -203,3 +205,5 @@ attributes #12 = { nocallback nofree nosync nounwind willreturn memory(argmem: r
 !4 = !{!"fn pick(f: Flag) -> Result<Symbol, Error>"}
 !5 = !{!"fn read(a: Address, b: Address) -> bool"}
 !6 = !{!"fn set_flag()"}
+!7 = !{!"1048636 a b"}
+!8 = !{!"1048576 016578706c696369742070616e69637372632f6c69622e72730000000f0010000a0000003c0000000d000000000000000e2b0000000000006162000038001000010000003900100001000000506169724c0010000400000053696e676c6500005800100006000000"}

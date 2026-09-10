@@ -13,7 +13,9 @@
 //! Every local is declared once and assigned where MIR assigns it; rustc's
 //! definite-initialisation check on the output then confirms what MIR's
 //! borrow check already established.
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 
 use rustc_middle::mir::interpret::{GlobalAlloc, Scalar};
 use rustc_middle::mir::*;
@@ -24,12 +26,74 @@ use crate::mir::Env;
 
 type R<T> = Result<T, String>;
 
+/// One storage access: durability, key shape, operation (with the value for
+/// a put), function.
+type Access = (String, String, String, String);
+
+/// What one function's emission tells the others: what a helper returns, in
+/// terms of its parameters; which parameters a helper uses as storage keys;
+/// who is called at all. Filled by one pass, read by the next.
+#[derive(Default)]
+struct Inter {
+    /// fn -> (shape of a returned value, the fn's parameter names to substitute).
+    ret_shapes: HashMap<String, Vec<(String, Vec<String>)>>,
+    /// fn -> (parameter index used as key, operation, durability).
+    param_accesses: HashMap<String, Vec<(usize, String, String)>>,
+    called: HashSet<String>,
+    schema: Vec<Access>,
+}
+
 pub fn emit<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, header: &str, bodies: &[&Body<'tcx>], spec: &Spec) -> R<String> {
-    let mut out = String::from(header);
-    for body in bodies {
-        out.push('\n');
-        out.push_str(&Fn_::new(tcx, env, body, spec).emit()?);
+    // Helpers' return shapes and key parameters are known to their callers
+    // only once every body has been seen, and a helper's own summary
+    // sharpens once its callees' are known: each pass reads the previous
+    // pass's summaries and writes fresh ones, until they stop changing; the
+    // last pass emits with the complete set.
+    let mut prev = Inter::default();
+    for _ in 0..8 {
+        // ponytail: a summary chain deeper than 8 calls stays partly unresolved (shown as `_`).
+        let cur = RefCell::new(Inter::default());
+        for body in bodies {
+            Fn_::new(tcx, env, body, spec, &prev, &cur, false).emit()?;
+        }
+        let cur = cur.into_inner();
+        let stable = cur.ret_shapes == prev.ret_shapes && cur.param_accesses == prev.param_accesses && cur.called == prev.called;
+        prev = cur;
+        if stable {
+            break;
+        }
     }
+    let inter = RefCell::new(Inter::default());
+    let mut fns = String::new();
+    for body in bodies {
+        fns.push('\n');
+        fns.push_str(&Fn_::new(tcx, env, body, spec, &prev, &inter, true).emit()?);
+    }
+    // The storage schema: every key the contract hands the host, by
+    // durability, with the operations and functions that use it. The uses
+    // give the roles and the bare keys; the spec gave the names.
+    let mut out = String::from(header);
+    let schema = std::mem::take(&mut inter.borrow_mut().schema);
+    if !schema.is_empty() {
+        let mut groups: Vec<((String, String), Vec<String>)> = Vec::new();
+        for (dur, key, op, f) in schema {
+            let use_ = format!("{op}: {f}");
+            match groups.iter_mut().find(|(k, _)| *k == (dur.clone(), key.clone())) {
+                Some((_, uses)) => {
+                    if !uses.contains(&use_) {
+                        uses.push(use_);
+                    }
+                }
+                None => groups.push(((dur, key), vec![use_])),
+            }
+        }
+        groups.sort();
+        out.push_str("\n// storage, from every put/get/has/del/extend_ttl call: durability, key, uses.\n");
+        for ((dur, key), uses) in groups {
+            let _ = writeln!(out, "//   {dur:<11} {key}   [{}]", uses.join(", "));
+        }
+    }
+    out.push_str(&fns);
     Ok(out)
 }
 
@@ -48,6 +112,14 @@ pub struct Spec {
     errors: Vec<(String, String, u32)>,
     /// (union, case name).
     union_cases: Vec<(String, String)>,
+    /// Struct -> field names, in declaration order.
+    struct_fields: HashMap<String, Vec<String>>,
+    /// Map key names by their rodata position (`soroban.keys`).
+    keys: HashMap<u64, Vec<String>>,
+    /// Symbol and string texts by their rodata position (`soroban.strings`).
+    strings: HashMap<u64, String>,
+    /// The read-only data segments (`soroban.rodata`), base and bytes.
+    rodata: Vec<(u64, Vec<u8>)>,
 }
 
 /// Split on `sep` outside any brackets.
@@ -73,8 +145,29 @@ fn split_top(s: &str, sep: char) -> Vec<String> {
 }
 
 impl Spec {
-    pub fn parse(lines: Vec<String>) -> Spec {
+    pub fn parse(lines: Vec<String>, key_lines: Vec<String>, string_lines: Vec<String>, rodata_lines: Vec<String>) -> Spec {
         let mut s = Spec::default();
+        for l in rodata_lines {
+            if let Some((base, hex)) = l.split_once(' ') {
+                let bytes: Vec<u8> = (0..hex.len() / 2).filter_map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()).collect();
+                if let Ok(base) = base.parse() {
+                    s.rodata.push((base, bytes));
+                }
+            }
+        }
+        for l in key_lines {
+            let mut it = l.split(' ');
+            if let Some(pos) = it.next().and_then(|p| p.parse().ok()) {
+                s.keys.insert(pos, it.map(str::to_string).collect());
+            }
+        }
+        for l in string_lines {
+            if let Some((pos, text)) = l.split_once(' ') {
+                if let Ok(pos) = pos.parse() {
+                    s.strings.insert(pos, text.to_string());
+                }
+            }
+        }
         let body = |l: &str| -> (String, Vec<String>) {
             let name = l.split_whitespace().nth(1).unwrap_or("").trim_end_matches('{').to_string();
             let inner = l.find('{').map(|i| &l[i + 1..l.rfind('}').unwrap_or(l.len())]).unwrap_or("");
@@ -89,7 +182,23 @@ impl Spec {
         for l in lines {
             if let Some(rest) = l.strip_prefix("fn ") {
                 let name = rest.split('(').next().unwrap_or("").to_string();
-                let inner = rest.find('(').map(|i| &rest[i + 1..rest.rfind(')').unwrap_or(rest.len())]).unwrap_or("");
+                // The parameter list: up to the paren matching the first one,
+                // not the last paren of the line (the return type has its own).
+                let inner = rest.find('(').map(|i| {
+                    let (mut depth, mut end) = (0i32, rest.len());
+                    for (j, c) in rest[i..].char_indices() {
+                        depth += match c {
+                            '(' => 1,
+                            ')' => -1,
+                            _ => 0,
+                        };
+                        if depth == 0 {
+                            end = i + j;
+                            break;
+                        }
+                    }
+                    &rest[i + 1..end]
+                }).unwrap_or("");
                 let types = split_top(inner, ',').iter().map(|p| p.split_once(": ").map(|(_, t)| t.to_string()).unwrap_or_default()).collect();
                 s.params.insert(name.clone(), types);
                 s.sigs.insert(name, l.clone());
@@ -102,9 +211,36 @@ impl Spec {
             } else if l.starts_with("union ") {
                 let (name, items) = body(&l);
                 s.union_cases.extend(items.iter().map(|c| (name.clone(), c.split('(').next().unwrap_or(c).to_string())));
+            } else if l.starts_with("struct ") {
+                let (name, items) = body(&l);
+                s.struct_fields.insert(name, items.iter().map(|f| f.split(':').next().unwrap_or(f).trim().to_string()).collect());
             }
         }
         s
+    }
+
+    /// The struct whose field set is exactly these keys, if there is one.
+    fn struct_for_keys(&self, keys: &[String]) -> Option<&str> {
+        let mut want: Vec<&str> = keys.iter().map(String::as_str).collect();
+        want.sort();
+        let mut it = self.struct_fields.iter().filter(|(_, fs)| {
+            let mut have: Vec<&str> = fs.iter().map(String::as_str).collect();
+            have.sort();
+            have == want
+        });
+        match (it.next(), it.next()) {
+            (Some((n, _)), None) => Some(n.as_str()),
+            _ => None,
+        }
+    }
+
+    /// The text at a read-only data position, when the data is there.
+    fn text_at(&self, pos: u64, len: u64) -> Option<String> {
+        self.rodata.iter().find_map(|(base, d)| {
+            let off = pos.checked_sub(*base)? as usize;
+            let bytes = d.get(off..off.checked_add(len as usize)?)?;
+            Some(String::from_utf8_lossy(bytes).into_owned())
+        })
     }
 
     /// `Error::AnError` for a contract error code, when exactly one case has it.
@@ -313,6 +449,61 @@ fn tag_name(n: u64) -> Option<&'static str> {
     TAGS.iter().find(|(k, _)| *k == n).map(|(_, s)| *s)
 }
 
+/// Several shapes one value may have -- a local assigned in several arms, a
+/// helper with several returns -- written as one: the shape itself when there
+/// is one, `Union::{A, B}` when all are cases of one union, `A | B` otherwise.
+/// Never just one of them: which arm ran is not known here.
+fn alternatives(shapes: Vec<String>) -> String {
+    // A member that is itself a set of cases contributes each of them.
+    let mut shapes: Vec<String> = shapes
+        .into_iter()
+        .flat_map(|s| match s.find("::{") {
+            Some(i) if s.ends_with('}') => {
+                let u = s[..i].to_string();
+                split_top(&s[i + 3..s.len() - 1], ',').into_iter().map(|c| format!("{u}::{c}")).collect::<Vec<_>>()
+            }
+            _ => vec![s],
+        })
+        .collect();
+    shapes.sort();
+    shapes.dedup();
+    if shapes.len() == 1 {
+        return shapes.remove(0);
+    }
+    let union = shapes.first().and_then(|s| s.split("::").next()).filter(|u| !u.is_empty()).map(str::to_string);
+    if let Some(u) = union.filter(|u| shapes.iter().all(|s| s.starts_with(&format!("{u}::")))) {
+        let mut cases: Vec<&str> = shapes.iter().map(|s| s[u.len() + 2..].split('(').next().unwrap_or("")).collect();
+        cases.dedup();
+        return format!("{u}::{{{}}}", cases.join(", "));
+    }
+    shapes.join(" | ")
+}
+
+/// A helper's returned shape with its parameter names replaced, whole word,
+/// by the shapes of the arguments at a call.
+fn substitute(template: &str, params: &[String], args: &[String]) -> String {
+    let mut out = String::new();
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        if let Some(i) = params.iter().position(|p| p == word) {
+            out.push_str(args.get(i).map(String::as_str).unwrap_or(word));
+        } else {
+            out.push_str(word);
+        }
+        word.clear();
+    };
+    for c in template.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
 /// `(e)` -> `e` when the parentheses enclose the whole expression.
 fn strip_parens(s: String) -> String {
     if !(s.starts_with('(') && s.ends_with(')')) {
@@ -365,9 +556,28 @@ struct Fn_<'a, 'tcx> {
     /// The one rvalue assigned to a local that is assigned exactly once.
     single_def: HashMap<Local, Rvalue<'tcx>>,
     /// Frame arrays whose address goes to the host as a position it reads
-    /// Vals from (`vec_new_from_linear_memory`, the values of `map_new_..`):
-    /// their slots hold Vals, so a constant stored into one is decoded.
-    val_arrays: HashSet<Local>,
+    /// Vals from (`vec_new_from_linear_memory`, the values of `map_new_..`),
+    /// with their length: their slots hold Vals.
+    val_arrays: HashMap<Local, u64>,
+    /// Val arrays written whole, once, right before the one call that takes
+    /// them: written as an array literal at that call instead.
+    literal: HashSet<Local>,
+    /// The address plumbing of literal arrays (`&raw mut`, casts, the packed
+    /// position): every use of it is the consuming call, so it is not written.
+    addr_locals: HashSet<Local>,
+    /// The literal's elements as they are collected: expression, and the
+    /// local it came from when it was a plain copy.
+    array_lits: HashMap<Local, Vec<Option<(String, Option<Local>)>>>,
+    /// Call results: callee and arguments, by destination local.
+    call_def: HashMap<Local, (String, Vec<Operand<'tcx>>)>,
+    /// What a vec or map built from linear memory is, once its call has been
+    /// written: `DataKey::Pair(pair_key)`, `PairKey { a: .., b: .. }`.
+    shapes: HashMap<Local, Vec<String>>,
+    /// The previous pass's summaries, read; this pass's, written.
+    prev: &'a Inter,
+    inter: &'a RefCell<Inter>,
+    /// The last pass, whose summaries are complete.
+    final_pass: bool,
     /// Single-use temporaries written into their one use instead of on a
     /// line of their own: the expression, and the rvalue it came from so a
     /// consumer can still see its shape.
@@ -383,7 +593,7 @@ struct Fn_<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Fn_<'a, 'tcx> {
-    fn new(tcx: TyCtxt<'tcx>, env: &'a Env<'tcx>, body: &'a Body<'tcx>, spec: &'a Spec) -> Self {
+    fn new(tcx: TyCtxt<'tcx>, env: &'a Env<'tcx>, body: &'a Body<'tcx>, spec: &'a Spec, prev: &'a Inter, inter: &'a RefCell<Inter>, final_pass: bool) -> Self {
         let fname = tcx.item_name(body.source.def_id()).to_string();
         let mut names = HashMap::new();
         // A local must not shadow a function or static it might share a name
@@ -416,6 +626,18 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 _ => None,
             })
             .collect();
+        let call_def = body
+            .basic_blocks
+            .iter()
+            .filter_map(|b| match &b.terminator {
+                Some(Terminator { kind: TerminatorKind::Call { func, args, destination, .. }, .. }) => {
+                    let Operand::Constant(c) = func else { return None };
+                    let ty::FnDef(d, _) = c.const_.ty().kind() else { return None };
+                    Some((destination.as_local()?, (tcx.item_name(*d).to_string(), args.iter().map(|a| a.node.clone()).collect())))
+                }
+                _ => None,
+            })
+            .collect();
         let mut me = Fn_ {
             tcx,
             env,
@@ -428,7 +650,15 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             defs,
             uses,
             single_def,
-            val_arrays: HashSet::new(),
+            val_arrays: HashMap::new(),
+            literal: HashSet::new(),
+            addr_locals: HashSet::new(),
+            array_lits: HashMap::new(),
+            call_def,
+            shapes: HashMap::new(),
+            prev,
+            inter,
+            final_pass,
             folded: HashMap::new(),
             out: Vec::new(),
             depth: 0,
@@ -436,51 +666,314 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             used: HashSet::new(),
         };
         me.val_arrays = me.find_val_arrays();
+        let (literal, addr_locals) = me.find_literal_arrays();
+        me.literal = literal;
+        me.addr_locals = addr_locals;
         me
     }
 
-    /// Arrays handed to the host at a Val-reading position. The position is
-    /// `Val::u32(frame as u32)`: walk that back to the `&raw mut` it came from.
-    fn find_val_arrays(&self) -> HashSet<Local> {
-        let mut set = HashSet::new();
-        for bb in self.body.basic_blocks.iter() {
-            let Some(Terminator { kind: TerminatorKind::Call { func, args, .. }, .. }) = &bb.terminator else { continue };
-            let Some(Operand::Constant(c)) = Some(func) else { continue };
-            let ty::FnDef(d, _) = c.const_.ty().kind() else { continue };
-            let pos = match self.tcx.item_name(*d).as_str() {
-                "vec_new_from_linear_memory" => 0,
-                "map_new_from_linear_memory" | "map_unpack_to_linear_memory" => match self.tcx.item_name(*d).as_str() {
-                    "map_new_from_linear_memory" => 1,
-                    _ => 2,
-                },
-                "vec_unpack_to_linear_memory" => 1,
-                _ => continue,
-            };
+    /// Everything computed from `&raw mut arr`: casts, the exposed address,
+    /// the packed `Val::u32` position. Single-definition locals only.
+    fn derived_from(&self, arr: Local) -> HashSet<Local> {
+        let mut set: HashSet<Local> = self
+            .single_def
+            .iter()
+            .filter(|(_, rv)| matches!(rv, Rvalue::RawPtr(_, p) if p.as_local() == Some(arr)))
+            .map(|(l, _)| *l)
+            .collect();
+        loop {
+            let before = set.len();
+            for (l, rv) in &self.single_def {
+                let from = |o: &Operand<'tcx>| match o {
+                    Operand::Copy(p) | Operand::Move(p) => p.as_local().is_some_and(|x| set.contains(&x)),
+                    _ => false,
+                };
+                let derived = match rv {
+                    Rvalue::Use(o) | Rvalue::Cast(_, o, _) => from(o),
+                    // Packing the address, and pointers into the array.
+                    Rvalue::BinaryOp(BinOp::BitOr | BinOp::Shl | BinOp::Offset | BinOp::Add, ab) => from(&ab.0),
+                    Rvalue::Aggregate(_, fs) => fs.iter().any(from),
+                    _ => false,
+                };
+                if derived {
+                    set.insert(*l);
+                }
+            }
+            if set.len() == before {
+                return set;
+            }
+        }
+    }
+
+    /// The position argument of a host call that reads Vals from memory.
+    fn val_position(callee: &str) -> Option<usize> {
+        Some(match callee {
+            "vec_new_from_linear_memory" => 0,
+            "map_new_from_linear_memory" | "vec_unpack_to_linear_memory" => 1,
+            "map_unpack_to_linear_memory" => 2,
+            _ => return None,
+        })
+    }
+
+    /// The keys-position argument of a host call that reads map keys.
+    fn keys_position(callee: &str) -> Option<usize> {
+        Some(match callee {
+            "map_new_from_linear_memory" => 0,
+            "map_unpack_to_linear_memory" => 1,
+            _ => return None,
+        })
+    }
+
+    /// Arrays handed to the host at a Val-reading position, with their
+    /// length. The position is `Val::u32(frame as u32)`: walk that back to
+    /// the `&raw mut` it came from.
+    fn find_val_arrays(&self) -> HashMap<Local, u64> {
+        let mut set = HashMap::new();
+        for (_, (callee, args)) in &self.call_def {
+            let Some(pos) = Self::val_position(callee) else { continue };
             let Some(arg) = args.get(pos) else { continue };
-            if let Some(arr) = self.array_behind(&arg.node, 0) {
-                set.insert(arr);
+            // The whole frame is Vals only when the call covers all of it.
+            if let Some(arr) = self.array_behind(arg, 0) {
+                if let ty::Array(_, n) = self.body.local_decls[arr].ty.kind() {
+                    if let Some(n) = n.try_to_target_usize(self.tcx) {
+                        if self.len_arg(callee, args) == Some(n) {
+                            set.insert(arr, n);
+                        }
+                    }
+                }
             }
         }
         set
     }
 
+    /// Val arrays that can be written as one literal: every slot stored
+    /// exactly once, all in the block of the one call that consumes the
+    /// array, nothing else touching it, no operand of a stored value
+    /// reassigned between its store and the call, and every pointer derived
+    /// from the array flowing into that call and nowhere else -- so the call
+    /// sees exactly the slots written. Returns the arrays and their plumbing.
+    fn find_literal_arrays(&self) -> (HashSet<Local>, HashSet<Local>) {
+        let mut plumbing = HashSet::new();
+        let arrays = self.find_literal_arrays_inner(&mut plumbing);
+        (arrays, plumbing)
+    }
+
+    fn find_literal_arrays_inner(&self, plumbing: &mut HashSet<Local>) -> HashSet<Local> {
+        use rustc_middle::mir::visit::{PlaceContext, Visitor};
+        struct Touch<'a>(Local, &'a mut bool);
+        impl<'tcx> Visitor<'tcx> for Touch<'_> {
+            fn visit_local(&mut self, l: Local, ctx: PlaceContext, _: Location) {
+                if l == self.0 && ctx.is_use() {
+                    *self.1 = true;
+                }
+            }
+        }
+        let mut out = HashSet::new();
+        'arrays: for (&arr, &len) in &self.val_arrays {
+            // The one consuming call, and its block.
+            let mut consumers = self.call_def.iter().filter(|(_, (callee, args))| {
+                Self::val_position(callee).and_then(|p| args.get(p)).and_then(|a| self.array_behind(a, 0)) == Some(arr)
+            });
+            let (Some((&dest, (_, call_args))), None) = (consumers.next(), consumers.next()) else { continue };
+            // Every derived pointer's uses: other derived locals' definitions,
+            // or the consuming call's arguments. Anything else could write
+            // the array behind our back.
+            let derived = self.derived_from(arr);
+            for &d in &derived {
+                let in_defs = self
+                    .single_def
+                    .iter()
+                    .filter(|(l, _)| derived.contains(l))
+                    .filter(|(_, rv)| {
+                        let mut n = 0;
+                        let mut count = |o: &Operand<'tcx>| {
+                            if matches!(o, Operand::Copy(p) | Operand::Move(p) if p.as_local() == Some(d)) {
+                                n += 1;
+                            }
+                        };
+                        match rv {
+                            Rvalue::Use(o) | Rvalue::Cast(_, o, _) => count(o),
+                            Rvalue::BinaryOp(_, ab) => {
+                                count(&ab.0);
+                                count(&ab.1);
+                            }
+                            Rvalue::Aggregate(_, fs) => fs.iter().for_each(count),
+                            _ => {}
+                        }
+                        n > 0
+                    })
+                    .count();
+                let in_call = call_args.iter().filter(|o| matches!(o, Operand::Copy(p) | Operand::Move(p) if p.as_local() == Some(d))).count();
+                if self.uses.get(&d).copied().unwrap_or(0) != in_defs + in_call {
+                    continue 'arrays;
+                }
+            }
+            let Some(bb) = self.body.basic_blocks.iter_enumerated().find(|(_, b)| {
+                matches!(&b.terminator, Some(Terminator { kind: TerminatorKind::Call { destination, .. }, .. }) if destination.as_local() == Some(dest))
+            }).map(|(bb, _)| bb) else { continue };
+            let stmts = &self.body.basic_blocks[bb].statements;
+            let mut seen = vec![false; len as usize];
+            for (si, st) in stmts.iter().enumerate() {
+                let StatementKind::Assign(a) = &st.kind else { continue };
+                if a.0.local != arr {
+                    continue;
+                }
+                let [PlaceElem::ConstantIndex { offset, .. }] = a.0.projection.as_slice() else { continue };
+                let k = *offset as usize;
+                if k >= seen.len() || seen[k] {
+                    continue 'arrays;
+                }
+                seen[k] = true;
+                // Operands of the stored value must still mean the same at the call.
+                let ms: Vec<Local> = mentions(self.body, bb, si).into_iter().filter(|m| *m != arr).collect();
+                for sj in si + 1..stmts.len() {
+                    if let StatementKind::Assign(b) = &stmts[sj].kind {
+                        if b.0.as_local().is_some_and(|d| ms.contains(&d)) {
+                            continue 'arrays;
+                        }
+                    }
+                }
+            }
+            if !seen.iter().all(|s| *s) {
+                continue;
+            }
+            // Nothing else may touch the array: only its zero-init, the slot
+            // stores counted above, and taking its address.
+            for (b, data) in self.body.basic_blocks.iter_enumerated() {
+                for (si, st) in data.statements.iter().enumerate() {
+                    let StatementKind::Assign(a) = &st.kind else { continue };
+                    if a.0.local == arr {
+                        let ok = (a.0.projection.is_empty() && matches!(a.1, Rvalue::Repeat(..) | Rvalue::Aggregate(..)))
+                            || (b == bb && matches!(a.0.projection.as_slice(), [PlaceElem::ConstantIndex { .. }]));
+                        if !ok {
+                            continue 'arrays;
+                        }
+                        continue;
+                    }
+                    if matches!(a.1, Rvalue::RawPtr(_, p) if p.as_local() == Some(arr)) {
+                        continue;
+                    }
+                    let mut touched = false;
+                    Touch(arr, &mut touched).visit_statement(st, Location { block: b, statement_index: si });
+                    if touched {
+                        continue 'arrays;
+                    }
+                }
+                if let Some(t) = &data.terminator {
+                    let mut touched = false;
+                    Touch(arr, &mut touched).visit_terminator(t, Location { block: b, statement_index: data.statements.len() });
+                    if touched {
+                        continue 'arrays;
+                    }
+                }
+            }
+            plumbing.extend(derived);
+            out.insert(arr);
+        }
+        out
+    }
+
     /// `Val((ptr as u64) << 32 | 4)`, `ptr = &raw mut arr as *mut u8` -> `arr`.
     fn array_behind(&self, o: &Operand<'tcx>, depth: u8) -> Option<Local> {
+        self.array_behind_at(o, depth).filter(|(_, off)| *off == 0).map(|(a, _)| a)
+    }
+
+    /// `Val((ptr as u64) << 32 | 4)`, `ptr = &raw mut arr as *mut u8` plus a
+    /// constant offset -> `(arr, byte offset)`.
+    fn array_behind_at(&self, o: &Operand<'tcx>, depth: u8) -> Option<(Local, u64)> {
         if depth > 8 {
             return None;
         }
         match self.def_of(o)? {
-            Rvalue::Aggregate(_, fs) => self.array_behind(fs.iter().next()?, depth + 1),
-            Rvalue::BinaryOp(BinOp::BitOr | BinOp::Shl, ab) => self.array_behind(&ab.0, depth + 1),
-            Rvalue::Cast(_, inner, _) | Rvalue::Use(inner) => self.array_behind(inner, depth + 1),
-            Rvalue::RawPtr(_, p) => p.as_local().filter(|l| self.body.local_decls[*l].ty.is_array()),
+            Rvalue::Aggregate(_, fs) => self.array_behind_at(fs.iter().next()?, depth + 1),
+            Rvalue::BinaryOp(BinOp::BitOr | BinOp::Shl, ab) => self.array_behind_at(&ab.0, depth + 1),
+            Rvalue::BinaryOp(BinOp::Offset | BinOp::Add, ab) => {
+                let (a, off) = self.array_behind_at(&ab.0, depth + 1)?;
+                Some((a, off + self.konst_u64(&ab.1)?))
+            }
+            Rvalue::Cast(_, inner, _) | Rvalue::Use(inner) => self.array_behind_at(inner, depth + 1),
+            Rvalue::RawPtr(_, p) => p.as_local().filter(|l| self.body.local_decls[*l].ty.is_array()).map(|l| (l, 0)),
             _ => None,
         }
     }
 
-    /// The Rust type a local is declared with: `Val` for a payload local.
+    /// The length a host call is told, as a constant.
+    fn len_arg(&self, callee: &str, args: &[Operand<'tcx>]) -> Option<u64> {
+        let i = match callee {
+            "vec_new_from_linear_memory" => 1,
+            "map_new_from_linear_memory" | "vec_unpack_to_linear_memory" => 2,
+            "map_unpack_to_linear_memory" => 3,
+            _ => return None,
+        };
+        self.konst_u64(args.get(i)?).filter(|b| b & 0xff == 4).map(|b| b >> 32)
+    }
+
+    /// The Vals a host call reads from a frame that is not one whole Val
+    /// array: the slots from the offset, each stored exactly once in this
+    /// block before the call, with nothing in the block writing through a
+    /// pointer into the frame. Exact, or None.
+    fn range_shape(&self, bb: BasicBlock, arr: Local, first: u64, len: u64) -> Option<Vec<(String, Option<Local>)>> {
+        let stmts = &self.body.basic_blocks[bb].statements;
+        let derived = self.derived_from(arr);
+        let mut out: Vec<Option<(String, Option<Local>)>> = vec![None; len as usize];
+        for st in stmts {
+            let StatementKind::Assign(a) = &st.kind else { continue };
+            if a.0.projection.iter().any(|e| matches!(e, PlaceElem::Deref)) && derived.contains(&a.0.local) {
+                return None; // a write through a pointer into the frame
+            }
+            if a.0.local != arr {
+                continue;
+            }
+            let [PlaceElem::ConstantIndex { offset, .. }] = a.0.projection.as_slice() else { continue };
+            let Some(k) = offset.checked_sub(first).filter(|k| *k < len) else { continue };
+            if out[k as usize].is_some() {
+                return None; // stored twice: not a plain initialiser
+            }
+            let src = match &a.1 {
+                Rvalue::Use(o) => self.val_source(o),
+                _ => None,
+            };
+            out[k as usize] = Some((self.as_val_expr(&a.1).ok()?, src));
+        }
+        out.into_iter().collect()
+    }
+
+    /// The Rust type a local is declared with: `Val` for a payload local,
+    /// `[Val; N]` for a frame the host reads Vals from.
     fn local_ty(&self, l: Local) -> String {
-        if self.payloads.contains(&l) { "Val".into() } else { ty_str(self.tcx, self.body.local_decls[l].ty) }
+        if self.payloads.contains(&l) {
+            return "Val".into();
+        }
+        if let Some(n) = self.val_arrays.get(&l) {
+            return format!("[Val; {n}]");
+        }
+        // `&raw mut` of a Val frame is a pointer to one.
+        if let Some(Rvalue::RawPtr(_, p)) = self.single_def.get(&l) {
+            if let Some(n) = p.as_local().and_then(|a| self.val_arrays.get(&a)) {
+                return format!("*mut [Val; {n}]");
+            }
+        }
+        ty_str(self.tcx, self.body.local_decls[l].ty)
+    }
+
+    /// The Val local an operand is the payload of, through copies: `v`,
+    /// `v.0`, or a local defined as either.
+    fn val_source(&self, o: &Operand<'tcx>) -> Option<Local> {
+        let p = match o {
+            Operand::Copy(p) | Operand::Move(p) => p,
+            _ => return None,
+        };
+        if self.val_of_payload_place(p).is_some() {
+            return Some(p.local);
+        }
+        let l = p.as_local()?;
+        if self.body.local_decls[l].ty == self.env.val || self.payloads.contains(&l) {
+            return Some(l);
+        }
+        match self.def_of(o)? {
+            Rvalue::Use(inner) => self.val_source(inner),
+            _ => None,
+        }
     }
 
     fn line(&mut self, s: impl Into<String>) {
@@ -550,10 +1043,17 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
 
     fn operand(&self, o: &Operand<'tcx>) -> R<String> {
         match o {
+            // A slot of a Val frame read as the integer it also is.
+            Operand::Copy(p) | Operand::Move(p) if self.is_val_slot(p) => Ok(format!("{}.0", self.place(p))),
             Operand::Copy(p) | Operand::Move(p) => Ok(self.place(p)),
             Operand::Constant(c) => self.konst(c),
             Operand::RuntimeChecks(_) => Err("runtime-checks operand".into()),
         }
+    }
+
+    /// Display names of this function's parameters, in order.
+    fn param_names(&self) -> Vec<String> {
+        self.body.args_iter().map(|l| self.local(l)).collect()
     }
 
     fn rvalue(&self, rv: &Rvalue<'tcx>) -> R<String> {
@@ -641,37 +1141,73 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         }
     }
 
-    /// The right-hand side of an assignment as Rust.
+    /// Is this place a slot of a frame the host reads Vals from?
+    fn is_val_slot(&self, pl: &Place<'tcx>) -> bool {
+        self.val_arrays.contains_key(&pl.local) && matches!(pl.projection.as_slice(), [PlaceElem::ConstantIndex { .. }])
+    }
+
+    /// The right-hand side of an assignment as Rust. A destination that holds
+    /// a Val -- a payload local, a Val frame slot -- gets the value as a Val.
     fn assign_expr(&self, pl: &Place<'tcx>, rv: &Rvalue<'tcx>) -> R<String> {
         let is_val_agg = |rv: &Rvalue<'tcx>| matches!(rv, Rvalue::Aggregate(k, _) if matches!(**k, AggregateKind::Adt(d, ..) if d == self.env.val_def));
-        Ok(match (pl.as_local().filter(|l| self.payloads.contains(l)), rv) {
-            // Assigning a payload local: the value is a Val.
-            (Some(_), Rvalue::Use(Operand::Constant(c))) => {
-                let bits = c.const_.try_to_scalar_int().ok_or("payload constant")?;
-                self.val_str(bits.to_bits(bits.size()) as u64)
-            }
-            // A constant into a slot of a frame the host reads Vals from.
-            (None, Rvalue::Use(Operand::Constant(c)))
-                if self.val_arrays.contains(&pl.local) && matches!(pl.projection.as_slice(), [PlaceElem::ConstantIndex { .. }]) =>
-            {
-                let bits = c.const_.try_to_scalar_int().ok_or("slot constant")?;
-                format!("{}.0", self.val_str(bits.to_bits(bits.size()) as u64))
-            }
-            (Some(_), Rvalue::Use(Operand::Copy(p) | Operand::Move(p))) if p.as_local().is_some_and(|l| self.payloads.contains(&l)) => self.place(p),
-            (Some(_), _) => self.val_of_expr(rv)?,
-            (None, Rvalue::Aggregate(_, fs)) if is_val_agg(rv) => {
-                let o = fs.iter().next().ok_or("Val without a payload")?;
-                match o {
-                    // `Val(l)` of a payload local is the local itself.
-                    Operand::Copy(p) | Operand::Move(p) if p.as_local().is_some_and(|l| self.payloads.contains(&l)) => self.place(p),
-                    _ => match self.folded_rv(o) {
-                        Some(r) => self.val_of_expr(r)?,
-                        None => self.rvalue(rv)?,
-                    },
+        if pl.as_local().is_some_and(|l| self.payloads.contains(&l)) || self.is_val_slot(pl) {
+            return self.as_val_expr(rv);
+        }
+        if let Rvalue::Repeat(_, n) = rv {
+            if let Some(n) = pl.as_local().and_then(|l| self.val_arrays.get(&l)).or(n.try_to_target_usize(self.tcx).as_ref()) {
+                if pl.as_local().is_some_and(|l| self.val_arrays.contains_key(&l)) {
+                    return Ok(format!("[Val(0); {n}]"));
                 }
             }
-            _ => self.rvalue(rv)?,
-        })
+        }
+        if is_val_agg(rv) {
+            if let Rvalue::Aggregate(_, fs) = rv {
+                let o = fs.iter().next().ok_or("Val without a payload")?;
+                return self.as_val_expr(&Rvalue::Use(o.clone()));
+            }
+        }
+        self.rvalue(rv)
+    }
+
+    /// `v` when the place is `v.0` of a Val-typed local.
+    fn val_of_payload_place(&self, p: &Place<'tcx>) -> Option<String> {
+        if let [PlaceElem::Field(f, _)] = p.projection.as_slice() {
+            if f.as_usize() == 0 && self.body.local_decls[p.local].ty == self.env.val {
+                return Some(self.local(p.local));
+            }
+        }
+        None
+    }
+
+    /// An rvalue computing a Val payload, written as the Val it is: a constant
+    /// decoded, `v.0` back to `v`, a payload local by name, `(x << 32) | 4` as
+    /// `Val::u32(x)`, anything else wrapped.
+    fn as_val_expr(&self, rv: &Rvalue<'tcx>) -> R<String> {
+        match rv {
+            Rvalue::Use(Operand::Constant(c)) => {
+                let bits = c.const_.try_to_scalar_int().ok_or("payload constant")?;
+                Ok(self.val_str(bits.to_bits(bits.size()) as u64))
+            }
+            Rvalue::Use(o @ (Operand::Copy(p) | Operand::Move(p))) => {
+                if let Some(v) = self.val_of_payload_place(p) {
+                    return Ok(v);
+                }
+                if self.is_val_slot(p) {
+                    return Ok(self.place(p));
+                }
+                if p.as_local().is_some_and(|l| self.payloads.contains(&l)) {
+                    return Ok(self.place(p));
+                }
+                match self.def_of(o) {
+                    Some(Rvalue::Use(Operand::Copy(q) | Operand::Move(q))) if self.val_of_payload_place(q).is_some() => {
+                        Ok(self.val_of_payload_place(q).unwrap())
+                    }
+                    Some(inner) if !matches!(inner, Rvalue::Use(_)) => self.val_of_expr(inner),
+                    _ => Ok(format!("Val({})", self.place(p))),
+                }
+            }
+            _ => self.val_of_expr(rv),
+        }
     }
 
     /// A Val whose payload is computed by `rv`. `(x << 32) | 4` is the U32Val
@@ -767,6 +1303,29 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         for (si, st) in data.statements.iter().enumerate() {
             if let StatementKind::Assign(a) = &st.kind {
                 let (pl, rv) = &**a;
+                // The address plumbing of a literal array is the literal itself.
+                if pl.as_local().is_some_and(|l| self.addr_locals.contains(&l)) {
+                    continue;
+                }
+                // A literal Val array: its zero-init vanishes and its slot
+                // stores are collected for the call that takes the array.
+                if self.literal.contains(&pl.local) {
+                    if pl.projection.is_empty() {
+                        continue;
+                    }
+                    if let [PlaceElem::ConstantIndex { offset, .. }] = pl.projection.as_slice() {
+                        let e = self.as_val_expr(rv)?;
+                        // The Val local behind the element, for its shape.
+                        let src = match rv {
+                            Rvalue::Use(o) => self.val_source(o),
+                            _ => None,
+                        };
+                        let n = self.val_arrays[&pl.local] as usize;
+                        let slots = self.array_lits.entry(pl.local).or_insert_with(|| vec![None; n]);
+                        slots[*offset as usize] = Some((e, src));
+                        continue;
+                    }
+                }
                 if let Some(l) = pl.as_local().filter(|l| *l != Local::ZERO && l.as_usize() > self.body.arg_count) {
                     let uses = self.uses.get(&l).copied().unwrap_or(0);
                     if pure(rv) && uses == 0 {
@@ -817,6 +1376,28 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 }
                 let s = format!("{} = {};", self.place(pl), self.assign_expr(pl, rv)?);
                 self.line(s);
+                // A shape travels through a copy, a phi copy or a `Val(..)`
+                // of a payload local included; what reaches `_0` is what
+                // this function returns.
+                let carried = match rv {
+                    Rvalue::Use(o) => Some(o),
+                    Rvalue::Aggregate(k, fs) if matches!(**k, AggregateKind::Adt(d, ..) if d == self.env.val_def) => fs.iter().next(),
+                    _ => None,
+                };
+                if let (Some(dst), Some(o)) = (pl.as_local(), carried) {
+                    let sh = match o {
+                        Operand::Constant(c) => c.const_.try_to_scalar_int().filter(|_| c.const_.ty() == self.env.val).map(|i| self.val_str(i.to_bits(i.size()) as u64)),
+                        _ => self.val_source(o).and_then(|l| {
+                            self.shape_of(l).or_else(|| (l.as_usize() >= 1 && l.as_usize() <= self.body.arg_count).then(|| self.local(l)))
+                        }),
+                    };
+                    if let Some(sh) = sh {
+                        if dst == Local::ZERO {
+                            self.returned(sh.clone());
+                        }
+                        self.push_shape(dst, sh);
+                    }
+                }
             }
             StatementKind::SetDiscriminant { place, variant_index } => {
                 let ty = place.ty(&self.body.local_decls, self.tcx).ty;
@@ -837,18 +1418,255 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         Ok(())
     }
 
-    fn call_line(&mut self, func: &Operand<'tcx>, args: &[Spanned<Operand<'tcx>>], destination: &Place<'tcx>) -> R<()> {
+    fn call_line(&mut self, bb: BasicBlock, func: &Operand<'tcx>, args: &[Spanned<Operand<'tcx>>], destination: &Place<'tcx>) -> R<()> {
         let f = self.operand(func)?;
-        let a: Vec<String> = args.iter().map(|a| self.operand(&a.node)).collect::<R<_>>()?;
+        let val_pos = Self::val_position(&f);
+        let keys_pos = Self::keys_position(&f);
+        self.inter.borrow_mut().called.insert(f.clone());
+        let mut a: Vec<String> = Vec::new();
+        let mut elems: Option<Vec<(String, Option<Local>)>> = None;
+        let mut keys: Option<Vec<String>> = None;
+        let mut text: Option<String> = None;
+        for (k, arg) in args.iter().enumerate() {
+            // The position of a Val array: the array itself, as a literal
+            // when it is written whole right here, else by name.
+            if Some(k) == val_pos {
+                if let Some((arr, off)) = self.array_behind_at(&arg.node, 0) {
+                    if let Some(lits) = self.array_lits.get(&arr).filter(|l| off == 0 && l.iter().all(Option::is_some)) {
+                        let es: Vec<(String, Option<Local>)> = lits.iter().flatten().cloned().collect();
+                        a.push(format!("pos(&[{}])", es.iter().map(|(e, _)| e.as_str()).collect::<Vec<_>>().join(", ")));
+                        elems = Some(es);
+                        continue;
+                    }
+                    if off == 0 && self.val_arrays.contains_key(&arr) {
+                        a.push(format!("pos(&{})", self.raw_name(arr)));
+                        continue;
+                    }
+                    // Part of a frame: the slots it covers, if they are plainly written here.
+                    let arg_ops: Vec<Operand<'tcx>> = args.iter().map(|a| a.node.clone()).collect();
+                    if let Some(len) = self.len_arg(&f, &arg_ops) {
+                        if off % 8 == 0 {
+                            elems = self.range_shape(bb, arr, off / 8, len);
+                        }
+                    }
+                }
+            }
+            let mut s = self.operand(&arg.node)?;
+            // The rodata position of a map's keys: name them.
+            if Some(k) == keys_pos {
+                if let Some(ks) = self.konst_u64(&arg.node).filter(|b| b & 0xff == 4).and_then(|b| self.spec.keys.get(&(b >> 32))) {
+                    s = format!("{s} /* {} */", ks.iter().map(|k| format!("{k:?}")).collect::<Vec<_>>().join(", "));
+                    keys = Some(ks.clone());
+                }
+            }
+            // The rodata position of a symbol's or string's text: show it.
+            if k == 0 && matches!(f.as_str(), "symbol_new_from_linear_memory" | "string_new_from_linear_memory") {
+                let u32val = |o: &Operand<'tcx>| self.konst_u64(o).filter(|b| b & 0xff == 4).map(|b| b >> 32);
+                let pos = u32val(&arg.node);
+                let len = args.get(1).and_then(|a| u32val(&a.node));
+                let t = match (pos, len) {
+                    (Some(p), Some(l)) => self.spec.text_at(p, l).or_else(|| self.spec.strings.get(&p).cloned()),
+                    (Some(p), None) => self.spec.strings.get(&p).cloned(),
+                    _ => None,
+                };
+                if let Some(t) = t {
+                    s = format!("{s} /* {t:?} */");
+                    text = Some(t);
+                }
+            }
+            a.push(s);
+        }
+        // What was just built, in the contract's own terms.
+        let shape = match (f.as_str(), &elems, &keys) {
+            ("vec_new_from_linear_memory", Some(es), _) => {
+                let parts: Vec<String> = es.iter().map(|(e, src)| src.and_then(|l| self.shape_of(l)).unwrap_or_else(|| e.clone())).collect();
+                let sym = parts.first().and_then(|p| p.strip_prefix("Val::sym(\"").or_else(|| p.strip_prefix("Symbol(\""))).and_then(|r| r.split('"').next());
+                match sym.and_then(|s| self.spec.union_case(s)) {
+                    Some(case) if parts.len() == 1 => Some(case),
+                    Some(case) => Some(format!("{case}({})", parts[1..].join(", "))),
+                    None => Some(format!("Vec[{}]", parts.join(", "))),
+                }
+            }
+            ("symbol_new_from_linear_memory", _, _) if text.is_some() => {
+                let t = text.clone().unwrap_or_default();
+                Some(match self.spec.union_case(&t) {
+                    Some(case) => format!("Symbol({t:?}) /* {case} */"),
+                    None => format!("Symbol({t:?})"),
+                })
+            }
+            ("string_new_from_linear_memory", _, _) if text.is_some() => Some(format!("String({:?})", text.clone().unwrap_or_default())),
+            // A symbol from a position this function was given: the text is
+            // the caller's to supply, once `substitute` has put its argument in.
+            ("symbol_new_from_linear_memory" | "string_new_from_linear_memory", _, _) => Some(format!(
+                "{}(@{}, {})",
+                if f.starts_with("symbol") { "Symbol" } else { "String" },
+                a.first().cloned().unwrap_or_default(),
+                a.get(1).cloned().unwrap_or_default()
+            )),
+            // A lifted helper whose returned shape the previous pass
+            // recorded: its parameters stand for our arguments.
+            (callee, _, _) => {
+                let templates = self.prev.ret_shapes.get(callee).cloned().unwrap_or_default();
+                if templates.is_empty() {
+                    None
+                } else {
+                    let arg_shapes: Vec<String> = args.iter().map(|a| self.key_shape(&a.node)).collect::<R<_>>()?;
+                    let out: Vec<String> = templates.iter().map(|(t, params)| self.resolve_text(substitute(t, params, &arg_shapes))).collect();
+                    Some(alternatives(out))
+                }
+            }
+        };
+        let shape = shape.or_else(|| match (f.as_str(), &elems, &keys) {
+            ("map_new_from_linear_memory", es, Some(ks)) => {
+                let fields: Vec<String> = ks
+                    .iter()
+                    .enumerate()
+                    .map(|(i, k)| match es.as_ref().and_then(|e| e.get(i)) {
+                        Some((e, src)) => {
+                            let v = src.and_then(|l| self.shape_of(l)).unwrap_or_else(|| e.clone());
+                            if v == *k { k.clone() } else { format!("{k}: {v}") }
+                        }
+                        None => k.clone(),
+                    })
+                    .collect();
+                Some(match self.spec.struct_for_keys(ks) {
+                    Some(st) => format!("{st} {{ {} }}", fields.join(", ")),
+                    None => format!("Map{{ {} }}", fields.join(", ")),
+                })
+            }
+            _ => None,
+        });
         let dty = self.body.local_decls[destination.local].ty;
         let unread = destination.as_local().is_some_and(|l| self.uses.get(&l).copied().unwrap_or(0) == 0);
-        let s = if dty.is_unit() || dty.is_never() || unread {
+        let mut s = if dty.is_unit() || dty.is_never() || unread {
             format!("{f}({});", a.join(", "))
         } else {
             format!("{} = {f}({});", self.place(destination), a.join(", "))
         };
+        if let Some(sh) = &shape {
+            s = format!("{s} // {sh}");
+            if let Some(l) = destination.as_local() {
+                self.push_shape(l, sh.clone());
+                if l == Local::ZERO {
+                    self.returned(sh.clone());
+                }
+            }
+        }
         self.line(s);
+        // A helper that uses a parameter as a storage key: the access is the
+        // caller's, with the caller's key.
+        let param_accesses = self.prev.param_accesses.get(&f).cloned().unwrap_or_default();
+        for (i, op, dur) in param_accesses {
+            if let Some(arg) = args.get(i) {
+                let key = self.key_shape(&arg.node)?;
+                self.inter.borrow_mut().schema.push((dur, key, op, format!("{} via {f}", self.fname)));
+            }
+        }
+        // A storage access: durability, the key as the contract knows it.
+        let (key_i, dur_i) = match f.as_str() {
+            "put_contract_data" => (0, 2),
+            "get_contract_data" | "has_contract_data" | "del_contract_data" | "extend_contract_data_ttl" => (0, 1),
+            _ => return Ok(()),
+        };
+        let key = self.key_shape(&args[key_i].node)?;
+        let dur = a.get(dur_i).map(|d| d.trim_start_matches("StorageType::").to_lowercase()).unwrap_or_else(|| "?".into());
+        let op = match f.as_str() {
+            "put_contract_data" => format!("put({})", self.key_shape(&args[1].node)?),
+            "extend_contract_data_ttl" => "extend_ttl".into(),
+            other => other.trim_end_matches("_contract_data").to_string(),
+        };
+        // A key that is one of our parameters is really the caller's key.
+        let param_key = match &args[key_i].node {
+            Operand::Copy(p) | Operand::Move(p) => p.as_local().filter(|l| l.as_usize() >= 1 && l.as_usize() <= self.body.arg_count),
+            _ => None,
+        };
+        if let Some(l) = param_key {
+            self.inter.borrow_mut().param_accesses.entry(self.fname.clone()).or_default().push((l.as_usize() - 1, op.clone(), dur.clone()));
+            if self.final_pass && self.prev.called.contains(&self.fname) {
+                return Ok(()); // reported at the callers
+            }
+        }
+        self.inter.borrow_mut().schema.push((dur, key, op, self.fname.clone()));
         Ok(())
+    }
+
+    /// `Symbol(@Val::u32(1048727u64 as u32), Val::u32(7u64 as u32))`: a
+    /// position and length a caller supplied through a helper. The text is
+    /// read from the data, when the data is there.
+    fn resolve_text(&self, shape: String) -> String {
+        let mut s = shape;
+        while let Some(i) = s.find("(@") {
+            let Some(end) = s[i..].find("))") else { break };
+            let inner = &s[i + 2..i + end + 1];
+            let mut nums = inner.split("Val::u32(").skip(1).map(|r| r.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u64>().ok());
+            let (pos, len) = (nums.next().flatten(), nums.next().flatten());
+            let text = match (pos, len) {
+                (Some(p), Some(l)) => self.spec.text_at(p, l).or_else(|| self.spec.strings.get(&p).cloned()),
+                (Some(p), None) => self.spec.strings.get(&p).cloned(),
+                _ => None,
+            };
+            let repl = match text {
+                Some(t) => match self.spec.union_case(&t) {
+                    Some(case) => format!("({t:?}) /* {case} */"),
+                    None => format!("({t:?})"),
+                },
+                None => format!("(at {inner})"),
+            };
+            s.replace_range(i..i + end + 2, &repl);
+        }
+        s
+    }
+
+    /// Every shape a local may hold, as one string.
+    fn shape_of(&self, l: Local) -> Option<String> {
+        self.shapes.get(&l).map(|v| alternatives(v.clone()))
+    }
+
+    /// A local takes on a shape on one more path.
+    fn push_shape(&mut self, l: Local, shape: String) {
+        let v = self.shapes.entry(l).or_default();
+        if !v.contains(&shape) {
+            v.push(shape);
+        }
+    }
+
+    /// Record what this function returns, for its callers: in terms of its
+    /// parameters; its own locals mean nothing there and become `_`.
+    fn returned(&self, shape: String) {
+        let params = self.param_names();
+        let locals: Vec<String> = (self.body.arg_count + 1..self.body.local_decls.len()).map(|i| self.local(Local::from_usize(i))).collect();
+        let shape = substitute(&shape, &locals, &vec!["_".to_string(); locals.len()]).replace("Val(_)", "_");
+        let mut inter = self.inter.borrow_mut();
+        let v = inter.ret_shapes.entry(self.fname.clone()).or_default();
+        if !v.iter().any(|(s, _)| *s == shape) {
+            v.push((shape, params));
+        }
+    }
+
+    /// A value the host is handed, in the contract's terms: a built vec or
+    /// map by its shape, a constant decoded, a parameter by its declared type,
+    /// anything else by name.
+    fn key_shape(&self, o: &Operand<'tcx>) -> R<String> {
+        if let Some(l) = match o {
+            Operand::Copy(p) | Operand::Move(p) => p.as_local(),
+            _ => None,
+        } {
+            if let Some(s) = self.shape_of(l) {
+                return Ok(s);
+            }
+            if l.as_usize() >= 1 && l.as_usize() <= self.body.arg_count {
+                let ty = self.spec.params.get(&self.fname).and_then(|ps| ps.get(l.as_usize() - 1));
+                return Ok(match ty {
+                    Some(t) => format!("{}: {t}", self.local(l)),
+                    None => self.local(l),
+                });
+            }
+            // An unresolved local is this function's; say whose.
+            if !self.folded.contains_key(&l) {
+                return Ok(format!("{}::{}", self.fname, self.local(l)));
+            }
+        }
+        self.operand(o)
     }
 
     // ---- structure -------------------------------------------------------
@@ -1006,7 +1824,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             }
             TerminatorKind::Unreachable => self.line("unreachable!();"),
             TerminatorKind::Call { func, args, destination, target, .. } => {
-                self.call_line(func, args, destination)?;
+                self.call_line(bb, func, args, destination)?;
                 if let Some(t) = target {
                     self.branch(bb, *t, tail)?;
                 }
@@ -1083,7 +1901,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 }
                 TerminatorKind::Unreachable => self.line("unreachable!();"),
                 TerminatorKind::Call { func, args, destination, target, .. } => {
-                    self.call_line(func, args, destination)?;
+                    self.call_line(*bb, func, args, destination)?;
                     if let Some(t) = target {
                         self.line(goto(*t));
                     }
@@ -1146,7 +1964,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         let init = if zeroed { " = core::mem::zeroed()" } else { "" };
         for l in self.body.vars_and_temps_iter().chain((!ret_ty.is_unit()).then_some(Local::ZERO)) {
             let t = self.body.local_decls[l].ty;
-            if t.is_unit() || t.is_never() || self.folded.contains_key(&l) {
+            if t.is_unit() || t.is_never() || self.folded.contains_key(&l) || self.literal.contains(&l) || self.addr_locals.contains(&l) {
                 continue; // nothing to hold, or written into its one use
             }
             let uses = self.uses.get(&l).copied().unwrap_or(0);

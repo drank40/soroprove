@@ -147,6 +147,24 @@ struct Lbl<'ctx> {
     /// the arm is empty and still needs a block, because the conditional branch
     /// already names it.
     else_bb: Option<BasicBlock<'ctx>>,
+    /// The result of a typed `block`/`if`/`loop`, as an entry-block alloca:
+    /// every path that reaches the label stores its value, the continuation
+    /// loads it, and mem2reg makes the phi. A `br` to a loop carries nothing.
+    slot: Option<PointerValue<'ctx>>,
+    is_loop: bool,
+}
+
+/// How many values a block type yields. Soroban contracts yield at most one;
+/// a multi-value block keeps the old behaviour and its result is bottom.
+fn block_results(bt: &wasmparser::BlockType, types: &Types) -> usize {
+    match bt {
+        wasmparser::BlockType::Empty => 0,
+        wasmparser::BlockType::Type(_) => 1,
+        wasmparser::BlockType::FuncType(t) => match types.0.get(*t as usize).map(|s| &s.composite_type.inner) {
+            Some(wasmparser::CompositeInnerType::Func(ft)) => ft.results().len(),
+            _ => 0,
+        },
+    }
 }
 
 /// `StorageType` is not a `Val` -- it is a direct-marshalled u64 with three
@@ -642,12 +660,29 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
     /// Resolve a relative branch depth against the full label stack. Out of
     /// range is malformed wasm, not something to skip past.
     fn target(&self, depth: u32) -> Result<BasicBlock<'ctx>, String> {
+        Ok(self.labels[self.label(depth)?].target)
+    }
+
+    fn label(&self, depth: u32) -> Result<usize, String> {
         let n = self.labels.len();
         let d = depth as usize;
         if d >= n {
             return Err(format!("branch depth {d} exceeds label stack {n}"));
         }
-        Ok(self.labels[n - 1 - d].target)
+        Ok(n - 1 - d)
+    }
+
+    /// A branch to a typed label carries the top of stack as the label's
+    /// result: store it in the label's slot. `keep` leaves it on the stack
+    /// for the path that does not take the branch (`br_if`).
+    fn store_result(&mut self, idx: usize, keep: bool) {
+        let Some(slot) = self.labels[idx].slot else { return };
+        if self.labels[idx].is_loop || self.terminated() {
+            return;
+        }
+        let v = if keep { self.stack.last().copied().unwrap_or(SV::Unknown) } else { self.pop() };
+        let iv = self.use_int(v);
+        self.b.build_store(slot, iv).expect("store");
     }
 }
 
@@ -748,11 +783,26 @@ fn lower<'ctx>(
         }
     }
 
+    // One entry-block slot per typed label, handed out as labels open.
+    let mut slots: Vec<PointerValue> = ops
+        .iter()
+        .filter_map(|op| match op {
+            Operator::Block { blockty } | Operator::Loop { blockty } | Operator::If { blockty } => Some(blockty),
+            _ => None,
+        })
+        .filter(|bt| block_results(bt, &md.types) == 1)
+        .map(|_| b.build_alloca(rt.i64t, "blk").expect("alloca"))
+        .collect();
+    slots.reverse();
+    let mut slot_for = |bt: &wasmparser::BlockType| if block_results(bt, &md.types) == 1 { slots.pop() } else { None };
+
     let exit = ctx.append_basic_block(f, "exit");
     fun.labels.push(Lbl {
         target: exit,
         cont: exit,
         else_bb: None,
+        slot: None,
+        is_loop: false,
     });
 
     for (i, op) in ops.iter().enumerate().skip(skip) {
@@ -789,18 +839,19 @@ fn lower<'ctx>(
                     fun.b.build_store(g.as_pointer_value(), iv).expect("store");
                 }
             }
-            Operator::Block { .. } => {
+            Operator::Block { blockty } => {
                 let cont = fun.blk("c");
-                fun.labels.push(Lbl { target: cont, cont, else_bb: None });
+                fun.labels.push(Lbl { target: cont, cont, else_bb: None, slot: slot_for(blockty), is_loop: false });
             }
-            Operator::Loop { .. } => {
+            Operator::Loop { blockty } => {
                 let h = fun.blk("h");
                 fun.br(h);
                 fun.b.position_at_end(h);
                 let cont = fun.blk("lc");
-                fun.labels.push(Lbl { target: h, cont, else_bb: None });
+                fun.labels.push(Lbl { target: h, cont, else_bb: None, slot: slot_for(blockty), is_loop: true });
             }
-            Operator::If { .. } => {
+            Operator::If { blockty } => {
+                let slot = slot_for(blockty);
                 let then_bb = fun.blk("then");
                 let else_bb = fun.blk("else");
                 let cont = fun.blk("ic");
@@ -815,7 +866,7 @@ fn lower<'ctx>(
                         .build_conditional_branch(nz, then_bb, else_bb)
                         .expect("condbr");
                 }
-                fun.labels.push(Lbl { target: cont, cont, else_bb: Some(else_bb) });
+                fun.labels.push(Lbl { target: cont, cont, else_bb: Some(else_bb), slot, is_loop: false });
                 fun.b.position_at_end(then_bb);
                 let _ = i;
             }
@@ -824,6 +875,9 @@ fn lower<'ctx>(
                     Some(l) => (l.cont, l.else_bb.take()),
                     None => return Err("else with no frame".into()),
                 };
+                // The then arm's value is the if's result on this path.
+                let last = fun.labels.len() - 1;
+                fun.store_result(last, false);
                 fun.br(cont);
                 if let Some(bb) = eb {
                     fun.b.position_at_end(bb);
@@ -840,6 +894,14 @@ fn lower<'ctx>(
                     fun.ret(n_results, val_abi);
                     continue;
                 }
+                // Falling off the end: the top of stack is the label's result.
+                if let Some(slot) = fr.slot {
+                    if !fun.terminated() {
+                        let v = fun.pop();
+                        let iv = fun.use_int(v);
+                        fun.b.build_store(slot, iv).expect("store");
+                    }
+                }
                 fun.br(fr.cont);
                 // An `if` with no `else`: the branch already names that block,
                 // so it must exist and reach the continuation.
@@ -848,22 +910,33 @@ fn lower<'ctx>(
                     fun.br(fr.cont);
                 }
                 fun.b.position_at_end(fr.cont);
-                // ponytail: no cross-block operand-stack threading; locals go
-                // through allocas and mem2reg builds the phis.
+                // The operand stack is not threaded across `end`; a typed
+                // label's one result comes through its slot instead, and
+                // locals go through allocas. mem2reg builds the phis.
                 fun.stack.clear();
+                if let Some(slot) = fr.slot {
+                    let v = fun.b.build_load(rt.i64t, slot, "blk").expect("load");
+                    fun.stack.push(SV::Reg(v));
+                }
             }
             Operator::Br { relative_depth } => {
-                let t = fun.target(*relative_depth)?;
+                let idx = fun.label(*relative_depth)?;
+                let t = fun.labels[idx].target;
                 if t == exit {
                     fun.ret(n_results, val_abi);
                 } else {
+                    fun.store_result(idx, false);
                     fun.br(t);
                 }
             }
             Operator::BrIf { relative_depth } => {
-                let t = fun.target(*relative_depth)?;
+                let idx = fun.label(*relative_depth)?;
+                let t = fun.labels[idx].target;
                 let c = fun.pop();
                 let ci = fun.use_int(c);
+                if t != exit {
+                    fun.store_result(idx, true);
+                }
                 let nz = fun
                     .b
                     .build_int_compare(IntPredicate::NE, ci, rt.i64t.const_zero(), "brif")
@@ -887,9 +960,22 @@ fn lower<'ctx>(
                     .expect("trunc");
                 let deflt = fun.target(targets.default())?;
                 let mut cases = Vec::new();
+                let mut labels = vec![fun.label(targets.default())?];
                 for (idx, d) in targets.targets().enumerate() {
                     let d = d.map_err(|e| e.to_string())?;
+                    labels.push(fun.label(d)?);
                     cases.push((ctx.i32_type().const_int(idx as u64, false), fun.target(d)?));
+                }
+                // Every target gets the same value; all typed targets share
+                // one type, so the store repeats per distinct slot.
+                labels.sort();
+                labels.dedup();
+                let carried = labels.iter().any(|i| fun.labels[*i].slot.is_some() && !fun.labels[*i].is_loop);
+                for i in labels {
+                    fun.store_result(i, true);
+                }
+                if carried {
+                    fun.pop();
                 }
                 if !fun.terminated() {
                     fun.b.build_switch(s32, deflt, &cases).expect("switch");
@@ -1378,7 +1464,12 @@ fn strip_inline_suffixes(m: &Module) {
 /// `*_from_linear_memory` call with constant position and length as the
 /// symbol, string or Val list sitting in the data segment.
 fn rename_decoded(m: &Module, mem: &Mem, spec: &spec::Spec) {
-    let b = m.get_context().create_builder();
+    let ctx = m.get_context();
+    let b = ctx.create_builder();
+    // Map key names, and symbol/string texts, by rodata position, for the
+    // MIR stage: `soroban.keys` and `soroban.strings`.
+    let mut keys_out: Vec<(u64, Vec<String>)> = Vec::new();
+    let mut strings_out: Vec<(u64, String)> = Vec::new();
     let st = m.get_function("soroban.storage_type").unwrap_or_else(|| {
         // O1 strips unused declarations; bring it back for the literals below.
         let i64t = m.get_context().i64_type();
@@ -1409,12 +1500,34 @@ fn rename_decoded(m: &Module, mem: &Mem, spec: &spec::Spec) {
                 let new = match name.as_str() {
                     "soroban.val.from_payload" => args.first().copied().flatten().map(val_name),
                     "soroban.storage_type" => args.first().copied().flatten().map(|c| storage_name(c as i64)),
-                    n => decode_lm(n, &args, mem, spec),
+                    n => decode_lm(n, &args, mem, spec, &mut keys_out, &mut strings_out),
                 };
                 if let (Some(n), ValueKind::Basic(v)) = (new, cs.try_as_basic_value()) {
                     v.set_name(&n);
                 }
             }
+        }
+    }
+    keys_out.sort();
+    keys_out.dedup();
+    for (pos, keys) in keys_out {
+        let line = format!("{pos} {}", keys.join(" "));
+        let node = ctx.metadata_node(&[ctx.metadata_string(&line).into()]);
+        let _ = m.add_global_metadata("soroban.keys", &node);
+    }
+    strings_out.sort();
+    strings_out.dedup();
+    for (pos, text) in strings_out {
+        let node = ctx.metadata_node(&[ctx.metadata_string(&format!("{pos} {text}")).into()]);
+        let _ = m.add_global_metadata("soroban.strings", &node);
+    }
+    // The read-only data itself, so the MIR stage can read a (pos, len) that
+    // is constant only in a caller of the helper that uses it.
+    if !mem.written {
+        for (base, bytes) in &mem.segs {
+            let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+            let node = ctx.metadata_node(&[ctx.metadata_string(&format!("{base} {hex}")).into()]);
+            let _ = m.add_global_metadata("soroban.rodata", &node);
         }
     }
 }
@@ -1433,7 +1546,14 @@ fn const_arg(i: InstructionValue, k: u32) -> Option<u64> {
     }
 }
 
-fn decode_lm(name: &str, args: &[Option<u64>], mem: &Mem, spec: &spec::Spec) -> Option<String> {
+fn decode_lm(
+    name: &str,
+    args: &[Option<u64>],
+    mem: &Mem,
+    spec: &spec::Spec,
+    keys_out: &mut Vec<(u64, Vec<String>)>,
+    strings_out: &mut Vec<(u64, String)>,
+) -> Option<String> {
     // Positions and lengths cross the boundary as U32Vals: tag 4, value in the top 32 bits.
     let u = |k: usize| args.get(k).copied().flatten().filter(|p| p & 0xff == 4).map(|p| p >> 32);
     let text = |k: usize| -> Option<String> {
@@ -1455,8 +1575,11 @@ fn decode_lm(name: &str, args: &[Option<u64>], mem: &Mem, spec: &spec::Spec) -> 
             .collect()
     };
     let s = match name {
-        "buf.symbol_new_from_linear_memory" => format!("Symbol({:?})", text(0)?),
-        "buf.string_new_from_linear_memory" => format!("String({:?})", text(0)?),
+        "buf.symbol_new_from_linear_memory" | "buf.string_new_from_linear_memory" => {
+            let t = text(0)?;
+            strings_out.push((u(0)?, t.clone()));
+            format!("{}({t:?})", if name.starts_with("buf.symbol") { "Symbol" } else { "String" })
+        }
         "buf.bytes_new_from_linear_memory" => {
             let hex: String = mem.bytes(u(0)?, u(1)? as usize)?.iter().map(|b| format!("{b:02x}")).collect();
             format!("Bytes({hex})")
@@ -1465,9 +1588,15 @@ fn decode_lm(name: &str, args: &[Option<u64>], mem: &Mem, spec: &spec::Spec) -> 
         // The values are runtime Vals, not decoded here. A named struct is a
         // map whose keys are its field names (soroban-sdk-macros): when the
         // key set is exactly one spec struct's field set, this is that struct.
+        "map.map_unpack_to_linear_memory" => {
+            let keys = slices(u(1)?, u(3)?)?;
+            keys_out.push((u(1)?, keys.iter().map(|k| k.trim_matches('"').to_string()).collect()));
+            return None;
+        }
         "map.map_new_from_linear_memory" => {
             let keys = slices(u(0)?, u(2)?)?;
             let mut sorted: Vec<String> = keys.iter().map(|k| k.trim_matches('"').to_string()).collect();
+            keys_out.push((u(0)?, sorted.clone()));
             sorted.sort();
             let mut matches = spec.structs.iter().filter(|(_, fs)| {
                 let mut f = fs.clone();

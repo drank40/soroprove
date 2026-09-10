@@ -71,6 +71,10 @@ extern "C" {
     pub fn unknown_i64() -> u64;
 }
 
+/// The linear-memory position of a value array, as the host takes one: the
+/// SDK's `Vec::from_array` and struct-to-map conversions pass exactly this.
+pub fn pos<const N: usize>(a: &[Val; N]) -> Val { Val::u32(a.as_ptr() as usize as u32) }
+
 // contractspecv0, the ABI the contract declares. ScVal shapes, not memory layout.
 //   enum Flag { A = 0, B = 1, C = 2, D = 3, E = 4 }
 //   error Error { AnError = 1 }
@@ -82,6 +86,9 @@ extern "C" {
     /// wasm import `l._`
     pub fn put_contract_data(a0: Val, a1: Val, a2: StorageType) -> Val;
 }
+
+// storage, from every put/get/has/del/extend_ttl call: durability, key, uses.
+//   persistent  Val::sym("persisted")   [put(Val::TRUE): hello]
 
 /// spec: fn hello(flag: Flag) -> Result<Symbol, Error>
 pub fn hello(mut flag: Val) -> Val {

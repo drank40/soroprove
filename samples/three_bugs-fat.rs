@@ -71,6 +71,10 @@ extern "C" {
     pub fn unknown_i64() -> u64;
 }
 
+/// The linear-memory position of a value array, as the host takes one: the
+/// SDK's `Vec::from_array` and struct-to-map conversions pass exactly this.
+pub fn pos<const N: usize>(a: &[Val; N]) -> Val { Val::u32(a.as_ptr() as usize as u32) }
+
 // contractspecv0, the ABI the contract declares. ScVal shapes, not memory layout.
 //   enum Flag { A = 0, B = 1, C = 2, D = 3, E = 4 }
 //   error Error { AnError = 1 }
@@ -94,6 +98,10 @@ extern "C" {
     /// wasm import `v.g`
     pub fn vec_new_from_linear_memory(a0: Val, a1: Val) -> Val;
 }
+
+// storage, from every put/get/has/del/extend_ttl call: durability, key, uses.
+//   persistent  Val::sym("f")   [put(Val::TRUE): set_flag]
+//   persistent  Vec[Val(payload), PairKey { a, b }]   [has: read]
 
 /// spec: fn read(a: Address, b: Address) -> bool
 pub fn read(mut a: Val, mut b: Val) -> Val {
@@ -144,16 +152,16 @@ pub fn read(mut a: Val, mut b: Val) -> Val {
                             }
                             _ => {}
                         }
-                        Symbol__Pair__ = symbol_new_from_linear_memory(Val::u32(1048640), Val::u32(4));
+                        Symbol__Pair__ = symbol_new_from_linear_memory(Val::u32(1048640) /* "Pair" */, Val::u32(4)); // Symbol("Pair") /* DataKey::Pair */
                         payload = Symbol__Pair__.0;
                     }
                     _31[2] = arg_payload1;
                     _31[1] = arg_payload;
                     to_val9 = Val::u32((frame.wrapping_offset(8isize) as u64) as u32);
-                    pair_key = map_new_from_linear_memory(Val::u32(1048624), to_val9, Val::u32(2));
+                    pair_key = map_new_from_linear_memory(Val::u32(1048624) /* "a", "b" */, to_val9, Val::u32(2)); // PairKey { a, b }
                     _31[2] = pair_key.0;
                     _31[1] = payload;
-                    vec_new_from_linear_memory_25 = vec_new_from_linear_memory(to_val9, Val::u32(2));
+                    vec_new_from_linear_memory_25 = vec_new_from_linear_memory(to_val9, Val::u32(2)); // Vec[Val(payload), PairKey { a, b }]
                     has_contract_data_27 = has_contract_data(vec_new_from_linear_memory_25, StorageType::Persistent);
                     to_val = Val((has_contract_data_27.0 == 1u64) as u64);
                     return to_val;

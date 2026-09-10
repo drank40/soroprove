@@ -100,7 +100,9 @@ attributes #4 = { "spec.sig"="fn hello(flag: Flag) -> Result<Symbol, Error>" }
 attributes #5 = { memory(inaccessiblemem: readwrite) }
 
 !soroban.spec = !{!0, !1, !2}
+!soroban.rodata = !{!3}
 
 !0 = !{!"enum Flag { A = 0, B = 1, C = 2, D = 3, E = 4 }"}
 !1 = !{!"error Error { AnError = 1 }"}
 !2 = !{!"fn hello(flag: Flag) -> Result<Symbol, Error>"}
+!3 = !{!"1048576 53704563563167198dc68a50ebb7537045635631bc0404eaa49e3628"}

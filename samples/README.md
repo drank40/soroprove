@@ -236,14 +236,60 @@ structurer cannot place -- a jump into a region from outside it, which would
 mean an irreducible graph -- is emitted as a `loop { match __bb }` state
 machine with a comment saying so; the corpus has none.
 
+**Frames and storage.** A frame the host is handed as a position it reads
+Vals from (`vec_new_from_linear_memory`, the values of `map_new_..`) is a Val
+array, and when every slot is stored exactly once in the block of the one call
+that takes it, with every pointer derived from it flowing into that call and
+nowhere else, it is written as the literal at the call, through the prelude's
+`pos`, which is what the SDK's `Vec::from_array` does. Frame words are array
+elements otherwise. `read`'s key thus reads as the source wrote it:
+
+```rust
+pair_key = map_new_from_linear_memory(Val::u32(1048636) /* "a", "b" */, pos(&[a, b]), Val::u32(2)); // PairKey { a, b }
+vec_new_from_linear_memory_21 = vec_new_from_linear_memory(pos(&[Val::sym("Pair") /* DataKey::Pair */, pair_key]), Val::u32(2)); // DataKey::Pair(PairKey { a, b })
+has_contract_data_23 = has_contract_data(vec_new_from_linear_memory_21, StorageType::Persistent);
+```
+
+Every `put/get/has/del/extend_ttl_contract_data` call site is then collected
+into the contract's storage schema, in the header: durability, the key in the
+contract's terms, and the operations and functions that use it. Two passes
+over the functions make it interprocedural: a helper's returned shape, with
+its parameters as placeholders, is substituted at each call (`lc = f42(..) //
+BackstopDataKey::UserBalance(PoolUserKey { pool, user })`); a helper that uses
+a parameter as a key reports the access at its callers (`has: deposit via
+f45`); a symbol whose text position is constant only in a caller is read from
+the data itself, which `ponytail-wasm` passes along as `soroban.rodata`. The
+spec gives the names, the uses give the roles and the keys the spec never
+had:
+
+```
+// storage, from every put/get/has/del/extend_ttl call: durability, key, uses.
+//   persistent  DataKey::Pair(PairKey { a, b })   [has: read]
+//   persistent  Val::sym("f")   [put(Val::TRUE): set_flag]
+```
+
+and, from blend's backstop on mainnet, `instance Symbol("BToken") [put(..):
+__constructor, has: deposit via f45, get: deposit via f45, ..]` and
+`persistent BackstopDataKey::UserBalance(PoolUserKey { pool, user }) [has:
+f66, get: f66, extend_ttl: f66, ..]`. Making that possible needed the last
+piece of the wasm lowering: a typed `block`/`if`/`loop` result now travels
+through an entry-block slot, so the key constructors that select their case
+with a `br_table` return a value instead of bottom (38 -> 10 bottom returns
+across the corpus). Across the corpus, 32 binaries touch storage, 467 access
+entries; 109 keys are named after a spec type or a symbol, 316 stay a local
+of the function that built them (a value the model does not carry: a load, a
+helper's bottom, a computed symbol).
+
+
 What still reads as machine output: sub-word frame writes
 (`*(frame.wrapping_offset(16) as *mut u32) = 29`, a panic `Location`), because
 only whole aligned words become array elements; `llvm.*` intrinsics (15 call
 sites) as typed `extern "C"` declarations; a pointer parameter's pointee,
 whose layout the accesses give (`+0: u64, +8: u64`) but whose name the spec
-does not give, since it describes ScVal shapes, not memory; and a Val stored
-into a frame the host is not handed (a local `Option<Val>`), which stays a
-`u64` because nothing says it is a Val.
+does not give, since it describes ScVal shapes, not memory; and a storage key
+that is a helper's result the shape pass could not follow -- a value loaded
+from memory, a symbol computed at run time, a multi-value block -- which the
+schema lists as `f66::lc`, the function's own local, rather than as a shape.
 
 ## `errors.wasm` — vendored, 796 bytes
 

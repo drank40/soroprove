@@ -112,6 +112,10 @@ extern "C" {
     pub fn unknown() -> Val;
     pub fn unknown_i64() -> u64;
 }
+
+/// The linear-memory position of a value array, as the host takes one: the
+/// SDK's `Vec::from_array` and struct-to-map conversions pass exactly this.
+pub fn pos<const N: usize>(a: &[Val; N]) -> Val { Val::u32(a.as_ptr() as usize as u32) }
 "#;
 
 /// LLVM name -> Rust identifier: the part after the module dot for host and
@@ -207,7 +211,11 @@ fn sig(f: FunctionValue, sigs: &infer::Sigs) -> Result<(Vec<String>, String), St
 
 /// The `contractspecv0` lines ponytail-wasm attached as named metadata.
 pub fn spec_lines(m: &Module) -> Vec<String> {
-    m.get_global_metadata("soroban.spec")
+    meta_lines(m, "soroban.spec")
+}
+
+pub fn meta_lines(m: &Module, key: &str) -> Vec<String> {
+    m.get_global_metadata(key)
         .iter()
         .filter_map(|n| match n.get_node_values()?.first()? {
             inkwell::values::BasicMetadataValueEnum::MetadataValue(s) => {
@@ -354,7 +362,12 @@ impl Callbacks for Lift {
         let mut out = std::io::stdout().lock();
         if self.rust {
             let head = llvm(|l| header(&l.m, &l.sigs)).unwrap_or_else(|e| fatal(&e));
-            let spec = rs::Spec::parse(llvm(|l| spec_lines(&l.m)));
+            let spec = rs::Spec::parse(
+                llvm(|l| spec_lines(&l.m)),
+                llvm(|l| meta_lines(&l.m, "soroban.keys")),
+                llvm(|l| meta_lines(&l.m, "soroban.strings")),
+                llvm(|l| meta_lines(&l.m, "soroban.rodata")),
+            );
             let text = rs::emit(tcx, &env, &head, &bodies, &spec).unwrap_or_else(|e| fatal(&e));
             std::io::Write::write_all(&mut out, text.as_bytes()).expect("write");
         } else {

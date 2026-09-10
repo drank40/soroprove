@@ -71,6 +71,10 @@ extern "C" {
     pub fn unknown_i64() -> u64;
 }
 
+/// The linear-memory position of a value array, as the host takes one: the
+/// SDK's `Vec::from_array` and struct-to-map conversions pass exactly this.
+pub fn pos<const N: usize>(a: &[Val; N]) -> Val { Val::u32(a.as_ptr() as usize as u32) }
+
 // contractspecv0, the ABI the contract declares. ScVal shapes, not memory layout.
 //   enum Flag { A = 0, B = 1, C = 2, D = 3, E = 4 }
 //   error Error { AnError = 1 }
@@ -92,6 +96,10 @@ extern "C" {
     /// wasm import `v.g`
     pub fn vec_new_from_linear_memory(a0: Val, a1: Val) -> Val;
 }
+
+// storage, from every put/get/has/del/extend_ttl call: durability, key, uses.
+//   persistent  DataKey::Pair(PairKey { a, b })   [has: read]
+//   persistent  Val::sym("f")   [put(Val::TRUE): set_flag]
 
 /// spec: fn pick(f: Flag) -> Result<Symbol, Error>
 pub fn pick(mut f: Val) -> Val {
@@ -130,8 +138,6 @@ pub fn pick(mut f: Val) -> Val {
 /// spec: fn read(a: Address, b: Address) -> bool
 pub fn read(mut a: Val, mut b: Val) -> Val {
     unsafe {
-        let mut frame: *mut u8;
-        let mut frame73: *mut u8;
         let mut arg_payload: u64;
         let mut arg_payload1: u64;
         let mut and: u64;
@@ -139,13 +145,7 @@ pub fn read(mut a: Val, mut b: Val) -> Val {
         let mut pair_key: Val;
         let mut vec_new_from_linear_memory_21: Val;
         let mut has_contract_data_23: Val;
-        let mut _27: [u64; 2];
-        let mut _29: [u64; 2];
         let mut to_val: Val;
-        _27 = [0u64; 2];
-        frame = (&raw mut _27) as *mut u8;
-        _29 = [0u64; 2];
-        frame73 = (&raw mut _29) as *mut u8;
         arg_payload = a.0;
         arg_payload1 = b.0;
         and = arg_payload & 255u64;
@@ -153,12 +153,8 @@ pub fn read(mut a: Val, mut b: Val) -> Val {
         match and {
             Tag::AddressObject => {
                 if cmp_not_not75 {
-                    _29[1] = arg_payload1;
-                    _29[0] = arg_payload;
-                    pair_key = map_new_from_linear_memory(Val::u32(1048636), Val::u32((frame73 as u64) as u32), Val::u32(2));
-                    _27[1] = pair_key.0;
-                    _27[0] = Val::sym("Pair") /* DataKey::Pair */.0;
-                    vec_new_from_linear_memory_21 = vec_new_from_linear_memory(Val::u32((frame as u64) as u32), Val::u32(2));
+                    pair_key = map_new_from_linear_memory(Val::u32(1048636) /* "a", "b" */, pos(&[a, b]), Val::u32(2)); // PairKey { a, b }
+                    vec_new_from_linear_memory_21 = vec_new_from_linear_memory(pos(&[Val::sym("Pair") /* DataKey::Pair */, pair_key]), Val::u32(2)); // DataKey::Pair(PairKey { a, b })
                     has_contract_data_23 = has_contract_data(vec_new_from_linear_memory_21, StorageType::Persistent);
                     to_val = Val((has_contract_data_23.0 == 1u64) as u64);
                     return to_val;
