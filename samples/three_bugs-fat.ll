@@ -61,7 +61,7 @@ declare %Val @map.map_new_from_linear_memory(%Val, %Val, %Val) #7
 
 declare %Val @vec.vec_new_from_linear_memory(%Val, %Val) #8
 
-define %Val @read(%Val %0, %Val %1) {
+define "wasm.type"="i64" %Val @read(%Val "wasm.type"="i64" %0, %Val "wasm.type"="i64" %1) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -76,7 +76,7 @@ entry:
   ret %Val %to_val
 }
 
-define %Val @pick(%Val %0) {
+define "wasm.type"="i64" %Val @pick(%Val "wasm.type"="i64" %0) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -144,7 +144,7 @@ fall8:                                            ; preds = %fall7
   ]
 }
 
-define %Val @set_flag() {
+define "wasm.type"="i64" %Val @set_flag() {
 entry:
   %l0 = alloca i64, align 8
   store i64 0, ptr %l0, align 4
@@ -156,7 +156,7 @@ entry:
   ret %Val %v_void
 }
 
-define i64 @f7(i64 %0, i64 %1) {
+define "wasm.type"="i64" i64 @f7(i64 "wasm.type"="i64" %0, i64 "wasm.type"="i64" %1) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -234,7 +234,7 @@ fall4:                                            ; preds = %fall3
   ret i64 %get31
 }
 
-define void @f10(i64 %0) {
+define void @f10(i64 "wasm.type"="i32" %0) {
 entry:
   %l0 = alloca i64, align 8
   store i64 %0, ptr %l0, align 4
@@ -242,7 +242,7 @@ entry:
   unreachable
 }
 
-define i64 @f11(i64 %0, i64 %1, i64 %2) {
+define "wasm.type"="i32" i64 @f11(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i64" %1, i64 "wasm.type"="i64" %2) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -259,7 +259,7 @@ entry:
   ret i64 %zext
 }
 
-define i64 @f12(i64 %0, i64 %1, i64 %2) {
+define "wasm.type"="i64" i64 @f12(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i32" %1, i64 "wasm.type"="i32" %2) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -274,7 +274,7 @@ entry:
   ret i64 %lc
 }
 
-define i64 @f13(i64 %0, i64 %1, i64 %2, i64 %3, i64 %4) {
+define "wasm.type"="i64" i64 @f13(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i32" %1, i64 "wasm.type"="i32" %2, i64 "wasm.type"="i32" %3, i64 "wasm.type"="i32" %4) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -295,7 +295,7 @@ entry:
   ret i64 %lc
 }
 
-define void @f14(i64 %0, i64 %1, i64 %2) {
+define void @f14(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i32" %1, i64 "wasm.type"="i32" %2) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -350,7 +350,7 @@ fall3:                                            ; preds = %entry
   br label %c1
 }
 
-define i64 @f15(i64 %0, i64 %1) {
+define "wasm.type"="i64" i64 @f15(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i64" %1) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -362,7 +362,7 @@ entry:
   ret i64 %lc
 }
 
-define i64 @f16(i64 %0, i64 %1, i64 %2, i64 %3) {
+define "wasm.type"="i64" i64 @f16(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i64" %1, i64 "wasm.type"="i64" %2, i64 "wasm.type"="i64" %3) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -380,7 +380,7 @@ entry:
   ret i64 %lc
 }
 
-define i64 @f17(i64 %0, i64 %1, i64 %2) {
+define "wasm.type"="i64" i64 @f17(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i32" %1, i64 "wasm.type"="i32" %2) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -401,7 +401,7 @@ entry:
   ret i64 %payload
 }
 
-define i64 @f18(i64 %0, i64 %1, i64 %2, i64 %3, i64 %4) {
+define "wasm.type"="i64" i64 @f18(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i32" %1, i64 "wasm.type"="i32" %2, i64 "wasm.type"="i32" %3, i64 "wasm.type"="i32" %4) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -442,7 +442,7 @@ fall2:                                            ; preds = %entry
   unreachable
 }
 
-define i64 @f19(i64 %0, i64 %1, i64 %2) {
+define "wasm.type"="i64" i64 @f19(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i32" %1, i64 "wasm.type"="i32" %2) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -463,7 +463,7 @@ entry:
   ret i64 %payload
 }
 
-define i64 @f20(i64 %0, i64 %1) {
+define "wasm.type"="i64" i64 @f20(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i64" %1) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -476,7 +476,7 @@ entry:
   ret i64 %payload
 }
 
-define i64 @f21(i64 %0, i64 %1, i64 %2) {
+define "wasm.type"="i64" i64 @f21(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i64" %1, i64 "wasm.type"="i64" %2) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -492,7 +492,7 @@ entry:
   ret i64 %payload
 }
 
-define i64 @f22(i64 %0, i64 %1, i64 %2, i64 %3) {
+define "wasm.type"="i64" i64 @f22(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i64" %1, i64 "wasm.type"="i64" %2, i64 "wasm.type"="i64" %3) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -512,7 +512,7 @@ entry:
   ret i64 %payload
 }
 
-define void @f23(i64 %0, i64 %1, i64 %2) {
+define void @f23(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i32" %1, i64 "wasm.type"="i32" %2) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -661,7 +661,7 @@ fall18:                                           ; preds = %c10
   br label %h8
 }
 
-define void @f24(i64 %0, i64 %1, i64 %2) {
+define void @f24(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i32" %1, i64 "wasm.type"="i32" %2) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -679,7 +679,7 @@ entry:
   unreachable
 }
 
-define void @f25(i64 %0, i64 %1, i64 %2) {
+define void @f25(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i32" %1, i64 "wasm.type"="i32" %2) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8

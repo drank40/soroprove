@@ -18,6 +18,7 @@ extern crate rustc_interface;
 extern crate rustc_middle;
 extern crate rustc_span;
 
+mod infer;
 mod mir;
 mod rs;
 
@@ -89,6 +90,21 @@ impl Val {
 #[derive(Clone, Copy)]
 pub enum StorageType { Temporary = 0, Persistent = 1, Instance = 2 }
 
+/// The tag in a `Val`'s low byte. `x & 0xff == Tag::X` is the SDK's `get_tag`.
+pub mod Tag {
+    pub const False: u64 = 0; pub const True: u64 = 1; pub const Void: u64 = 2; pub const Error: u64 = 3;
+    pub const U32Val: u64 = 4; pub const I32Val: u64 = 5; pub const U64Small: u64 = 6; pub const I64Small: u64 = 7;
+    pub const TimepointSmall: u64 = 8; pub const DurationSmall: u64 = 9; pub const U128Small: u64 = 10;
+    pub const I128Small: u64 = 11; pub const U256Small: u64 = 12; pub const I256Small: u64 = 13;
+    pub const SymbolSmall: u64 = 14; pub const SmallCodeUpperBound: u64 = 15; pub const ObjectCodeLowerBound: u64 = 63;
+    pub const U64Object: u64 = 64; pub const I64Object: u64 = 65; pub const TimepointObject: u64 = 66;
+    pub const DurationObject: u64 = 67; pub const U128Object: u64 = 68; pub const I128Object: u64 = 69;
+    pub const U256Object: u64 = 70; pub const I256Object: u64 = 71; pub const BytesObject: u64 = 72;
+    pub const StringObject: u64 = 73; pub const SymbolObject: u64 = 74; pub const VecObject: u64 = 75;
+    pub const MapObject: u64 = 76; pub const AddressObject: u64 = 77; pub const MuxedAddressObject: u64 = 78;
+    pub const ObjectCodeUpperBound: u64 = 79; pub const Bad: u64 = 127;
+}
+
 extern "C" {
     /// wasm `unreachable`: the host traps.
     pub fn trap() -> !;
@@ -142,8 +158,20 @@ pub fn rs_ty(t: BasicTypeEnum) -> Result<&'static str, String> {
     })
 }
 
-fn sig(f: FunctionValue) -> Result<(Vec<String>, String), String> {
-    // A host function's `soroban.sig` says which i64 is really a StorageType.
+fn pty_str(t: infer::PTy) -> &'static str {
+    match t {
+        infer::PTy::Int => "u64",
+        infer::PTy::Ptr => "*mut u8",
+        infer::PTy::Val => "Val",
+        infer::PTy::Storage => "StorageType",
+    }
+}
+
+/// A function's Rust signature. A host function's comes from its
+/// `soroban.sig`; a lifted function's from `infer`; anything else from the
+/// LLVM types.
+fn sig(f: FunctionValue, sigs: &infer::Sigs) -> Result<(Vec<String>, String), String> {
+    let name = f.get_name().to_string_lossy().into_owned();
     let storage: Vec<bool> = f
         .get_string_attribute(AttributeLoc::Function, "soroban.sig")
         .and_then(|a| a.get_string_value().to_str().ok().map(|s| s.to_owned()))
@@ -157,16 +185,21 @@ fn sig(f: FunctionValue) -> Result<(Vec<String>, String), String> {
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            let t = if storage.get(i).copied().unwrap_or(false) { "StorageType" } else { rs_ty(p.get_type())? };
+            let t = match sigs.param(&name, i) {
+                Some(k) => pty_str(k),
+                None if storage.get(i).copied().unwrap_or(false) => "StorageType",
+                None => rs_ty(p.get_type())?,
+            };
             Ok(format!("a{i}: {t}"))
         })
         .collect::<Result<Vec<_>, String>>()?;
     let ret = if mir::noreturn(f) {
         " -> !".into()
     } else {
-        match f.get_type().get_return_type() {
-            None => String::new(),
-            Some(t) => format!(" -> {}", rs_ty(t)?),
+        match (f.get_type().get_return_type(), sigs.ret(&name)) {
+            (None, _) => String::new(),
+            (Some(_), Some(k)) => format!(" -> {}", pty_str(k)),
+            (Some(t), None) => format!(" -> {}", rs_ty(t)?),
         }
     };
     Ok((params, ret))
@@ -174,7 +207,7 @@ fn sig(f: FunctionValue) -> Result<(Vec<String>, String), String> {
 
 /// The stub crate's header: types, externs, statics. Shared by the stub and
 /// by the Rust output, which appends the lifted bodies to it.
-pub fn header(m: &Module) -> Result<String, String> {
+pub fn header(m: &Module, sigs: &infer::Sigs) -> Result<String, String> {
     let mut s = String::from(PRELUDE);
     let mut g = m.get_first_global();
     while let Some(gv) = g {
@@ -198,7 +231,7 @@ pub fn header(m: &Module) -> Result<String, String> {
         {
             continue;
         }
-        let (params, ret) = sig(f)?;
+        let (params, ret) = sig(f, sigs)?;
         if let Some(a) = f.get_string_attribute(AttributeLoc::Function, "soroban.import") {
             let _ = writeln!(ext, "    /// wasm import `{}`", a.get_string_value().to_string_lossy());
         }
@@ -212,13 +245,13 @@ pub fn header(m: &Module) -> Result<String, String> {
 
 /// One empty function per defined LLVM function, so the TyCtxt has a DefId
 /// and a signature for each body ponytail-mir is about to build.
-fn stubs(m: &Module) -> Result<String, String> {
+fn stubs(m: &Module, sigs: &infer::Sigs) -> Result<String, String> {
     let mut s = String::new();
     for f in m.get_functions() {
         if f.count_basic_blocks() == 0 {
             continue;
         }
-        let (params, ret) = sig(f)?;
+        let (params, ret) = sig(f, sigs)?;
         let vis = if f.get_linkage() == Linkage::Internal { "" } else { "pub " };
         let _ = writeln!(s, "{vis}fn {}({}){ret} {{ loop {{}} }}", rs_name(&f.get_name().to_string_lossy()), params.join(", "));
     }
@@ -231,6 +264,7 @@ fn stubs(m: &Module) -> Result<String, String> {
 struct Llvm {
     m: Module<'static>,
     fns: HashMap<String, FunctionValue<'static>>,
+    sigs: infer::Sigs,
 }
 unsafe impl Send for Llvm {}
 unsafe impl Sync for Llvm {}
@@ -259,7 +293,7 @@ fn lifted_build_mir<'tcx>(tcx: TyCtxt<'tcx>, def: LocalDefId) -> Body<'tcx> {
     let name = tcx.item_name(def.to_def_id()).to_string();
     let Some(f) = llvm(|l| l.fns.get(&name).copied()) else { return orig(tcx, def) };
     let env = mir::Env::new(tcx);
-    match mir::build(&env, f, def.to_def_id()) {
+    match llvm(|l| mir::build(&env, f, def.to_def_id(), &l.sigs)) {
         Ok(body) => body,
         Err(e) => {
             FAILED.lock().unwrap().push((name, e));
@@ -298,7 +332,7 @@ impl Callbacks for Lift {
             .collect();
         let mut out = std::io::stdout().lock();
         if self.rust {
-            let head = llvm(|l| header(&l.m)).unwrap_or_else(|e| fatal(&e));
+            let head = llvm(|l| header(&l.m, &l.sigs)).unwrap_or_else(|e| fatal(&e));
             let text = rs::emit(tcx, &env, &head, &bodies).unwrap_or_else(|e| fatal(&e));
             std::io::Write::write_all(&mut out, text.as_bytes()).expect("write");
         } else {
@@ -337,8 +371,9 @@ fn main() {
         .filter(|f| f.count_basic_blocks() > 0)
         .map(|f| (rs_name(&f.get_name().to_string_lossy()), f))
         .collect();
-    let stub = format!("{}\n{}", header(&m).unwrap_or_else(|e| fatal(&e)), stubs(&m).unwrap_or_else(|e| fatal(&e)));
-    LLVM.set(Llvm { m, fns }).ok().expect("set once");
+    let sigs = infer::infer(&m);
+    let stub = format!("{}\n{}", header(&m, &sigs).unwrap_or_else(|e| fatal(&e)), stubs(&m, &sigs).unwrap_or_else(|e| fatal(&e)));
+    LLVM.set(Llvm { m, fns, sigs }).ok().expect("set once");
 
     // The dump filter below also matches item paths, and a derived impl's
     // path carries its file name: keep "ponytail" out of the stub's, and send

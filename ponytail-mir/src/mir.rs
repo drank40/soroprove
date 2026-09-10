@@ -6,8 +6,11 @@
 //! constructor an aggregate and its payload a field projection; a
 //! `StorageType` literal is an enum variant, a runtime one a call to
 //! `core::intrinsics::transmute`, which rustc lowers to its own `Transmute`
-//! cast; a frame is a `[u64; N]` local whose raw address is taken. Every LLVM
-//! operation that has no MIR equivalent is an error, never a guess.
+//! cast; a frame is a `[u64; N]` local, its slots array elements and its
+//! address `&raw mut`. Parameters and returns take the types `infer` found
+//! for them -- `*mut u8`, `Val`, `StorageType` or `u64` -- and every crossing
+//! between those and the model's integers is an explicit cast or projection.
+//! Every LLVM operation that has no MIR equivalent is an error, never a guess.
 //!
 //! The body is handed to rustc as the function's `mir_built`, so rustc
 //! borrow-checks it, validates it after every pass and optimizes it exactly
@@ -18,8 +21,8 @@ use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock as LBlock;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{
-    AnyValue, AsValueRef, BasicValueEnum, CallSiteValue, FunctionValue, InstructionOpcode, InstructionValue,
-    Operand as LOperand, PhiValue,
+    AnyValue, AsValueRef, BasicValue, BasicValueEnum, CallSiteValue, FunctionValue, InstructionOpcode,
+    InstructionValue, Operand as LOperand, PhiValue,
 };
 use inkwell::IntPredicate;
 use rustc_abi::{FieldIdx, Size, VariantIdx};
@@ -30,6 +33,8 @@ use rustc_middle::mir::interpret::{Pointer, Scalar};
 use rustc_middle::mir::*;
 use rustc_middle::ty::{self, List, Ty, TyCtxt};
 use rustc_span::{sym, Spanned, Symbol, DUMMY_SP};
+
+use crate::infer::{PTy, Sigs};
 
 type R<T> = Result<T, String>;
 
@@ -103,14 +108,39 @@ impl<'tcx> Env<'tcx> {
         })
     }
 
+    /// The MIR type of an inferred parameter or return type.
+    pub fn pty(&self, t: PTy) -> Ty<'tcx> {
+        match t {
+            PTy::Int => self.tcx.types.u64,
+            PTy::Ptr => self.u8p,
+            PTy::Val => self.val,
+            PTy::Storage => self.storage,
+        }
+    }
+
+    /// The inferred kind a MIR type stands for.
+    fn kind_of_ty(&self, t: Ty<'tcx>) -> PTy {
+        if t == self.val {
+            PTy::Val
+        } else if t == self.storage {
+            PTy::Storage
+        } else if t.is_raw_ptr() {
+            PTy::Ptr
+        } else {
+            PTy::Int
+        }
+    }
+
     /// The function's return type: LLVM `noreturn` is Rust `!`.
-    pub fn ret_ty(&self, f: FunctionValue) -> R<Ty<'tcx>> {
+    pub fn ret_ty(&self, f: FunctionValue, sigs: &Sigs) -> R<Ty<'tcx>> {
         if noreturn(f) {
             return Ok(self.tcx.types.never);
         }
-        match f.get_type().get_return_type() {
-            Some(t) => self.ty(t),
-            None => Ok(self.tcx.types.unit),
+        let name = f.get_name().to_string_lossy().into_owned();
+        match (f.get_type().get_return_type(), sigs.ret(&name)) {
+            (None, _) => Ok(self.tcx.types.unit),
+            (Some(_), Some(k)) => Ok(self.pty(k)),
+            (Some(t), None) => self.ty(t),
         }
     }
 
@@ -148,10 +178,30 @@ fn callee_name(i: InstructionValue) -> Option<String> {
     Some(cs.get_called_fn_value()?.get_name().to_string_lossy().into_owned())
 }
 
+fn value_operand<'a>(i: InstructionValue<'a>, k: u32) -> Option<BasicValueEnum<'a>> {
+    match i.get_operand(k) {
+        Some(LOperand::Value(v)) => Some(v),
+        _ => None,
+    }
+}
+
+fn const_of(v: BasicValueEnum) -> Option<u64> {
+    match v {
+        BasicValueEnum::IntValue(i) if i.is_constant_int() => i.get_zero_extended_constant(),
+        _ => None,
+    }
+}
+
 struct B<'a, 'tcx> {
     env: &'a Env<'tcx>,
+    sigs: &'a Sigs,
     locals: IndexVec<Local, LocalDecl<'tcx>>,
     map: HashMap<usize, Local>,
+    /// Locals whose MIR type is not the model's integer: inferred parameters
+    /// and results of calls to functions with an inferred return type.
+    kinds: HashMap<Local, PTy>,
+    /// Frame allocas: the `[u64; N]` local and N.
+    frames: HashMap<usize, (Local, u64)>,
     blocks: IndexVec<BasicBlock, BasicBlockData<'tcx>>,
     bbmap: HashMap<usize, BasicBlock>,
     debug: Vec<VarDebugInfo<'tcx>>,
@@ -244,25 +294,98 @@ impl<'a, 'tcx> B<'a, 'tcx> {
         Operand::Copy(Place::from(t))
     }
 
-    fn operand(&mut self, v: BasicValueEnum<'a>, st: &mut Stmts<'tcx>) -> R<Operand<'tcx>> {
+    /// The place an operand denotes, copying a constant into a temp if needed.
+    fn as_place(&mut self, op: Operand<'tcx>, ty: Ty<'tcx>, st: &mut Stmts<'tcx>) -> Place<'tcx> {
+        match op {
+            Operand::Copy(p) | Operand::Move(p) => p,
+            other => {
+                let t = self.temp(ty);
+                self.assign(st, Place::from(t), Rvalue::Use(other));
+                Place::from(t)
+            }
+        }
+    }
+
+    /// `op`, of inferred kind `from`, as the model's `u64`.
+    fn to_int(&mut self, op: Operand<'tcx>, from: PTy, st: &mut Stmts<'tcx>) -> Operand<'tcx> {
+        let tcx = self.tcx();
+        match from {
+            PTy::Int => op,
+            PTy::Ptr => self.cast(op, CastKind::PointerExposeProvenance, tcx.types.u64, st),
+            PTy::Val => {
+                let p = self.as_place(op, self.env.val, st);
+                Operand::Copy(tcx.mk_place_field(p, FieldIdx::ZERO, tcx.types.u64))
+            }
+            PTy::Storage => {
+                let p = self.as_place(op, self.env.storage, st);
+                let t = self.temp(tcx.types.u64);
+                self.assign(st, Place::from(t), Rvalue::Discriminant(p));
+                Operand::Copy(Place::from(t))
+            }
+        }
+    }
+
+    /// `op`, of kind `from`, as kind `to`. Every crossing is one explicit
+    /// cast or projection; an integer becoming a StorageType is the one that
+    /// needs a call (`transmute`), which ends the block.
+    fn coerce(&mut self, cur: &mut Option<BasicBlock>, st: &mut Stmts<'tcx>, op: Operand<'tcx>, from: PTy, to: PTy) -> Operand<'tcx> {
+        if from == to {
+            return op;
+        }
+        let tcx = self.tcx();
+        let i = self.to_int(op, from, st);
+        match to {
+            PTy::Int => i,
+            PTy::Ptr => {
+                let u = self.cast(i, CastKind::IntToInt, tcx.types.usize, st);
+                self.cast(u, CastKind::PointerWithExposedProvenance, self.env.u8p, st)
+            }
+            PTy::Val => {
+                let t = self.temp(self.env.val);
+                let rv = self.val_of(i);
+                self.assign(st, Place::from(t), rv);
+                Operand::Copy(Place::from(t))
+            }
+            PTy::Storage => {
+                let t = self.temp(self.env.storage);
+                let f = Operand::function_handle(tcx, self.env.transmute, [tcx.types.u64.into(), self.env.storage.into()], DUMMY_SP);
+                self.call(cur, st, f, vec![i], Place::from(t), false);
+                Operand::Copy(Place::from(t))
+            }
+        }
+    }
+
+    /// The inferred kind of an LLVM value: a refined local's, or its type's.
+    fn kind_of(&self, v: BasicValueEnum<'a>) -> R<PTy> {
+        if let Some(l) = self.map.get(&key(v)) {
+            if let Some(k) = self.kinds.get(l) {
+                return Ok(*k);
+            }
+            return Ok(self.env.kind_of_ty(self.locals[*l].ty));
+        }
+        Ok(self.env.kind_of_ty(self.env.ty(v.get_type())?))
+    }
+
+    /// An LLVM value as a MIR operand in its own type, with that type's kind.
+    fn raw(&mut self, v: BasicValueEnum<'a>, st: &mut Stmts<'tcx>) -> R<(Operand<'tcx>, PTy)> {
         if let Some(&l) = self.map.get(&key(v)) {
-            return Ok(Operand::Copy(Place::from(l)));
+            let k = self.kinds.get(&l).copied().unwrap_or_else(|| self.env.kind_of_ty(self.locals[l].ty));
+            return Ok((Operand::Copy(Place::from(l)), k));
         }
         let ty = self.env.ty(v.get_type())?;
-        match v {
-            BasicValueEnum::IntValue(i) if i.is_constant_int() => {
-                Ok(self.konst(i.get_zero_extended_constant().unwrap_or(0) as u128, ty))
-            }
-            BasicValueEnum::IntValue(i) if i.is_undef() => Ok(self.konst(0, ty)),
-            BasicValueEnum::PointerValue(p) if p.is_null() => Ok(self.konst(0, ty)),
+        let op = match v {
+            BasicValueEnum::IntValue(i) if i.is_constant_int() => self.konst(i.get_zero_extended_constant().unwrap_or(0) as u128, ty),
+            BasicValueEnum::IntValue(i) if i.is_undef() => self.konst(0, ty),
+            BasicValueEnum::PointerValue(p) if p.is_null() => self.konst(0, ty),
             BasicValueEnum::PointerValue(p) if p.is_const() => {
                 if let Some(a) = const_addr(p) {
-                    return Ok(self.konst(a as u128, ty));
-                }
-                let n = p.get_name().to_string_lossy().to_uppercase();
-                match self.env.statics.get(&n).copied() {
-                    Some(d) => Ok(self.static_ptr(d, st)),
-                    None => Err(format!("unsupported constant pointer {}", p.print_to_string())),
+                    self.konst(a as u128, ty)
+                } else {
+                    let n = p.get_name().to_string_lossy().to_uppercase();
+                    match self.env.statics.get(&n).copied() {
+                        Some(d) => self.static_ptr(d, st),
+                        None => return Err(format!("unsupported constant pointer {}", p.print_to_string())),
+                    }
                 }
             }
             BasicValueEnum::StructValue(s) if s.is_const() => {
@@ -272,11 +395,21 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                 };
                 let t = self.temp(self.env.val);
                 let k = self.konst(bits as u128, self.tcx().types.u64);
-                self.assign(st, Place::from(t), self.val_of(k));
-                Ok(Operand::Copy(Place::from(t)))
+                let rv = self.val_of(k);
+                self.assign(st, Place::from(t), rv);
+                Operand::Copy(Place::from(t))
             }
-            other => Err(format!("unsupported operand {}", other.print_to_string())),
-        }
+            other => return Err(format!("unsupported operand {}", other.print_to_string())),
+        };
+        Ok((op, self.env.kind_of_ty(ty)))
+    }
+
+    /// An LLVM value as the model's integer, or as itself when it is not one
+    /// of the four inferred kinds (`%Val`, bool, narrow ints).
+    fn operand(&mut self, v: BasicValueEnum<'a>, st: &mut Stmts<'tcx>) -> R<Operand<'tcx>> {
+        let (op, kind) = self.raw(v, st)?;
+        let refined = self.map.get(&key(v)).is_some_and(|l| self.kinds.contains_key(l));
+        Ok(if refined { self.to_int(op, kind, st) } else { op })
     }
 
     fn val_of(&self, payload: Operand<'tcx>) -> Rvalue<'tcx> {
@@ -287,16 +420,16 @@ impl<'a, 'tcx> B<'a, 'tcx> {
     }
 
     fn op(&mut self, i: InstructionValue<'a>, k: u32, st: &mut Stmts<'tcx>) -> R<Operand<'tcx>> {
-        match i.get_operand(k) {
-            Some(LOperand::Value(v)) => self.operand(v, st),
-            _ => Err(format!("operand {k} of {} is not a value", i.print_to_string())),
+        match value_operand(i, k) {
+            Some(v) => self.operand(v, st),
+            None => Err(format!("operand {k} of {} is not a value", i.print_to_string())),
         }
     }
 
     fn opty(&self, i: InstructionValue<'a>, k: u32) -> R<Ty<'tcx>> {
-        match i.get_operand(k) {
-            Some(LOperand::Value(v)) => self.env.ty(v.get_type()),
-            _ => Err("operand is not a value".into()),
+        match value_operand(i, k) {
+            Some(v) => self.env.ty(v.get_type()),
+            None => Err("operand is not a value".into()),
         }
     }
 
@@ -315,6 +448,29 @@ impl<'a, 'tcx> B<'a, 'tcx> {
         self.locals[self.map[&key(i)]].ty
     }
 
+    /// A frame slot named by an address operand: the alloca itself, or a
+    /// constant `gep` off it, when the access is a whole aligned word.
+    fn frame_slot(&self, addr: BasicValueEnum<'a>, width: Ty<'tcx>) -> Option<Place<'tcx>> {
+        if width != self.tcx().types.u64 {
+            return None;
+        }
+        let i = addr.as_instruction_value()?;
+        let (base, off) = match i.get_opcode() {
+            InstructionOpcode::Alloca => (i, 0),
+            InstructionOpcode::GetElementPtr if i.get_num_operands() == 2 => {
+                let b = value_operand(i, 0)?.as_instruction_value()?;
+                (b, const_of(value_operand(i, 1)?)?)
+            }
+            _ => return None,
+        };
+        let (arr, words) = *self.frames.get(&key(base))?;
+        if off % 8 != 0 || off / 8 >= words {
+            return None;
+        }
+        let elem = PlaceElem::ConstantIndex { offset: off / 8, min_length: words, from_end: false };
+        Some(Place::from(arr).project_deeper(&[elem], self.tcx()))
+    }
+
     /// `*(p as *mut ty)`, as a place. Every pointer the model carries is
     /// `*mut u8`, so a byte access needs no cast.
     fn deref(&mut self, p: Operand<'tcx>, ty: Ty<'tcx>, st: &mut Stmts<'tcx>) -> Place<'tcx> {
@@ -331,6 +487,31 @@ impl<'a, 'tcx> B<'a, 'tcx> {
             }
         };
         tcx.mk_place_deref(place)
+    }
+
+    /// The pointer operand of an `inttoptr`: a pointer-typed value stays a
+    /// pointer, `p + k` off one is an offset, anything else is exposed.
+    fn addr(&mut self, cur: &mut Option<BasicBlock>, st: &mut Stmts<'tcx>, src: BasicValueEnum<'a>) -> R<Operand<'tcx>> {
+        let tcx = self.tcx();
+        let (op, kind) = self.raw(src, st)?;
+        if kind == PTy::Ptr {
+            return Ok(op);
+        }
+        if let Some(add) = src.as_instruction_value().filter(|i| i.get_opcode() == InstructionOpcode::Add) {
+            for (pk, ok) in [(0, 1), (1, 0)] {
+                let Some(pv) = value_operand(add, pk) else { continue };
+                if self.kind_of(pv)? != PTy::Ptr {
+                    continue;
+                }
+                let (p, _) = self.raw(pv, st)?;
+                let k = self.op(add, ok, st)?;
+                let k = self.cast(k, CastKind::IntToInt, tcx.types.isize, st);
+                let t = self.temp(self.env.u8p);
+                self.assign(st, Place::from(t), Rvalue::BinaryOp(BinOp::Offset, Box::new((p, k))));
+                return Ok(Operand::Copy(Place::from(t)));
+            }
+        }
+        Ok(self.coerce(cur, st, op, kind, PTy::Ptr))
     }
 
     /// The block for an edge `from -> to`: `to` itself, or a fresh block that
@@ -380,17 +561,6 @@ impl<'a, 'tcx> B<'a, 'tcx> {
         Ok(())
     }
 
-    /// An integer where the ABI says `StorageType`: `transmute::<u64, StorageType>`,
-    /// the one conversion Rust has for it. rustc lowers the call to its own
-    /// `Transmute` cast in runtime MIR.
-    fn to_storage(&mut self, cur: &mut Option<BasicBlock>, st: &mut Stmts<'tcx>, op: Operand<'tcx>, from: Ty<'tcx>) -> Operand<'tcx> {
-        let tcx = self.tcx();
-        let t = self.temp(self.env.storage);
-        let f = Operand::function_handle(tcx, self.env.transmute, [from.into(), self.env.storage.into()], DUMMY_SP);
-        self.call(cur, st, f, vec![op], Place::from(t), false);
-        Operand::Copy(Place::from(t))
-    }
-
     fn block(&mut self, lb: LBlock<'a>) -> R<()> {
         let tcx = self.tcx();
         let mut cur = Some(self.bbmap[&(lb.as_mut_ptr() as usize)]);
@@ -413,6 +583,7 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                     let words = bytes.div_ceil(8).max(1);
                     let arr_ty = Ty::new_array(tcx, tcx.types.u64, words);
                     let arr = self.temp(arr_ty);
+                    self.frames.insert(key(i), (arr, words));
                     let zero = self.konst(0, tcx.types.u64);
                     self.assign(&mut st, Place::from(arr), Rvalue::Repeat(zero, ty::Const::from_target_usize(tcx, words)));
                     let raw = self.temp(Ty::new_mut_ptr(tcx, arr_ty));
@@ -422,16 +593,28 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                 }
                 Load => {
                     let ty = self.res_ty(i);
-                    let p = self.op(i, 0, &mut st)?;
-                    let src = self.deref(p, ty, &mut st);
                     let dst = self.res(i);
+                    let addr = value_operand(i, 0).ok_or("load address")?;
+                    let src = match self.frame_slot(addr, ty) {
+                        Some(slot) => slot,
+                        None => {
+                            let p = self.op(i, 0, &mut st)?;
+                            self.deref(p, ty, &mut st)
+                        }
+                    };
                     self.assign(&mut st, dst, Rvalue::Use(Operand::Copy(src)));
                 }
                 Store => {
                     let v = self.op(i, 0, &mut st)?;
                     let ty = self.opty(i, 0)?;
-                    let p = self.op(i, 1, &mut st)?;
-                    let dst = self.deref(p, ty, &mut st);
+                    let addr = value_operand(i, 1).ok_or("store address")?;
+                    let dst = match self.frame_slot(addr, ty) {
+                        Some(slot) => slot,
+                        None => {
+                            let p = self.op(i, 1, &mut st)?;
+                            self.deref(p, ty, &mut st)
+                        }
+                    };
                     self.assign(&mut st, dst, Rvalue::Use(v));
                 }
                 GetElementPtr => {
@@ -508,15 +691,14 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                 }
                 PtrToInt => {
                     let p = self.op(i, 0, &mut st)?;
-                    let u = self.cast(p, CastKind::PointerExposeProvenance, tcx.types.usize, &mut st);
                     let (dst, ty) = (self.res(i), self.res_ty(i));
-                    self.assign(&mut st, dst, Rvalue::Cast(CastKind::IntToInt, u, ty));
+                    self.assign(&mut st, dst, Rvalue::Cast(CastKind::PointerExposeProvenance, p, ty));
                 }
                 IntToPtr => {
-                    let a = self.op(i, 0, &mut st)?;
-                    let u = self.cast(a, CastKind::IntToInt, tcx.types.usize, &mut st);
+                    let src = value_operand(i, 0).ok_or("inttoptr operand")?;
+                    let p = self.addr(&mut cur, &mut st, src)?;
                     let dst = self.res(i);
-                    self.assign(&mut st, dst, Rvalue::Cast(CastKind::PointerWithExposedProvenance, u, self.env.u8p));
+                    self.assign(&mut st, dst, Rvalue::Use(p));
                 }
                 BitCast | Freeze => {
                     let a = self.op(i, 0, &mut st)?;
@@ -545,26 +727,21 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                     match name.as_str() {
                         n if n.starts_with("llvm.lifetime") || n == "llvm.assume" => {}
                         "soroban.val.from_payload" => {
-                            let a = self.op(i, 0, &mut st)?;
+                            let v = value_operand(i, 0).ok_or("payload operand")?;
+                            let (a, from) = self.raw(v, &mut st)?;
+                            let a = self.coerce(&mut cur, &mut st, a, from, PTy::Val);
                             let dst = self.res(i);
-                            let rv = self.val_of(a);
-                            self.assign(&mut st, dst, rv);
+                            self.assign(&mut st, dst, Rvalue::Use(a));
                         }
                         "soroban.val.payload" => {
-                            let a = self.op(i, 0, &mut st)?;
-                            let place = match a {
-                                Operand::Copy(p) | Operand::Move(p) => p,
-                                _ => return Err("payload of a constant".into()),
-                            };
-                            let field = tcx.mk_place_field(place, FieldIdx::ZERO, tcx.types.u64);
+                            let v = value_operand(i, 0).ok_or("payload operand")?;
+                            let (a, from) = self.raw(v, &mut st)?;
+                            let a = self.to_int(a, from, &mut st);
                             let dst = self.res(i);
-                            self.assign(&mut st, dst, Rvalue::Use(Operand::Copy(field)));
+                            self.assign(&mut st, dst, Rvalue::Use(a));
                         }
                         "soroban.storage_type" => {
-                            let lit = match i.get_operand(0) {
-                                Some(LOperand::Value(BasicValueEnum::IntValue(v))) if v.is_constant_int() => v.get_zero_extended_constant(),
-                                _ => None,
-                            };
+                            let lit = value_operand(i, 0).and_then(const_of);
                             let dst = self.res(i);
                             match lit {
                                 Some(c @ 0..=2) => {
@@ -572,10 +749,10 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                                     self.assign(&mut st, dst, Rvalue::Aggregate(Box::new(kind), IndexVec::new()));
                                 }
                                 _ => {
-                                    let a = self.op(i, 0, &mut st)?;
-                                    let from = self.opty(i, 0)?;
-                                    let v = self.to_storage(&mut cur, &mut st, a, from);
-                                    self.assign(&mut st, dst, Rvalue::Use(v));
+                                    let v = value_operand(i, 0).ok_or("storage operand")?;
+                                    let (a, from) = self.raw(v, &mut st)?;
+                                    let a = self.coerce(&mut cur, &mut st, a, from, PTy::Storage);
+                                    self.assign(&mut st, dst, Rvalue::Use(a));
                                 }
                             }
                         }
@@ -585,19 +762,16 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                             let fsig = tcx.fn_sig(def_id).instantiate_identity().skip_binder();
                             let mut args = Vec::new();
                             for k in 0..nargs {
-                                let a = self.op(i, k, &mut st)?;
-                                let from = match &a {
-                                    Operand::Copy(p) | Operand::Move(p) => p.ty(&self.locals, tcx).ty,
-                                    Operand::Constant(c) => c.const_.ty(),
-                                    _ => self.opty(i, k)?,
-                                };
+                                let v = value_operand(i, k).ok_or("call operand")?;
+                                let (a, from) = self.raw(v, &mut st)?;
                                 let to = *fsig.inputs().get(k as usize).ok_or("arity")?;
-                                let a = if from == to {
-                                    a
-                                } else if to == self.env.storage && from.is_integral() {
-                                    self.to_storage(&mut cur, &mut st, a, from)
+                                let to_kind = self.env.kind_of_ty(to);
+                                let a = self.coerce(&mut cur, &mut st, a, from, to_kind);
+                                // Narrow integer positions (u8, bool) of intrinsics.
+                                let a = if to_kind == PTy::Int && to != tcx.types.u64 && from == PTy::Int && to.is_integral() {
+                                    self.cast(a, CastKind::IntToInt, to, &mut st)
                                 } else {
-                                    return Err(format!("argument of type {from} where {to} is declared"));
+                                    a
                                 };
                                 args.push(a);
                             }
@@ -613,8 +787,11 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                 }
                 Return => {
                     if i.get_num_operands() == 1 {
-                        let v = self.op(i, 0, &mut st)?;
-                        self.assign(&mut st, Place::from(Local::ZERO), Rvalue::Use(v));
+                        let v = value_operand(i, 0).ok_or("return operand")?;
+                        let (a, from) = self.raw(v, &mut st)?;
+                        let to = self.env.kind_of_ty(self.locals[Local::ZERO].ty);
+                        let a = self.coerce(&mut cur, &mut st, a, from, to);
+                        self.assign(&mut st, Place::from(Local::ZERO), Rvalue::Use(a));
                     }
                     self.terminate(&mut cur, &mut st, TerminatorKind::Return);
                 }
@@ -638,8 +815,7 @@ impl<'a, 'tcx> B<'a, 'tcx> {
                     let mut cases = Vec::new();
                     let mut k = 2;
                     while k + 1 < i.get_num_operands() {
-                        let Some(LOperand::Value(BasicValueEnum::IntValue(v))) = i.get_operand(k) else { return Err("switch case".into()) };
-                        let val = v.get_zero_extended_constant().ok_or("switch case value")? as u128;
+                        let val = value_operand(i, k).and_then(const_of).ok_or("switch case value")? as u128;
                         let t = self.target(i, k + 1)?;
                         cases.push((val, self.edge(lb, t)?));
                         k += 2;
@@ -656,15 +832,37 @@ impl<'a, 'tcx> B<'a, 'tcx> {
     }
 }
 
-pub fn build<'a, 'tcx>(env: &'a Env<'tcx>, f: FunctionValue<'a>, def_id: DefId) -> R<Body<'tcx>> {
+pub fn build<'a, 'tcx>(env: &'a Env<'tcx>, f: FunctionValue<'a>, def_id: DefId, sigs: &'a Sigs) -> R<Body<'tcx>> {
     let tcx = env.tcx;
     let si = SourceInfo::outermost(DUMMY_SP);
-    let mut b = B { env, locals: IndexVec::new(), map: HashMap::new(), blocks: IndexVec::new(), bbmap: HashMap::new(), debug: Vec::new(), si };
+    let fname = f.get_name().to_string_lossy().into_owned();
+    let mut b = B {
+        env,
+        sigs,
+        locals: IndexVec::new(),
+        map: HashMap::new(),
+        kinds: HashMap::new(),
+        frames: HashMap::new(),
+        blocks: IndexVec::new(),
+        bbmap: HashMap::new(),
+        debug: Vec::new(),
+        si,
+    };
     // _0, the parameters, then one local per SSA value.
-    b.locals.push(LocalDecl::new(env.ret_ty(f)?, DUMMY_SP));
+    b.locals.push(LocalDecl::new(env.ret_ty(f, sigs)?, DUMMY_SP));
     for (n, p) in f.get_params().iter().enumerate() {
-        let l = b.locals.push(LocalDecl::new(env.ty(p.get_type())?, DUMMY_SP));
+        let kind = sigs.param(&fname, n);
+        let ty = match kind {
+            Some(k) => env.pty(k),
+            None => env.ty(p.get_type())?,
+        };
+        let l = b.locals.push(LocalDecl::new(ty, DUMMY_SP));
         b.map.insert(key(*p), l);
+        // An i64 parameter inferred to be something else is read through a
+        // conversion at each use; a `%Val` one already is what it says.
+        if let Some(k) = kind.filter(|k| *k != PTy::Int && env.ty(p.get_type()).ok() != Some(env.pty(*k))) {
+            b.kinds.insert(l, k);
+        }
         b.debug.push(VarDebugInfo {
             name: Symbol::intern(&format!("a{n}")),
             source_info: si,
@@ -679,9 +877,19 @@ pub fn build<'a, 'tcx>(env: &'a Env<'tcx>, f: FunctionValue<'a>, def_id: DefId) 
         b.bbmap.insert(lb.as_mut_ptr() as usize, mb);
         for i in insts(lb) {
             let Ok(bt) = BasicTypeEnum::try_from(i.get_type()) else { continue };
-            let ty = if callee_name(i).as_deref() == Some("soroban.storage_type") { env.storage } else { env.ty(bt)? };
+            let callee = callee_name(i);
+            // A call's result takes the callee's inferred return type.
+            let ret_kind = callee.as_deref().and_then(|c| b.sigs.ret(c)).filter(|k| *k != PTy::Int);
+            let ty = match (callee.as_deref(), ret_kind) {
+                (Some("soroban.storage_type"), _) => env.storage,
+                (_, Some(k)) => env.pty(k),
+                _ => env.ty(bt)?,
+            };
             let l = b.locals.push(LocalDecl::new(ty, DUMMY_SP));
             b.map.insert(key(i), l);
+            if let Some(k) = ret_kind.filter(|k| env.ty(bt).ok() != Some(env.pty(*k))) {
+                b.kinds.insert(l, k);
+            }
             if let Some(n) = i.get_name().and_then(|n| n.to_str().ok()).filter(|n| !n.is_empty()) {
                 b.debug.push(VarDebugInfo {
                     name: Symbol::intern(n),

@@ -48,6 +48,21 @@ impl Val {
 #[derive(Clone, Copy)]
 pub enum StorageType { Temporary = 0, Persistent = 1, Instance = 2 }
 
+/// The tag in a `Val`'s low byte. `x & 0xff == Tag::X` is the SDK's `get_tag`.
+pub mod Tag {
+    pub const False: u64 = 0; pub const True: u64 = 1; pub const Void: u64 = 2; pub const Error: u64 = 3;
+    pub const U32Val: u64 = 4; pub const I32Val: u64 = 5; pub const U64Small: u64 = 6; pub const I64Small: u64 = 7;
+    pub const TimepointSmall: u64 = 8; pub const DurationSmall: u64 = 9; pub const U128Small: u64 = 10;
+    pub const I128Small: u64 = 11; pub const U256Small: u64 = 12; pub const I256Small: u64 = 13;
+    pub const SymbolSmall: u64 = 14; pub const SmallCodeUpperBound: u64 = 15; pub const ObjectCodeLowerBound: u64 = 63;
+    pub const U64Object: u64 = 64; pub const I64Object: u64 = 65; pub const TimepointObject: u64 = 66;
+    pub const DurationObject: u64 = 67; pub const U128Object: u64 = 68; pub const I128Object: u64 = 69;
+    pub const U256Object: u64 = 70; pub const I256Object: u64 = 71; pub const BytesObject: u64 = 72;
+    pub const StringObject: u64 = 73; pub const SymbolObject: u64 = 74; pub const VecObject: u64 = 75;
+    pub const MapObject: u64 = 76; pub const AddressObject: u64 = 77; pub const MuxedAddressObject: u64 = 78;
+    pub const ObjectCodeUpperBound: u64 = 79; pub const Bad: u64 = 127;
+}
+
 extern "C" {
     /// wasm `unreachable`: the host traps.
     pub fn trap() -> !;
@@ -66,25 +81,14 @@ extern "C" {
 pub fn hello(mut a0: Val) -> Val {
     unsafe {
         let mut arg_payload: u64;
-        let mut cmp: bool;
-        let mut and: u64;
-        let mut cmp2_not: bool;
-        let mut or_cond: bool;
         let mut lshr: u64;
-        let mut put_contract_data_8: Val;
-        let mut sel: u32;
         let mut l0_0: Val;
         let mut to_val: Val;
         arg_payload = a0.0;
-        cmp = arg_payload < 21474836480u64;
-        and = arg_payload & 255u64;
-        cmp2_not = and == 4u64;
-        or_cond = cmp & cmp2_not;
-        if or_cond {
+        if (arg_payload < 21474836480u64) & ((arg_payload & 255u64) == Tag::U32Val) {
             lshr = arg_payload.wrapping_shr(32u64 as u32);
-            put_contract_data_8 = put_contract_data(Val::sym("persisted"), Val::TRUE, StorageType::Persistent);
-            sel = lshr as u32;
-            match sel {
+            put_contract_data(Val::sym("persisted"), Val::TRUE, StorageType::Persistent);
+            match lshr as u32 {
                 0 => {
                     l0_0 = Val::sym("hello");
                 }
@@ -92,14 +96,14 @@ pub fn hello(mut a0: Val) -> Val {
                     l0_0 = Val::error(0, 1);
                 }
                 2 => {
-                    f3(4294967299u64);
+                    f3(Val::error(0, 1));
                     trap();
                 }
                 3 => {
                     f4();
                 }
                 _ => {
-                    f3(38654705667u64);
+                    f3(Val::error(0, 9));
                     trap();
                 }
             }
@@ -111,12 +115,9 @@ pub fn hello(mut a0: Val) -> Val {
     }
 }
 
-fn f3(mut a0: u64) {
+fn f3(mut a0: Val) {
     unsafe {
-        let mut to_val: Val;
-        let mut fail_with_error_3: Val;
-        to_val = Val(a0);
-        fail_with_error_3 = fail_with_error(to_val);
+        fail_with_error(a0);
         return;
     }
 }

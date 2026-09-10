@@ -204,6 +204,35 @@ impl Mem {
 struct Mod {
     types: Types,
     mem: Mem,
+    /// The wasm value types of every function's params and results, by
+    /// function index: the one type fact the binary states outright. On
+    /// wasm32 a pointer is always `i32` and a Val always `i64`.
+    wasm_sigs: HashMap<u32, (Vec<&'static str>, Vec<&'static str>)>,
+}
+
+fn valtype_name(v: wasmparser::ValType) -> &'static str {
+    match v {
+        wasmparser::ValType::I32 => "i32",
+        wasmparser::ValType::I64 => "i64",
+        wasmparser::ValType::F32 => "f32",
+        wasmparser::ValType::F64 => "f64",
+        wasmparser::ValType::V128 => "v128",
+        wasmparser::ValType::Ref(_) => "ref",
+    }
+}
+
+/// Record the wasm signature on the LLVM function, one string attribute per
+/// parameter and one on the return, so it survives whatever LLVM does to the
+/// signature later (dead-argument elimination keeps attributes with their
+/// argument) and the MIR stage can seed its type inference from it.
+fn wasm_type_attrs(ctx: &Context, f: FunctionValue, sig: Option<&(Vec<&'static str>, Vec<&'static str>)>) {
+    let Some((params, results)) = sig else { return };
+    for (i, t) in params.iter().enumerate() {
+        f.add_attribute(AttributeLoc::Param(i as u32), ctx.create_string_attribute("wasm.type", t));
+    }
+    if let Some(t) = results.first() {
+        f.add_attribute(AttributeLoc::Return, ctx.create_string_attribute("wasm.type", t));
+    }
 }
 
 /// A wasm load or store, reduced to what the i64-wide model needs.
@@ -925,7 +954,9 @@ fn lower<'ctx>(
                         } else {
                             rt.i64t.fn_type(&ps, false)
                         };
-                        m.add_function(&fname, t, None)
+                        let f = m.add_function(&fname, t, None);
+                        wasm_type_attrs(ctx, f, md.wasm_sigs.get(function_index));
+                        f
                     });
                     let mut a: Vec<SV> = (0..np).map(|_| fun.pop()).collect();
                     a.reverse();
@@ -1445,6 +1476,7 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
     let mut bodies: Vec<(usize, Vec<Operator>)> = Vec::new();
     let mut exports: Vec<(String, u32)> = Vec::new();
     let mut sigs: Vec<(usize, usize)> = Vec::new();
+    let mut wasm_types: Vec<(Vec<&'static str>, Vec<&'static str>)> = Vec::new();
     let mut func_types: Vec<u32> = Vec::new();
     let mut types = Types(Vec::new());
     let mut mem = Mem::default();
@@ -1456,8 +1488,13 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
                     for st in rg.expect("rec group").into_types() {
                         if let wasmparser::CompositeInnerType::Func(ft) = &st.composite_type.inner {
                             sigs.push((ft.params().len(), ft.results().len()));
+                            wasm_types.push((
+                                ft.params().iter().map(|v| valtype_name(*v)).collect(),
+                                ft.results().iter().map(|v| valtype_name(*v)).collect(),
+                            ));
                         } else {
                             sigs.push((0, 0));
+                            wasm_types.push((Vec::new(), Vec::new()));
                         }
                         types.0.push(st);
                     }
@@ -1524,12 +1561,16 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
     }
 
     let mut local_sigs: HashMap<u32, (usize, usize)> = HashMap::new();
+    let mut wasm_sigs = HashMap::new();
     for (i, t) in func_types.iter().enumerate() {
         if let Some(s) = sigs.get(*t as usize) {
             local_sigs.insert(n_imports + i as u32, *s);
         }
+        if let Some(w) = wasm_types.get(*t as usize) {
+            wasm_sigs.insert(n_imports + i as u32, w.clone());
+        }
     }
-    let mut md = Mod { types, mem };
+    let mut md = Mod { types, mem, wasm_sigs };
     md.mem.written = writes_data(&bodies, &md, &imports, &local_sigs);
 
     let ctx = Context::create();
@@ -1622,6 +1663,7 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
             Some(_) => continue,
             None => m.add_function(name, fty, None),
         };
+        wasm_type_attrs(&ctx, f, md.wasm_sigs.get(fidx));
         plan.push((f, local, np, nr, val_abi));
     }
 
@@ -1810,7 +1852,7 @@ mod tests {
         let ir = lower_module(&wasm, Some("--inline")).unwrap();
         let body = ir
             .lines()
-            .skip_while(|l| !l.starts_with("define %Val @set_flag("))
+            .skip_while(|l| !(l.starts_with("define ") && l.contains("@set_flag(")))
             .take_while(|l| !l.starts_with('}'))
             .collect::<Vec<_>>()
             .join("\n");

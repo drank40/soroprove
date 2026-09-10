@@ -48,6 +48,21 @@ impl Val {
 #[derive(Clone, Copy)]
 pub enum StorageType { Temporary = 0, Persistent = 1, Instance = 2 }
 
+/// The tag in a `Val`'s low byte. `x & 0xff == Tag::X` is the SDK's `get_tag`.
+pub mod Tag {
+    pub const False: u64 = 0; pub const True: u64 = 1; pub const Void: u64 = 2; pub const Error: u64 = 3;
+    pub const U32Val: u64 = 4; pub const I32Val: u64 = 5; pub const U64Small: u64 = 6; pub const I64Small: u64 = 7;
+    pub const TimepointSmall: u64 = 8; pub const DurationSmall: u64 = 9; pub const U128Small: u64 = 10;
+    pub const I128Small: u64 = 11; pub const U256Small: u64 = 12; pub const I256Small: u64 = 13;
+    pub const SymbolSmall: u64 = 14; pub const SmallCodeUpperBound: u64 = 15; pub const ObjectCodeLowerBound: u64 = 63;
+    pub const U64Object: u64 = 64; pub const I64Object: u64 = 65; pub const TimepointObject: u64 = 66;
+    pub const DurationObject: u64 = 67; pub const U128Object: u64 = 68; pub const I128Object: u64 = 69;
+    pub const U256Object: u64 = 70; pub const I256Object: u64 = 71; pub const BytesObject: u64 = 72;
+    pub const StringObject: u64 = 73; pub const SymbolObject: u64 = 74; pub const VecObject: u64 = 75;
+    pub const MapObject: u64 = 76; pub const AddressObject: u64 = 77; pub const MuxedAddressObject: u64 = 78;
+    pub const ObjectCodeUpperBound: u64 = 79; pub const Bad: u64 = 127;
+}
+
 extern "C" {
     /// wasm `unreachable`: the host traps.
     pub fn trap() -> !;
@@ -77,60 +92,35 @@ pub fn read(mut a0: Val, mut a1: Val) -> Val {
         let mut arg_payload: u64;
         let mut arg_payload1: u64;
         let mut and: u64;
-        let mut cmp_not: bool;
-        let mut and2: u64;
         let mut cmp3_not: bool;
         let mut bottom_2: u64;
-        let mut brif20_not_2: bool;
         let mut bottom_3: u64;
-        let mut brif20_not_3: bool;
         let mut bottom_1: u64;
-        let mut brif20_not_1: bool;
         let mut Symbol__Pair__: Val;
         let mut payload: u64;
-        let mut slot8: *mut u8;
-        let mut fp11: *mut u8;
-        let mut fp: u64;
-        let mut shl4: u64;
-        let mut or5: Val;
-        let mut to_val9: Val;
         let mut Map__a____b__: Val;
-        let mut payload14: u64;
-        let mut vec_new_from_linear_memory_26: Val;
-        let mut payload15: u64;
-        let mut has_contract_data_28: Val;
-        let mut payload17: u64;
-        let mut cmp: bool;
-        let mut zext: Val;
-        let mut _32: [u64; 4];
-        let mut _33: *mut [u64; 4];
-        let mut _35: usize;
-        let mut _36: *mut u64;
-        let mut _37: *mut u64;
+        let mut vec_new_from_linear_memory_25: Val;
+        let mut has_contract_data_27: Val;
+        let mut _31: [u64; 4];
+        let mut to_val9: Val;
         let mut to_val: Val;
-        _32 = [0u64; 4];
-        _33 = &raw mut _32;
-        frame = _33 as *mut u8;
+        _31 = [0u64; 4];
+        frame = (&raw mut _31) as *mut u8;
         arg_payload = a0.0;
         arg_payload1 = a1.0;
         and = arg_payload & 255u64;
-        cmp_not = and == 77u64;
-        and2 = arg_payload1 & 255u64;
-        cmp3_not = and2 == 77u64;
+        cmp3_not = (arg_payload1 & 255u64) == Tag::AddressObject;
         match and {
-            77 => {
+            Tag::AddressObject => {
                 if cmp3_not {
                     bottom_1 = unknown_i64();
                     'b6: {
-                        brif20_not_1 = bottom_1 == 0u64;
                         match bottom_1 {
                             0 => {
                                 bottom_2 = unknown_i64();
-                                brif20_not_2 = bottom_2 == 0u64;
                                 match bottom_2 {
                                     0 => {
                                         bottom_3 = unknown_i64();
-                                        brif20_not_3 = bottom_3 == 0u64;
                                         match bottom_3 {
                                             0 => {
                                                 payload = 1852552974u64;
@@ -147,28 +137,15 @@ pub fn read(mut a0: Val, mut a1: Val) -> Val {
                         Symbol__Pair__ = symbol_new_from_linear_memory(Val::u32(1048640), Val::u32(4));
                         payload = Symbol__Pair__.0;
                     }
-                    slot8 = frame.wrapping_offset(8isize);
-                    fp11 = frame.wrapping_offset(16isize);
-                    _35 = slot8 as usize;
-                    fp = _35 as u64;
-                    _36 = fp11 as *mut u64;
-                    (*_36) = arg_payload1;
-                    _37 = slot8 as *mut u64;
-                    (*_37) = arg_payload;
-                    shl4 = fp.wrapping_shl(32u64 as u32);
-                    or5 = Val(shl4 | 4u64);
-                    to_val9 = or5;
+                    _31[2] = arg_payload1;
+                    _31[1] = arg_payload;
+                    to_val9 = Val::u32((frame.wrapping_offset(8isize) as u64) as u32);
                     Map__a____b__ = map_new_from_linear_memory(Val::u32(1048624), to_val9, Val::u32(2));
-                    payload14 = Map__a____b__.0;
-                    (*_36) = payload14;
-                    (*_37) = payload;
-                    vec_new_from_linear_memory_26 = vec_new_from_linear_memory(to_val9, Val::u32(2));
-                    payload15 = vec_new_from_linear_memory_26.0;
-                    has_contract_data_28 = has_contract_data(vec_new_from_linear_memory_26, StorageType::Persistent);
-                    payload17 = has_contract_data_28.0;
-                    cmp = payload17 == 1u64;
-                    zext = Val(cmp as u64);
-                    to_val = zext;
+                    _31[2] = Map__a____b__.0;
+                    _31[1] = payload;
+                    vec_new_from_linear_memory_25 = vec_new_from_linear_memory(to_val9, Val::u32(2));
+                    has_contract_data_27 = has_contract_data(vec_new_from_linear_memory_25, StorageType::Persistent);
+                    to_val = Val((has_contract_data_27.0 == 1u64) as u64);
                     return to_val;
                 }
             }
@@ -183,25 +160,13 @@ pub fn read(mut a0: Val, mut a1: Val) -> Val {
 pub fn pick(mut a0: Val) -> Val {
     unsafe {
         let mut arg_payload: u64;
-        let mut and: u64;
-        let mut cmp_not: bool;
-        let mut cmp2: bool;
-        let mut or_cond: bool;
         let mut l0_0: Val;
-        let mut lshr: u64;
-        let mut sel: u32;
         let mut to_val: Val;
         arg_payload = a0.0;
-        and = arg_payload & 255u64;
-        cmp_not = and != 4u64;
-        cmp2 = arg_payload > 21474836479u64;
-        or_cond = cmp2 | cmp_not;
-        if or_cond {
+        if (arg_payload > 21474836479u64) | ((arg_payload & 255u64) != Tag::U32Val) {
             trap();
         } else {
-            lshr = arg_payload.wrapping_shr(32u64 as u32);
-            sel = lshr as u32;
-            match sel {
+            match (arg_payload.wrapping_shr(32u64 as u32)) as u32 {
                 4 => {
                     l0_0 = Val::sym("e");
                 }
@@ -227,9 +192,8 @@ pub fn pick(mut a0: Val) -> Val {
 
 pub fn set_flag() -> Val {
     unsafe {
-        let mut put_contract_data_1: Val;
         let mut _0: Val;
-        put_contract_data_1 = put_contract_data(Val::sym("f"), Val::TRUE, StorageType::Persistent);
+        put_contract_data(Val::sym("f"), Val::TRUE, StorageType::Persistent);
         _0 = Val::VOID;
         return _0;
     }
@@ -237,8 +201,7 @@ pub fn set_flag() -> Val {
 
 fn f15() {
     unsafe {
-        let mut fail_with_error_1: Val;
-        fail_with_error_1 = fail_with_error(Val::error(0, 1));
+        fail_with_error(Val::error(0, 1));
         return;
     }
 }
@@ -252,42 +215,16 @@ fn f24() -> ! {
 fn f25() -> ! {
     unsafe {
         let mut frame: *mut u8;
-        let mut slot16: *mut u8;
         let mut slot12: *mut u8;
-        let mut slot28: *mut u8;
-        let mut slot24: *mut u8;
-        let mut fp: u64;
-        let mut slot20: *mut u8;
-        let mut t6: u32;
         let mut _9: [u64; 4];
-        let mut _10: *mut [u64; 4];
-        let mut _11: *mut u32;
-        let mut _12: *mut u32;
-        let mut _13: *mut u16;
-        let mut _14: *mut u32;
-        let mut _15: usize;
-        let mut _16: *mut u32;
         _9 = [0u64; 4];
-        _10 = &raw mut _9;
-        frame = _10 as *mut u8;
-        slot16 = frame.wrapping_offset(16isize);
-        _11 = slot16 as *mut u32;
-        (*_11) = 29u32;
+        frame = (&raw mut _9) as *mut u8;
+        (*((frame.wrapping_offset(16isize) as *mut u32))) = 29u32;
         slot12 = frame.wrapping_offset(12isize);
-        _12 = slot12 as *mut u32;
-        (*_12) = 1048576u32;
-        slot28 = frame.wrapping_offset(28isize);
-        _13 = slot28 as *mut u16;
-        (*_13) = 1u16;
-        slot24 = frame.wrapping_offset(24isize);
-        _14 = slot24 as *mut u32;
-        (*_14) = 1048604u32;
-        _15 = slot12 as usize;
-        fp = _15 as u64;
-        slot20 = frame.wrapping_offset(20isize);
-        t6 = fp as u32;
-        _16 = slot20 as *mut u32;
-        (*_16) = t6;
+        (*((slot12 as *mut u32))) = 1048576u32;
+        (*((frame.wrapping_offset(28isize) as *mut u16))) = 1u16;
+        (*((frame.wrapping_offset(24isize) as *mut u32))) = 1048604u32;
+        (*((frame.wrapping_offset(20isize) as *mut u32))) = ((slot12 as u64) as u32);
         trap();
     }
 }

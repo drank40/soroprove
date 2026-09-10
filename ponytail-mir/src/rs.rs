@@ -144,6 +144,110 @@ fn val_payload_locals(body: &Body<'_>, val_def: rustc_hir::def_id::DefId) -> Has
     }
 }
 
+/// How often each local is defined and read, counted the way rustc's own
+/// visitor sees places: a store to a plain local is a definition, everything
+/// else that is a use (including the base of `arr[1] = ..`) a read.
+/// Debuginfo mentions are not uses.
+fn def_use_counts(body: &Body<'_>) -> (HashMap<Local, usize>, HashMap<Local, usize>) {
+    use rustc_middle::mir::visit::{MutatingUseContext, PlaceContext, Visitor};
+    #[derive(Default)]
+    struct C {
+        defs: HashMap<Local, usize>,
+        uses: HashMap<Local, usize>,
+    }
+    impl<'tcx> Visitor<'tcx> for C {
+        fn visit_local(&mut self, l: Local, ctx: PlaceContext, _: Location) {
+            match ctx {
+                PlaceContext::MutatingUse(MutatingUseContext::Store | MutatingUseContext::Call | MutatingUseContext::Yield | MutatingUseContext::AsmOutput) => {
+                    *self.defs.entry(l).or_default() += 1
+                }
+                c if c.is_use() => *self.uses.entry(l).or_default() += 1,
+                _ => {}
+            }
+        }
+    }
+    let mut c = C::default();
+    c.visit_body(body);
+    (c.defs, c.uses)
+}
+
+/// The locals a statement or terminator mentions, in any role.
+fn mentions<'tcx>(body: &Body<'tcx>, bb: BasicBlock, si: usize) -> Vec<Local> {
+    use rustc_middle::mir::visit::{PlaceContext, Visitor};
+    struct M(Vec<Local>);
+    impl<'tcx> Visitor<'tcx> for M {
+        fn visit_local(&mut self, l: Local, ctx: PlaceContext, _: Location) {
+            if ctx.is_use() {
+                self.0.push(l);
+            }
+        }
+    }
+    let mut m = M(Vec::new());
+    let data = &body.basic_blocks[bb];
+    let loc = Location { block: bb, statement_index: si };
+    match data.statements.get(si) {
+        Some(st) => m.visit_statement(st, loc),
+        None => {
+            if let Some(t) = &data.terminator {
+                m.visit_terminator(t, loc);
+            }
+        }
+    }
+    m.0
+}
+
+/// `Val` tag names, as `soroban-env-common` numbers them (protocol 25).
+fn tag_name(n: u64) -> Option<&'static str> {
+    const TAGS: [(u64, &str); 34] = [
+        (0, "False"), (1, "True"), (2, "Void"), (3, "Error"), (4, "U32Val"), (5, "I32Val"), (6, "U64Small"),
+        (7, "I64Small"), (8, "TimepointSmall"), (9, "DurationSmall"), (10, "U128Small"), (11, "I128Small"),
+        (12, "U256Small"), (13, "I256Small"), (14, "SymbolSmall"), (15, "SmallCodeUpperBound"),
+        (63, "ObjectCodeLowerBound"), (64, "U64Object"), (65, "I64Object"), (66, "TimepointObject"),
+        (67, "DurationObject"), (68, "U128Object"), (69, "I128Object"), (70, "U256Object"), (71, "I256Object"),
+        (72, "BytesObject"), (73, "StringObject"), (74, "SymbolObject"), (75, "VecObject"), (76, "MapObject"),
+        (77, "AddressObject"), (78, "MuxedAddressObject"), (79, "ObjectCodeUpperBound"), (127, "Bad"),
+    ];
+    TAGS.iter().find(|(k, _)| *k == n).map(|(_, s)| *s)
+}
+
+/// `(e)` -> `e` when the parentheses enclose the whole expression.
+fn strip_parens(s: String) -> String {
+    if !(s.starts_with('(') && s.ends_with(')')) {
+        return s;
+    }
+    let mut depth = 0i32;
+    for (i, c) in s.char_indices() {
+        depth += match c {
+            '(' => 1,
+            ')' => -1,
+            _ => 0,
+        };
+        if depth == 0 && i + 1 < s.len() {
+            return s; // the first paren closes before the end
+        }
+    }
+    s[1..s.len() - 1].to_string()
+}
+
+/// An rvalue that can be evaluated at its use instead of where it is written:
+/// no memory read, no call. Arithmetic and casts only.
+fn pure(rv: &Rvalue<'_>) -> bool {
+    fn plain(o: &Operand<'_>) -> bool {
+        match o {
+            Operand::Copy(p) | Operand::Move(p) => !p.projection.iter().any(|e| matches!(e, PlaceElem::Deref)),
+            Operand::Constant(_) => true,
+            _ => false,
+        }
+    }
+    match rv {
+        Rvalue::Use(o) | Rvalue::UnaryOp(_, o) | Rvalue::Cast(_, o, _) => plain(o),
+        Rvalue::BinaryOp(_, ab) => plain(&ab.0) && plain(&ab.1),
+        Rvalue::Aggregate(_, fs) => fs.iter().all(plain),
+        Rvalue::Discriminant(p) | Rvalue::RawPtr(_, p) => !p.projection.iter().any(|e| matches!(e, PlaceElem::Deref)),
+        _ => false,
+    }
+}
+
 struct Fn_<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
     env: &'a Env<'tcx>,
@@ -151,6 +255,14 @@ struct Fn_<'a, 'tcx> {
     names: HashMap<Local, String>,
     payloads: HashSet<Local>,
     rpo: HashMap<BasicBlock, usize>,
+    defs: HashMap<Local, usize>,
+    uses: HashMap<Local, usize>,
+    /// The one rvalue assigned to a local that is assigned exactly once.
+    single_def: HashMap<Local, Rvalue<'tcx>>,
+    /// Single-use temporaries written into their one use instead of on a
+    /// line of their own: the expression, and the rvalue it came from so a
+    /// consumer can still see its shape.
+    folded: HashMap<Local, (String, Rvalue<'tcx>)>,
     /// Output lines with their nesting depth; indentation is applied at the end.
     out: Vec<(usize, String)>,
     depth: usize,
@@ -184,7 +296,32 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         }
         let rpo = body.basic_blocks.reverse_postorder().iter().enumerate().map(|(n, b)| (*b, n)).collect();
         let payloads = val_payload_locals(body, env.val_def);
-        Fn_ { tcx, env, body, names, payloads, rpo, out: Vec::new(), depth: 0, open: Vec::new(), used: HashSet::new() }
+        let (defs, uses) = def_use_counts(body);
+        let single_def = body
+            .basic_blocks
+            .iter()
+            .flat_map(|b| &b.statements)
+            .filter_map(|st| match &st.kind {
+                StatementKind::Assign(a) => a.0.as_local().filter(|l| defs.get(l) == Some(&1)).map(|l| (l, a.1.clone())),
+                _ => None,
+            })
+            .collect();
+        Fn_ {
+            tcx,
+            env,
+            body,
+            names,
+            payloads,
+            rpo,
+            defs,
+            uses,
+            single_def,
+            folded: HashMap::new(),
+            out: Vec::new(),
+            depth: 0,
+            open: Vec::new(),
+            used: HashSet::new(),
+        }
     }
 
     /// The Rust type a local is declared with: `Val` for a payload local.
@@ -196,12 +333,22 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         self.out.push((self.depth, s.into()));
     }
 
-    fn local(&self, l: Local) -> String {
+    fn raw_name(&self, l: Local) -> String {
         self.names.get(&l).cloned().unwrap_or_else(|| format!("_{}", l.as_usize()))
+    }
+
+    fn local(&self, l: Local) -> String {
+        if let Some((e, _)) = self.folded.get(&l) {
+            return e.clone();
+        }
+        self.raw_name(l)
     }
 
     fn place(&self, p: &Place<'tcx>) -> String {
         let mut s = self.local(p.local);
+        if self.folded.contains_key(&p.local) && !p.projection.is_empty() {
+            s = format!("({s})");
+        }
         for e in p.projection {
             s = match e {
                 PlaceElem::Deref => format!("(*{s})"),
@@ -262,7 +409,12 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             Rvalue::CopyForDeref(p) => self.place(p),
             Rvalue::Repeat(o, n) => format!("[{}; {}]", self.operand(o)?, n.try_to_target_usize(tcx).ok_or("array length")?),
             Rvalue::BinaryOp(op, ab) => {
-                let (a, b) = (self.operand(&ab.0)?, self.operand(&ab.1)?);
+                let (a, mut b) = (self.operand(&ab.0)?, self.operand(&ab.1)?);
+                if matches!(op, BinOp::Eq | BinOp::Ne) && self.is_tag(&ab.0) {
+                    if let Some(n) = self.konst_u64(&ab.1).and_then(tag_name) {
+                        b = format!("Tag::{n}");
+                    }
+                }
                 match op {
                     BinOp::Add => format!("{a}.wrapping_add({b})"),
                     BinOp::Sub => format!("{a}.wrapping_sub({b})"),
@@ -313,6 +465,121 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         })
     }
 
+    /// A folded operand's rvalue, if it was folded.
+    fn folded_rv(&self, o: &Operand<'tcx>) -> Option<&Rvalue<'tcx>> {
+        match o {
+            Operand::Copy(p) | Operand::Move(p) => self.folded.get(&p.as_local()?).map(|(_, rv)| rv),
+            _ => None,
+        }
+    }
+
+    /// The right-hand side of an assignment as Rust.
+    fn assign_expr(&self, pl: &Place<'tcx>, rv: &Rvalue<'tcx>) -> R<String> {
+        let is_val_agg = |rv: &Rvalue<'tcx>| matches!(rv, Rvalue::Aggregate(k, _) if matches!(**k, AggregateKind::Adt(d, ..) if d == self.env.val_def));
+        Ok(match (pl.as_local().filter(|l| self.payloads.contains(l)), rv) {
+            // Assigning a payload local: the value is a Val.
+            (Some(_), Rvalue::Use(Operand::Constant(c))) => {
+                let bits = c.const_.try_to_scalar_int().ok_or("payload constant")?;
+                val_expr(bits.to_bits(bits.size()) as u64)
+            }
+            (Some(_), Rvalue::Use(Operand::Copy(p) | Operand::Move(p))) if p.as_local().is_some_and(|l| self.payloads.contains(&l)) => self.place(p),
+            (Some(_), _) => self.val_of_expr(rv)?,
+            (None, Rvalue::Aggregate(_, fs)) if is_val_agg(rv) => {
+                let o = fs.iter().next().ok_or("Val without a payload")?;
+                match o {
+                    // `Val(l)` of a payload local is the local itself.
+                    Operand::Copy(p) | Operand::Move(p) if p.as_local().is_some_and(|l| self.payloads.contains(&l)) => self.place(p),
+                    _ => match self.folded_rv(o) {
+                        Some(r) => self.val_of_expr(r)?,
+                        None => self.rvalue(rv)?,
+                    },
+                }
+            }
+            _ => self.rvalue(rv)?,
+        })
+    }
+
+    /// A Val whose payload is computed by `rv`. `(x << 32) | 4` is the U32Val
+    /// encoding of `x`, and reads as such.
+    fn val_of_expr(&self, rv: &Rvalue<'tcx>) -> R<String> {
+        if let Rvalue::BinaryOp(BinOp::BitOr, ab) = rv {
+            if self.konst_u64(&ab.1) == Some(4) {
+                if let Some(Rvalue::BinaryOp(BinOp::Shl, xy)) = self.folded_rv(&ab.0) {
+                    if self.konst_u64(&xy.1) == Some(32) {
+                        return Ok(format!("Val::u32({} as u32)", self.operand(&xy.0)?));
+                    }
+                }
+            }
+        }
+        Ok(format!("Val({})", self.rvalue(rv)?))
+    }
+
+    /// Is this operand `x & 0xff`, a Val's tag? Then constants compared with
+    /// it are tags and read by name.
+    fn is_tag(&self, o: &Operand<'tcx>) -> bool {
+        let rv = match o {
+            Operand::Copy(p) | Operand::Move(p) => p.as_local().and_then(|l| self.folded.get(&l).map(|(_, rv)| rv).or_else(|| self.single_def.get(&l))),
+            _ => None,
+        };
+        matches!(rv, Some(Rvalue::BinaryOp(BinOp::BitAnd, ab)) if self.konst_u64(&ab.1) == Some(0xff))
+    }
+
+    fn konst_u64(&self, o: &Operand<'tcx>) -> Option<u64> {
+        match o {
+            Operand::Constant(c) => c.const_.try_to_scalar_int().map(|i| i.to_bits(i.size()) as u64),
+            _ => None,
+        }
+    }
+
+    /// Emit the statements of a block. A pure single-use temporary is folded
+    /// into its use; a pure statement nothing reads is not written -- rustc
+    /// kept it only for its debuginfo name.
+    fn stmts(&mut self, bb: BasicBlock) -> R<()> {
+        let data = &self.body.basic_blocks[bb];
+        for (si, st) in data.statements.iter().enumerate() {
+            if let StatementKind::Assign(a) = &st.kind {
+                let (pl, rv) = &**a;
+                if let Some(l) = pl.as_local().filter(|l| *l != Local::ZERO && l.as_usize() > self.body.arg_count) {
+                    let uses = self.uses.get(&l).copied().unwrap_or(0);
+                    if pure(rv) && uses == 0 {
+                        continue;
+                    }
+                    // An array is only ever used as a place (`&raw mut`, `[i]`); it stays.
+                    let is_array = self.body.local_decls[l].ty.is_array();
+                    if pure(rv) && !is_array && uses == 1 && self.defs.get(&l) == Some(&1) && self.use_follows(bb, si, l) {
+                        let e = self.assign_expr(pl, rv)?;
+                        let e = if e.contains(' ') && !e.starts_with("Val") { format!("({e})") } else { e };
+                        self.folded.insert(l, (e, rv.clone()));
+                        continue;
+                    }
+                }
+            }
+            self.stmt(st)?;
+        }
+        Ok(())
+    }
+
+    /// Is the one use of `l` later in this block, with nothing in between
+    /// reassigning an operand of its definition?
+    fn use_follows(&self, bb: BasicBlock, si: usize, l: Local) -> bool {
+        let def_mentions: Vec<Local> = mentions(self.body, bb, si).into_iter().filter(|m| *m != l).collect();
+        let n = self.body.basic_blocks[bb].statements.len();
+        for sj in si + 1..=n {
+            let m = mentions(self.body, bb, sj);
+            if m.contains(&l) {
+                return true;
+            }
+            if let Some(StatementKind::Assign(a)) = self.body.basic_blocks[bb].statements.get(sj).map(|s| &s.kind) {
+                if let Some(d) = a.0.as_local() {
+                    if def_mentions.contains(&d) {
+                        return false;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     fn stmt(&mut self, st: &Statement<'tcx>) -> R<()> {
         match &st.kind {
             StatementKind::Assign(a) => {
@@ -320,24 +587,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 if pl.ty(&self.body.local_decls, self.tcx).ty.is_unit() {
                     return Ok(()); // `_x = const ()`, or the destination of a void call
                 }
-                let rhs = match (pl.as_local().filter(|l| self.payloads.contains(l)), rv) {
-                    // Assigning a payload local: the value is a Val.
-                    (Some(_), Rvalue::Use(Operand::Constant(c))) => {
-                        let bits = c.const_.try_to_scalar_int().ok_or("payload constant")?;
-                        val_expr(bits.to_bits(bits.size()) as u64)
-                    }
-                    (Some(_), Rvalue::Use(Operand::Copy(p) | Operand::Move(p))) if p.as_local().is_some_and(|l| self.payloads.contains(&l)) => self.place(p),
-                    (Some(_), _) => format!("Val({})", self.rvalue(rv)?),
-                    // `Val(l)` of a payload local is the local itself.
-                    (None, Rvalue::Aggregate(k, fs)) if matches!(**k, AggregateKind::Adt(d, ..) if d == self.env.val_def) => {
-                        match fs.iter().next() {
-                            Some(Operand::Copy(p) | Operand::Move(p)) if p.as_local().is_some_and(|l| self.payloads.contains(&l)) => self.place(p),
-                            _ => self.rvalue(rv)?,
-                        }
-                    }
-                    _ => self.rvalue(rv)?,
-                };
-                let s = format!("{} = {rhs};", self.place(pl));
+                let s = format!("{} = {};", self.place(pl), self.assign_expr(pl, rv)?);
                 self.line(s);
             }
             StatementKind::SetDiscriminant { place, variant_index } => {
@@ -363,7 +613,8 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         let f = self.operand(func)?;
         let a: Vec<String> = args.iter().map(|a| self.operand(&a.node)).collect::<R<_>>()?;
         let dty = self.body.local_decls[destination.local].ty;
-        let s = if dty.is_unit() || dty.is_never() {
+        let unread = destination.as_local().is_some_and(|l| self.uses.get(&l).copied().unwrap_or(0) == 0);
+        let s = if dty.is_unit() || dty.is_never() || unread {
             format!("{f}({});", a.join(", "))
         } else {
             format!("{} = {f}({});", self.place(destination), a.join(", "))
@@ -516,10 +767,8 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
 
     /// Statements and terminator of one block.
     fn code(&mut self, bb: BasicBlock, tail: Option<BasicBlock>) -> R<()> {
+        self.stmts(bb)?;
         let data = &self.body.basic_blocks[bb];
-        for st in &data.statements {
-            self.stmt(st)?;
-        }
         let Some(t) = &data.terminator else { return Err("block without terminator".into()) };
         match &t.kind {
             TerminatorKind::Goto { target } => self.branch(bb, *target, tail)?,
@@ -535,7 +784,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 }
             }
             TerminatorKind::SwitchInt { discr, targets } => {
-                let d = self.operand(discr)?;
+                let d = strip_parens(self.operand(discr)?);
                 if discr.ty(&self.body.local_decls, self.tcx).is_bool() {
                     let mut then = targets.otherwise();
                     let mut els = targets.otherwise();
@@ -559,9 +808,14 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 } else {
                     self.line(format!("match {d} {{"));
                     self.depth += 1;
+                    let tag = self.is_tag(discr);
                     for (v, t) in targets.iter() {
                         let lines = self.capture(|s| s.branch(bb, t, tail))?;
-                        self.arm(format!("{v} =>"), lines);
+                        let pat = match tag_name(v as u64) {
+                            Some(n) if tag => format!("Tag::{n}"),
+                            _ => v.to_string(),
+                        };
+                        self.arm(format!("{pat} =>"), lines);
                     }
                     let lines = self.capture(|s| s.branch(bb, targets.otherwise(), tail))?;
                     self.arm("_ =>".into(), lines);
@@ -585,10 +839,8 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         for bb in self.body.basic_blocks.reverse_postorder() {
             self.line(format!("{} => {{", bb.as_usize()));
             self.depth += 1;
+            self.stmts(*bb)?;
             let data = &self.body.basic_blocks[*bb];
-            for st in &data.statements {
-                self.stmt(st)?;
-            }
             let goto = |t: BasicBlock| format!("__bb = {}; continue;", t.as_usize());
             match &data.terminator.as_ref().ok_or("block without terminator")?.kind {
                 TerminatorKind::Goto { target } => self.line(goto(*target)),
@@ -648,6 +900,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             self.out.clear();
             self.used.clear();
             self.open.clear();
+            self.folded.clear();
             self.line(format!("// {e}; emitted as a state machine."));
             self.state_machine()?;
             zeroed = true;
@@ -658,10 +911,18 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         let init = if zeroed { " = core::mem::zeroed()" } else { "" };
         for l in self.body.vars_and_temps_iter().chain((!ret_ty.is_unit()).then_some(Local::ZERO)) {
             let t = self.body.local_decls[l].ty;
-            if t.is_unit() || t.is_never() {
-                continue; // destinations of void and diverging calls: nothing to hold
+            if t.is_unit() || t.is_never() || self.folded.contains_key(&l) {
+                continue; // nothing to hold, or written into its one use
             }
-            s.push_str(&format!("        let mut {}: {}{init};\n", self.local(l), self.local_ty(l)));
+            let uses = self.uses.get(&l).copied().unwrap_or(0);
+            let dead = uses == 0 && self.body.basic_blocks.iter().flat_map(|b| &b.statements).all(|st| match &st.kind {
+                StatementKind::Assign(a) => a.0.as_local() != Some(l) || pure(&a.1),
+                _ => true,
+            });
+            if dead && l != Local::ZERO {
+                continue; // every definition was skipped as unread
+            }
+            s.push_str(&format!("        let mut {}: {}{init};\n", self.raw_name(l), self.local_ty(l)));
         }
         for (depth, text) in code {
             s.push_str(&"    ".repeat(depth));

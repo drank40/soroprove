@@ -34,7 +34,7 @@ declare %Val @map.map_new_from_linear_memory(%Val, %Val, %Val) local_unnamed_add
 
 declare %Val @vec.vec_new_from_linear_memory(%Val, %Val) local_unnamed_addr #8
 
-define %Val @read(%Val %0, %Val %1) local_unnamed_addr {
+define "wasm.type"="i64" %Val @read(%Val "wasm.type"="i64" %0, %Val "wasm.type"="i64" %1) local_unnamed_addr {
 entry:
   %frame = alloca [32 x i8], align 1
   %arg_payload = tail call i64 @soroban.val.payload(%Val %0)
@@ -102,7 +102,7 @@ f14.exit:                                         ; preds = %fall15.3, %f23.exit
   ret %Val %to_val
 }
 
-define %Val @pick(%Val %0) local_unnamed_addr {
+define "wasm.type"="i64" %Val @pick(%Val "wasm.type"="i64" %0) local_unnamed_addr {
 entry:
   %arg_payload = tail call i64 @soroban.val.payload(%Val %0)
   %and = and i64 %arg_payload, 255
@@ -147,7 +147,7 @@ fall8:                                            ; preds = %entry
 }
 
 ; Function Attrs: memory(inaccessiblemem: readwrite)
-define %Val @set_flag() local_unnamed_addr #1 {
+define "wasm.type"="i64" %Val @set_flag() local_unnamed_addr #1 {
 entry:
   %v_Symbol__f__ = tail call %Val @soroban.val.from_payload(i64 11022)
   %v_true = tail call %Val @soroban.val.from_payload(i64 1)
@@ -158,7 +158,7 @@ entry:
 }
 
 ; Function Attrs: memory(inaccessiblemem: readwrite)
-define internal fastcc void @f15() unnamed_addr #1 {
+define internal fastcc "wasm.type"="i64" void @f15() unnamed_addr #1 {
 entry:
   %v_Error_type_0__code_1_ = tail call %Val @soroban.val.from_payload(i64 4294967299)
   %fail_with_error = tail call %Val @context.fail_with_error(%Val %v_Error_type_0__code_1_)

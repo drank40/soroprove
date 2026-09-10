@@ -104,14 +104,31 @@ after every pass (`-Zvalidate-mir`), and optimizes it with its own inliner,
 GVN, copy propagation and dead-code passes (`-Zmir-opt-level=3`).
 `optimized_mir` is what gets printed and what the Rust is emitted from.
 
+**Types.** wasm has two scalar types, and on wasm32 a pointer is always `i32`
+and a Val always `i64`; `ponytail-wasm` records that on every parameter and
+return as a `wasm.type` attribute. `infer.rs` narrows it from the uses, each an
+exact constraint: a value turned into an address is a pointer; one wrapped as
+a Val is a Val; one at a host-call position takes that position's ABI type
+from `env.json`; one handed to another lifted function takes that parameter's
+type, and one returned takes the function's return type, solved to a fixpoint
+over the call graph. Where the evidence conflicts or is absent the wasm type
+stands, as the integer it is. So `f8(i32, i32, i32)`, the SDK's outlined
+`storage().set`, comes out as `f8(env: *mut u8, key: *mut u8, val: *mut u8)`
+and `f3(i64)` in `errors.wasm` as `f3(a0: Val)`, called `f3(Val::error(0, 1))`.
+Across the corpus below, of 3100 lifted parameters 544 are pointers, 1466 Vals,
+4 StorageTypes and 1086 integers; 803 returns are Vals. rustc borrow-checks
+the MIR built with these types, so a wrong inference is a compile error, never
+a silent one.
+
 The lift itself: one basic block per LLVM block, split at calls; phis as copies
 in an edge block; `%Val` as the ADT, its constructor an aggregate and its
 payload a field projection; a `StorageType` literal an enum variant, a runtime
 one a call to `core::intrinsics::transmute` that rustc lowers to its own
-`Transmute` cast; a frame a `[u64; N]` local whose raw address is taken;
-`trunc to i1` the low bit, since MIR has no int-to-bool cast; LLVM `noreturn`
-is `-> !`. Anything without a MIR equivalent is an error, never a guess. From
-`three_bugs.mir`, after rustc's passes:
+`Transmute` cast; a frame a `[u64; N]` local, its word slots array elements
+(`_29[1] = arg_payload1`) and its address `&raw mut`; `trunc to i1` the low
+bit, since MIR has no int-to-bool cast; LLVM `noreturn` is `-> !`. Anything
+without a MIR equivalent is an error, never a guess. From `three_bugs.mir`,
+after rustc's passes:
 
 ```
 fn set_flag() -> Val {
@@ -141,49 +158,43 @@ sits after its immediate dominator in a labelled block, so a jump to it is
 the merge nodes of its body inside the loop and its exits after; every other
 block is written inline where its one predecessor branches. A jump that is the
 last thing before its target falls through, and a label nothing jumps to is
-not written. Every local is declared once and assigned where MIR assigns it,
-and rustc's definite-initialisation check confirms what MIR's borrow check
-established. Constants print through `const fn` constructors in the prelude
+not written. A pure single-use temporary is written into its one use, and a
+pure statement nothing reads (rustc kept it for its debuginfo name) is not
+written. Constants print through `const fn` constructors in the prelude
 (`Val::sym("persisted")`, `Val::u32(2)`, `Val::error(0, 1)`), so the encoding
-is written once and rustc checks it; a `u64` local whose every use is a
-`Val(..)` construction is typed `Val` too -- the consumer decides, as it does
-for a host-call argument -- which is how a phi merging `Symbol("a")` and
-`Error(Contract, 1)` reads. `pick`, from `three_bugs.rs`:
+is written once and rustc checks it; `(x << 32) | 4` reads as `Val::u32(x)`,
+`x & 0xff == 77` as `== Tag::AddressObject`, and a `u64` local whose every use
+is a `Val(..)` construction is typed `Val` -- the consumer decides, as it does
+for a host-call argument. `hello`, from `errors.rs`, against the source in
+`errors.reference.rs`:
 
 ```rust
-pub fn pick(mut a0: Val) -> Val {
+pub fn hello(mut a0: Val) -> Val {
     unsafe {
         let mut arg_payload: u64;
-        let mut cmp: bool;
-        let mut and: u64;
-        let mut cmp2_not: bool;
-        let mut or_cond: bool;
         let mut lshr: u64;
-        let mut _8: u8;
-        let mut brif_not: Val;
+        let mut l0_0: Val;
         let mut to_val: Val;
         arg_payload = a0.0;
-        cmp = arg_payload < 21474836480u64;
-        and = arg_payload & 255u64;
-        cmp2_not = and == 4u64;
-        or_cond = cmp & cmp2_not;
-        if or_cond {
+        if (arg_payload < 21474836480u64) & ((arg_payload & 255u64) == Tag::U32Val) {
             lshr = arg_payload.wrapping_shr(32u64 as u32);
-            _8 = lshr as u8;
-            match _8 {
-                0 => { brif_not = Val::sym("a"); }
-                1 => { brif_not = Val::error(0, 1); }
-                2 => { f37(); trap(); }
-                3 => { f50(); }
-                _ => { brif_not = Val::sym("e"); }
+            put_contract_data(Val::sym("persisted"), Val::TRUE, StorageType::Persistent);
+            match lshr as u32 {
+                0 => { l0_0 = Val::sym("hello"); }          // Flag::A => Ok(symbol_short!("hello"))
+                1 => { l0_0 = Val::error(0, 1); }           // Flag::B => Err(Error::AnError)
+                2 => { f3(Val::error(0, 1)); trap(); }      // Flag::C => panic_with_error!(AnError)
+                3 => { f4(); }                              // Flag::D => panic!("an error")
+                _ => { f3(Val::error(0, 9)); trap(); }      // Flag::E => panic_with_error!(from_contract_error(9))
             }
-            to_val = brif_not;
+            to_val = l0_0;
             return to_val;
         } else {
             trap();
         }
     }
 }
+fn f3(mut a0: Val) { unsafe { fail_with_error(a0); return; } }
+fn f4() -> ! { unsafe { trap(); } }
 ```
 
     ponytail-wasm contract.wasm --inline > contract.inline.ll
@@ -192,20 +203,22 @@ pub fn pick(mut a0: Val) -> Val {
 
 Across the corpus below: 67 of 67 binaries, 1568 functions, build MIR that
 rustc accepts without a diagnostic and emit Rust that stable rustc accepts,
-all of it structured (47 s in total). Handing the passes to rustc instead of
-running a hand-picked subset cut the Rust by 15%, the locals by 20% and the
-labels by 78%, and left no raw `Val(n)` literal in 3894 constants. A function
-whose control flow the structurer cannot place -- a jump into a region from
-outside it, which would mean an irreducible graph -- is emitted as a
-`loop { match __bb }` state machine with a comment saying so; the corpus has
-none.
+all of it structured (57 s in total). Against the first MIR pipeline, which
+ran a hand-picked subset of passes and printed every temporary: Rust lines
+326k -> 149k, locals 122k -> 32k, labels 4553 -> 1016, raw `Val(n)` literals
+3222 -> 0, and 1607 tag checks named. A function whose control flow the
+structurer cannot place -- a jump into a region from outside it, which would
+mean an irreducible graph -- is emitted as a `loop { match __bb }` state
+machine with a comment saying so; the corpus has none.
 
-What still reads as machine output: the two frames of `read` are `[u64; 2]`
-locals written through raw pointers, because the SDK builds the map's value
-array and the vec's element array in memory and hands the host their
-addresses; and `llvm.*` intrinsics (`memset`, `bswap`, `fshl`, 15 call sites
-in the corpus) are typed `extern "C"` declarations rather than `core::ptr` and
-`u64` methods.
+What still reads as machine output: sub-word frame writes
+(`*(frame.wrapping_offset(16) as *mut u32) = 29`, a panic `Location`), because
+only whole aligned words become array elements; `u64` payloads stored into
+frames the host will read as Vals (`_27[0] = 1852552974u64`, which is
+`Symbol("Pair")`), because memory is untyped; `llvm.*` intrinsics (15 call
+sites) as typed `extern "C"` declarations; and a pointer parameter's pointee,
+whose layout the accesses give (`+0: u64, +8: u64`) but whose name would need
+matching against `contractspecv0`.
 
 ## `errors.wasm` — vendored, 796 bytes
 

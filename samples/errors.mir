@@ -61,7 +61,7 @@ fn hello(_1: Val) -> Val {
     }
 
     bb5: {
-        _12 = f3(const 38654705667_u64) -> [return: bb10, unwind unreachable];
+        _12 = f3(const Val(38654705667_u64)) -> [return: bb10, unwind unreachable];
     }
 
     bb6: {
@@ -69,7 +69,7 @@ fn hello(_1: Val) -> Val {
     }
 
     bb7: {
-        _15 = f3(const 4294967299_u64) -> [return: bb11, unwind unreachable];
+        _15 = f3(const Val(4294967299_u64)) -> [return: bb11, unwind unreachable];
     }
 
     bb8: {
@@ -93,17 +93,15 @@ fn hello(_1: Val) -> Val {
 
 // MIR for `f3` 0 ponytail
 
-fn f3(_1: u64) -> () {
+fn f3(_1: Val) -> () {
     debug a0 => _1;
-    debug to_val => _2;
-    debug fail_with_error => _3;
+    debug to_val => _1;
+    debug fail_with_error => _2;
     let mut _0: ();
     let mut _2: Val;
-    let mut _3: Val;
 
     bb0: {
-        _2 = Val(copy _1);
-        _3 = fail_with_error(move _2) -> [return: bb1, unwind unreachable];
+        _2 = fail_with_error(move _1) -> [return: bb1, unwind unreachable];
     }
 
     bb1: {

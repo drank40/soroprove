@@ -32,9 +32,12 @@ fn rust_from_mir_is_structured_decoded_and_typechecks() {
     // Constants read as what they are, through constructors rustc checks.
     assert!(rs.contains("put_contract_data(Val::sym(\"f\"), Val::TRUE, StorageType::Persistent)"), "{rs}");
     // read: the Symbol("Pair") encoding loop folded to its constant, a u64
-    // stored into the frame the vec is built from.
+    // stored into a frame slot; the frame's address travels as a U32Val.
     let read = body_of(&rs, "pub fn read");
-    assert!(!read.contains("loop") && read.contains("= 1852552974u64;"), "{read}");
+    assert!(!read.contains("loop") && read.contains("[0] = 1852552974u64;") && read.contains("Val::u32("), "{read}");
+    // f37: its parameterless body hands a decoded error to the host; the
+    // unread result is not kept.
+    assert!(body_of(&rs, "fn f37").contains("fail_with_error(Val::error(0, 1));"), "{rs}");
     // pick: a five-way dispatch, structured, no state machine, no dead labels,
     // and the phi that merges the arms' results is typed as the Val it feeds.
     let pick = body_of(&rs, "pub fn pick");

@@ -54,7 +54,7 @@ declare %Val @context.fail_with_error(%Val) #3
 ; Function Attrs: memory(inaccessiblemem: readwrite)
 declare %Val @ledger.put_contract_data(%Val, %Val, i64) #4
 
-define %Val @hello(%Val %0) {
+define "wasm.type"="i64" %Val @hello(%Val "wasm.type"="i64" %0) {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -129,7 +129,7 @@ c9:                                               ; preds = %fall4
   unreachable
 }
 
-define void @f3(i64 %0) {
+define void @f3(i64 "wasm.type"="i64" %0) {
 entry:
   %l0 = alloca i64, align 8
   store i64 %0, ptr %l0, align 4
