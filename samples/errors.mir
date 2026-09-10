@@ -8,11 +8,11 @@ fn hello(_1: Val) -> Val {
     debug cmp2.not => _5;
     debug or.cond => _6;
     debug lshr => _7;
+    debug t => _8;
     debug v_Symbol__persisted__ => const Val(3867323444879862030_u64);
     debug v_true => const Val(1_u64);
     debug Persistent => const StorageType::Persistent;
-    debug put_contract_data => _8;
-    debug sel => _9;
+    debug put_contract_data => _9;
     debug l0.0 => _10;
     debug to_val => _0;
     let mut _0: Val;
@@ -22,8 +22,8 @@ fn hello(_1: Val) -> Val {
     let mut _5: bool;
     let mut _6: bool;
     let mut _7: u64;
-    let mut _8: Val;
-    let mut _9: u32;
+    let mut _8: u32;
+    let mut _9: Val;
     let mut _10: u64;
     let mut _11: !;
     let mut _12: ();
@@ -47,7 +47,8 @@ fn hello(_1: Val) -> Val {
 
     bb2: {
         _7 = Shr(copy _2, const 32_u64);
-        _8 = put_contract_data(const Val(3867323444879862030_u64), const Val(1_u64), const StorageType::Persistent) -> [return: bb8, unwind unreachable];
+        _8 = copy _7 as u32 (IntToInt);
+        _9 = put_contract_data(const Val(3867323444879862030_u64), const Val(1_u64), const StorageType::Persistent) -> [return: bb8, unwind unreachable];
     }
 
     bb3: {
@@ -73,8 +74,7 @@ fn hello(_1: Val) -> Val {
     }
 
     bb8: {
-        _9 = copy _7 as u32 (IntToInt);
-        switchInt(copy _9) -> [0: bb4, 1: bb9, 2: bb7, 3: bb6, otherwise: bb5];
+        switchInt(copy _8) -> [0: bb4, 1: bb9, 2: bb7, 3: bb6, otherwise: bb5];
     }
 
     bb9: {

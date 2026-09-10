@@ -134,8 +134,9 @@ pub fn add(mut a: Val, mut b: Val) -> Val {
         let mut frame: *mut u8;
         let mut slot8: *mut u8;
         let mut slot16: *mut u8;
+        let mut fp: u64;
         let mut ld: u8;
-        let mut obj_from_i64_12: Val;
+        let mut obj_from_i64_14: Val;
         let mut l1_0: Val;
         let mut ld5: u64;
         let mut ld6: u64;
@@ -143,72 +144,71 @@ pub fn add(mut a: Val, mut b: Val) -> Val {
         let mut ld7: u8;
         let mut l1_1: u64;
         let mut ld14: u8;
-        let mut ld20: u64;
-        let mut ld22: u64;
-        let mut ld24: u8;
-        let mut zx25: u64;
-        let mut vec_len_34: Val;
-        let mut fp33: u64;
-        let mut l1_2_lcssa220: u64;
-        let mut ld35: u64;
-        let mut ld42: u64;
-        let mut add_47: u64;
-        let mut add147: u64;
-        let mut vec_len83: Val;
-        let mut fp95: u64;
-        let mut l0_1_lcssa219: u64;
-        let mut ld97: u64;
-        let mut ld104: u64;
-        let mut add109: u64;
-        let mut _81: [u64; 8];
-        let mut _84: *mut u8;
-        let mut to_val162: Val;
-        _81 = [0u64; 8];
-        frame = (&raw mut _81) as *mut u8;
+        let mut ld21: u64;
+        let mut ld23: u64;
+        let mut ld25: u8;
+        let mut zx26: u64;
+        let mut vec_len_37: Val;
+        let mut fp35: u64;
+        let mut l1_2_lcssa246: u64;
+        let mut ld37: u64;
+        let mut ld44: u64;
+        let mut add_51: u64;
+        let mut add167: u64;
+        let mut vec_len94: Val;
+        let mut fp106: u64;
+        let mut l0_1_lcssa245: u64;
+        let mut ld108: u64;
+        let mut ld115: u64;
+        let mut add120: u64;
+        let mut _86: [u64; 8];
+        let mut to_val185: Val;
+        _86 = [0u64; 8];
+        frame = (&raw mut _86) as *mut u8;
         slot8 = frame.wrapping_offset(8isize);
-        _81[1] = b.0;
-        _81[0] = a.0;
+        _86[1] = b.0;
+        _86[0] = a.0;
         slot16 = frame.wrapping_offset(16isize);
-        _84 = ((slot16 as u64) as usize) as *mut u8;
-        UdtEnum_try_from_val(_84, (((frame as u64) as usize) as *mut u8));
+        fp = (slot16 as u32) as u64;
+        UdtEnum_try_from_val(fp, ((frame as u32) as u64));
         ld = (*slot16);
         match ld {
             4 => {}
             _ => {
-                ld5 = _81[4];
-                ld6 = _81[3];
+                ld5 = _86[4];
+                ld6 = _86[3];
                 slot17 = frame.wrapping_offset(17isize);
                 ld7 = (*slot17);
                 l1_1 = ld7 as u64;
-                UdtEnum_try_from_val(_84, (((slot8 as u64) as usize) as *mut u8));
+                UdtEnum_try_from_val(fp, ((slot8 as u32) as u64));
                 ld14 = (*slot16);
                 match ld14 {
                     4 => {}
                     _ => {
                         'b3: {
                             'b4: {
-                                ld20 = _81[4];
-                                ld22 = _81[3];
-                                ld24 = (*slot17);
-                                zx25 = ld24 as u64;
+                                ld21 = _86[4];
+                                ld23 = _86[3];
+                                ld25 = (*slot17);
+                                zx26 = ld25 as u64;
                                 match ld {
                                     3 => {
-                                        vec_len_34 = vec_len(Val(ld5));
+                                        vec_len_37 = vec_len(Val(ld5));
                                         (*((frame.wrapping_offset(56isize) as *mut u32))) = 0u32;
-                                        _81[6] = ld5;
-                                        (*((frame.wrapping_offset(60isize) as *mut u32))) = ((vec_len_34.0.wrapping_shr(32u64 as u32)) as u32);
-                                        fp33 = frame.wrapping_offset(48isize) as u64;
-                                        l1_2_lcssa220 = 0u64;
+                                        _86[6] = ld5;
+                                        (*((frame.wrapping_offset(60isize) as *mut u32))) = ((vec_len_37.0.wrapping_shr(32u64 as u32)) as u32);
+                                        fp35 = (frame.wrapping_offset(48isize) as u32) as u64;
+                                        l1_2_lcssa246 = 0u64;
                                         loop {
-                                            f25(_84, ((fp33 as usize) as *mut u8));
-                                            ld35 = _81[2];
-                                            if ld35 > 2u64 {
+                                            f25(fp, fp35);
+                                            ld37 = _86[2];
+                                            if ld37 > 2u64 {
                                                 break 'b3;
                                             } else {
-                                                match ld35 as u32 {
+                                                match ld37 as u32 {
                                                     2 => {
-                                                        l1_1 = l1_2_lcssa220.wrapping_add(ld6);
-                                                        if ((l1_2_lcssa220 as i64) < 0i64) ^ ((l1_1 as i64) >= (ld6 as i64)) {
+                                                        l1_1 = l1_2_lcssa246.wrapping_add(ld6);
+                                                        if ((l1_2_lcssa246 as i64) < 0i64) ^ ((l1_1 as i64) >= (ld6 as i64)) {
                                                             break 'b4;
                                                         } else {
                                                             break 'b3;
@@ -218,10 +218,10 @@ pub fn add(mut a: Val, mut b: Val) -> Val {
                                                         break 'b3;
                                                     }
                                                     _ => {
-                                                        ld42 = _81[3];
-                                                        add_47 = ld42.wrapping_add(l1_2_lcssa220);
-                                                        if ((ld42 as i64) < 0i64) ^ ((add_47 as i64) >= (l1_2_lcssa220 as i64)) {
-                                                            l1_2_lcssa220 = add_47;
+                                                        ld44 = _86[3];
+                                                        add_51 = ld44.wrapping_add(l1_2_lcssa246);
+                                                        if ((ld44 as i64) < 0i64) ^ ((add_51 as i64) >= (l1_2_lcssa246 as i64)) {
+                                                            l1_2_lcssa246 = add_51;
                                                         } else {
                                                             break 'b3;
                                                         }
@@ -245,22 +245,22 @@ pub fn add(mut a: Val, mut b: Val) -> Val {
                             'b13: {
                                 match ld14 {
                                     3 => {
-                                        vec_len83 = vec_len(Val(ld20));
+                                        vec_len94 = vec_len(Val(ld21));
                                         (*((frame.wrapping_offset(56isize) as *mut u32))) = 0u32;
-                                        _81[6] = ld20;
-                                        (*((frame.wrapping_offset(60isize) as *mut u32))) = ((vec_len83.0.wrapping_shr(32u64 as u32)) as u32);
-                                        fp95 = frame.wrapping_offset(48isize) as u64;
-                                        l0_1_lcssa219 = 0u64;
+                                        _86[6] = ld21;
+                                        (*((frame.wrapping_offset(60isize) as *mut u32))) = ((vec_len94.0.wrapping_shr(32u64 as u32)) as u32);
+                                        fp106 = (frame.wrapping_offset(48isize) as u32) as u64;
+                                        l0_1_lcssa245 = 0u64;
                                         loop {
-                                            f25(_84, ((fp95 as usize) as *mut u8));
-                                            ld97 = _81[2];
-                                            if ld97 > 2u64 {
+                                            f25(fp, fp106);
+                                            ld108 = _86[2];
+                                            if ld108 > 2u64 {
                                                 break 'b3;
                                             } else {
-                                                match ld97 as u32 {
+                                                match ld108 as u32 {
                                                     2 => {
-                                                        zx25 = l0_1_lcssa219.wrapping_add(ld22);
-                                                        if ((l0_1_lcssa219 as i64) < 0i64) ^ ((zx25 as i64) < (ld22 as i64)) {
+                                                        zx26 = l0_1_lcssa245.wrapping_add(ld23);
+                                                        if ((l0_1_lcssa245 as i64) < 0i64) ^ ((zx26 as i64) < (ld23 as i64)) {
                                                             break 'b3;
                                                         } else {
                                                             break 'b13;
@@ -270,10 +270,10 @@ pub fn add(mut a: Val, mut b: Val) -> Val {
                                                         break 'b3;
                                                     }
                                                     _ => {
-                                                        ld104 = _81[3];
-                                                        add109 = ld104.wrapping_add(l0_1_lcssa219);
-                                                        if ((ld104 as i64) < 0i64) ^ ((add109 as i64) >= (l0_1_lcssa219 as i64)) {
-                                                            l0_1_lcssa219 = add109;
+                                                        ld115 = _86[3];
+                                                        add120 = ld115.wrapping_add(l0_1_lcssa245);
+                                                        if ((ld115 as i64) < 0i64) ^ ((add120 as i64) >= (l0_1_lcssa245 as i64)) {
+                                                            l0_1_lcssa245 = add120;
                                                         } else {
                                                             break 'b3;
                                                         }
@@ -283,27 +283,27 @@ pub fn add(mut a: Val, mut b: Val) -> Val {
                                         }
                                     }
                                     1 => {
-                                        zx25 = ld22.wrapping_add(ld20);
-                                        if !((ld20 as i64) < 0i64) ^ ((zx25 as i64) >= (ld22 as i64)) {
+                                        zx26 = ld23.wrapping_add(ld21);
+                                        if !((ld21 as i64) < 0i64) ^ ((zx26 as i64) >= (ld23 as i64)) {
                                             break 'b3;
                                         }
                                     }
                                     2 => {}
                                     _ => {
-                                        zx25 = 0u64;
+                                        zx26 = 0u64;
                                     }
                                 }
                             }
-                            add147 = zx25.wrapping_add(l1_1);
-                            if !((zx25 as i64) < 0i64) ^ ((add147 as i64) < (l1_1 as i64)) {
-                                if add147.wrapping_add(18410715276690587648u64) < 18374686479671623680u64 {
-                                    obj_from_i64_12 = obj_from_i64(add147);
-                                    l1_0 = obj_from_i64_12;
+                            add167 = zx26.wrapping_add(l1_1);
+                            if !((zx26 as i64) < 0i64) ^ ((add167 as i64) < (l1_1 as i64)) {
+                                if add167.wrapping_add(18410715276690587648u64) < 18374686479671623680u64 {
+                                    obj_from_i64_14 = obj_from_i64(add167);
+                                    l1_0 = obj_from_i64_14;
                                 } else {
-                                    l1_0 = Val((add147.wrapping_shl(8u64 as u32)) | 7u64);
+                                    l1_0 = Val((add167.wrapping_shl(8u64 as u32)) | 7u64);
                                 }
-                                to_val162 = l1_0;
-                                return to_val162;
+                                to_val185 = l1_0;
+                                return to_val185;
                             }
                         }
                         panic();
@@ -322,41 +322,39 @@ pub fn recursive(mut a: Val) -> Val {
         let mut slot8: *mut u8;
         let mut fp: u64;
         let mut ld4: u64;
-        let mut vec_len_10: Val;
-        let mut vec_front_13: Val;
+        let mut vec_len_11: Val;
+        let mut vec_front_14: Val;
         let mut ld19: u64;
         let mut Map__a____b__: Val;
         let mut l0_0: Val;
-        let mut _24: [u64; 4];
-        let mut _28: *mut u8;
+        let mut _25: [u64; 4];
         let mut to_val: Val;
         let mut to_val37: Val;
-        _24 = [0u64; 4];
-        frame = (&raw mut _24) as *mut u8;
+        _25 = [0u64; 4];
+        frame = (&raw mut _25) as *mut u8;
         slot8 = frame.wrapping_offset(8isize);
         (*((slot8 as *mut u32))) = 2u32;
-        fp = slot8 as u64;
-        _28 = (fp as usize) as *mut u8;
-        f21(_28, a);
+        fp = (slot8 as u32) as u64;
+        f21(fp, a);
         'b1: {
-            ld4 = _24[1];
+            ld4 = _25[1];
             match ld4 {
                 1 => {}
                 _ => {
-                    to_val = Val(_24[3]);
-                    vec_len_10 = vec_len(to_val);
-                    if vec_len_10.0 > 4294967295u64 {
-                        vec_front_13 = vec_front(to_val);
-                        f21(_28, vec_front_13);
-                        ld19 = _24[1];
+                    to_val = Val(_25[3]);
+                    vec_len_11 = vec_len(to_val);
+                    if vec_len_11.0 > 4294967295u64 {
+                        vec_front_14 = vec_front(to_val);
+                        f21(fp, vec_front_14);
+                        ld19 = _25[1];
                         match ld19 {
                             1 => {
                                 break 'b1;
                             }
                             _ => {
-                                _24[2] = _24[3];
-                                _24[1] = _24[2];
-                                Map__a____b__ = map_new_from_linear_memory(Val::u32(1048752) /* "a", "b" */, Val::u32(fp as u32), Val::u32(2)); // Map{ a: Val(_24[2]), b: Val(_24[3]) }
+                                _25[2] = _25[3];
+                                _25[1] = _25[2];
+                                Map__a____b__ = map_new_from_linear_memory(Val::u32(1048752) /* "a", "b" */, Val::u32(fp as u32), Val::u32(2)); // Map{ a: Val(_25[2]), b: Val(_25[3]) }
                                 l0_0 = Map__a____b__;
                             }
                         }
@@ -381,87 +379,83 @@ pub fn recursive_enum(mut a: Val, mut key: Val) -> Val {
         let mut slot24: *mut u8;
         let mut and: u64;
         let mut vec_len_9: Val;
+        let mut t: u32;
         let mut fp: u64;
-        let mut bottom: u64;
         let mut vec_get_19: Val;
-        let mut payload364: u64;
+        let mut payload372: u64;
         let mut symbol_index_in_linear_memory_23: Val;
-        let mut payload366: u64;
-        let mut ld121: u32;
-        let mut ld124: u32;
+        let mut payload374: u64;
+        let mut ld129: u32;
+        let mut ld132: u32;
         let mut cmp: bool;
-        let mut zx143: u64;
-        let mut cmp130_not: bool;
-        let mut zx35: u64;
+        let mut cmp138_not: bool;
         let mut slot48: *mut u8;
-        let mut bottom372: u64;
-        let mut vec_get377: Val;
-        let mut ld55: u64;
-        let mut cmp61_not: bool;
-        let mut map_has_59: Val;
-        let mut payload69: u64;
-        let mut map_get_62: Val;
-        let mut payload77: u64;
-        let mut and78: u64;
-        let mut vec_len84: Val;
-        let mut bottom379: u64;
-        let mut vec_get382: Val;
-        let mut payload383: u64;
-        let mut symbol_index_in_linear_memory385: Val;
-        let mut payload386: u64;
-        let mut ld203: u32;
-        let mut ld206: u32;
-        let mut cmp387: bool;
-        let mut bottom388: u64;
-        let mut vec_get396: Val;
-        let mut ld165: u64;
-        let mut ld170: u64;
-        let mut ld172: u64;
-        let mut ld184: u32;
-        let mut ld188: u64;
+        let mut vec_get384: Val;
+        let mut ld59: u64;
+        let mut cmp65_not: bool;
+        let mut map_has_55: Val;
+        let mut payload73: u64;
+        let mut map_get_58: Val;
+        let mut payload81: u64;
+        let mut and82: u64;
+        let mut vec_len88: Val;
+        let mut t96: u32;
+        let mut vec_get388: Val;
+        let mut payload389: u64;
+        let mut symbol_index_in_linear_memory391: Val;
+        let mut payload392: u64;
+        let mut ld212: u32;
+        let mut ld215: u32;
+        let mut cmp393: bool;
+        let mut vec_get402: Val;
+        let mut ld174: u64;
+        let mut ld179: u64;
+        let mut ld181: u64;
+        let mut ld193: u32;
+        let mut ld197: u64;
         let mut Map__a____b__: Val;
-        let mut vec_new_from_linear_memory_101: Val;
+        let mut vec_new_from_linear_memory_96: Val;
         let mut Symbol__NotRecursive__: Val;
-        let mut payload405: u64;
-        let mut vec_new_from_linear_memory409: Val;
+        let mut payload410: u64;
+        let mut vec_new_from_linear_memory414: Val;
         let mut l0_0: Val;
-        let mut _108: [u64; 8];
-        let mut _110: *mut u32;
-        let mut _113: *mut u32;
-        let mut _114: *mut u32;
-        let mut _122: *mut u8;
-        let mut to_val67: Val;
-        let mut to_val68: Val;
+        let mut _103: [u64; 8];
+        let mut _105: *mut u32;
+        let mut _108: *mut u32;
+        let mut _109: *mut u32;
+        let mut to_val71: Val;
+        let mut to_val72: Val;
         let mut to_val1: Val;
-        let mut to_val231: Val;
+        let mut to_val240: Val;
         'b2: {
             arg_payload = a.0;
             arg_payload1 = key.0;
-            _108 = [0u64; 8];
-            frame = (&raw mut _108) as *mut u8;
+            _103 = [0u64; 8];
+            frame = (&raw mut _103) as *mut u8;
             slot24 = frame.wrapping_offset(24isize);
-            _110 = slot24 as *mut u32;
-            (*_110) = 3u32;
+            _105 = slot24 as *mut u32;
+            (*_105) = 3u32;
             and = arg_payload & 255u64;
             match and {
                 Tag::VecObject => {
                     vec_len_9 = vec_len(a);
-                    _113 = frame.wrapping_offset(16isize) as *mut u32;
-                    (*_113) = 0u32;
-                    _108[1] = arg_payload;
-                    _114 = frame.wrapping_offset(20isize) as *mut u32;
-                    (*_114) = ((vec_len_9.0.wrapping_shr(32u64 as u32)) as u32);
-                    fp = slot24 as u64;
-                    bottom = unknown_i64();
                     'b1: {
-                        match bottom {
-                            0 => {
+                        _108 = frame.wrapping_offset(16isize) as *mut u32;
+                        (*_108) = 0u32;
+                        _103[1] = arg_payload;
+                        t = (vec_len_9.0.wrapping_shr(32u64 as u32)) as u32;
+                        _109 = frame.wrapping_offset(20isize) as *mut u32;
+                        (*_109) = t;
+                        fp = (slot24 as u32) as u64;
+                        match t {
+                            0 => {}
+                            _ => {
                                 vec_get_19 = vec_get(a, Val::u32(0));
-                                payload364 = vec_get_19.0;
-                                _108[4] = payload364;
-                                (*_113) = 1u32;
-                                _108[3] = 0u64;
-                                match payload364 as u8 {
+                                payload372 = vec_get_19.0;
+                                _103[4] = payload372;
+                                (*_108) = 1u32;
+                                _103[3] = 0u64;
+                                match payload372 as u8 {
                                     74 => {}
                                     14 => {}
                                     _ => {
@@ -469,26 +463,26 @@ pub fn recursive_enum(mut a: Val, mut key: Val) -> Val {
                                     }
                                 }
                                 symbol_index_in_linear_memory_23 = symbol_index_in_linear_memory(vec_get_19, Val::u32(1048792) /* "NotRecursive", "Recursive" */, Val::u32(2));
-                                payload366 = symbol_index_in_linear_memory_23.0;
-                                if payload366 > 8589934591u64 {
+                                payload374 = symbol_index_in_linear_memory_23.0;
+                                if payload374 > 8589934591u64 {
                                     break 'b2;
                                 } else {
-                                    ld121 = (*_113);
-                                    ld124 = (*_114);
-                                    cmp = ld124 < ld121;
-                                    if payload366 < 4294967296u64 {
+                                    ld129 = (*_108);
+                                    ld132 = (*_109);
+                                    cmp = ld132 < ld129;
+                                    if payload374 < 4294967296u64 {
                                         if cmp {
                                             panic();
                                         } else {
-                                            cmp130_not = (arg_payload1 & 255u64) == Tag::U32Val;
-                                            if ld124 == ld121 {
-                                                if cmp130_not {
+                                            cmp138_not = (arg_payload1 & 255u64) == Tag::U32Val;
+                                            if ld132 == ld129 {
+                                                if cmp138_not {
                                                     l0_0 = Val::VOID;
                                                 } else {
                                                     break 'b2;
                                                 }
                                             } else {
-                                                cmp130_not = false;
+                                                cmp138_not = false;
                                                 break 'b2;
                                             }
                                         }
@@ -496,172 +490,160 @@ pub fn recursive_enum(mut a: Val, mut key: Val) -> Val {
                                         if cmp {
                                             panic();
                                         } else {
-                                            zx35 = ld121 as u64;
-                                            if ((ld124 as u64).wrapping_sub(zx35)) > 1u64 {
-                                                break 'b2;
-                                            } else {
+                                            if ld132.wrapping_sub(ld129) < 2u32 {
                                                 slot48 = frame.wrapping_offset(48isize);
-                                                bottom372 = unknown_i64();
-                                                match bottom372 {
-                                                    0 => {
-                                                        vec_get377 = vec_get(Val(_108[1]), Val::u32(zx35 as u32));
-                                                        _108[7] = vec_get377.0;
-                                                        (*_113) = ld121.wrapping_add(1u32);
-                                                        _108[6] = 0u64;
-                                                        _122 = (fp as usize) as *mut u8;
-                                                        f22(_122, vec_get377);
-                                                        ld55 = _108[3];
-                                                        cmp61_not = (arg_payload1 & 255u64) == Tag::U32Val;
-                                                        match ld55 {
-                                                            1 => {
-                                                                cmp61_not = false;
-                                                                break 'b2;
-                                                            }
-                                                            _ => {
-                                                                if cmp61_not {
-                                                                    to_val67 = Val(_108[5]);
-                                                                    to_val68 = Val(arg_payload1 & 18446744069414584324u64);
-                                                                    map_has_59 = map_has(to_val67, to_val68);
-                                                                    payload69 = map_has_59.0;
-                                                                    match payload69 {
-                                                                        1 => {
-                                                                            map_get_62 = map_get(to_val67, to_val68);
-                                                                            payload77 = map_get_62.0;
-                                                                            and78 = payload77 & 255u64;
-                                                                            match and78 {
-                                                                                Tag::VecObject => {
-                                                                                    vec_len84 = vec_len(map_get_62);
-                                                                                    (*_113) = 0u32;
-                                                                                    _108[1] = payload77;
-                                                                                    (*_114) = ((vec_len84.0.wrapping_shr(32u64 as u32)) as u32);
-                                                                                    bottom379 = unknown_i64();
-                                                                                    match bottom379 {
-                                                                                        0 => {
-                                                                                            vec_get382 = vec_get(map_get_62, Val::u32(0));
-                                                                                            payload383 = vec_get382.0;
-                                                                                            _108[4] = payload383;
-                                                                                            (*_113) = 1u32;
-                                                                                            _108[3] = 0u64;
-                                                                                            match payload383 as u8 {
-                                                                                                74 => {}
-                                                                                                14 => {}
-                                                                                                _ => {
-                                                                                                    break 'b2;
-                                                                                                }
-                                                                                            }
-                                                                                            symbol_index_in_linear_memory385 = symbol_index_in_linear_memory(vec_get382, Val::u32(1048792) /* "NotRecursive", "Recursive" */, Val::u32(2));
-                                                                                            payload386 = symbol_index_in_linear_memory385.0;
-                                                                                            if payload386 > 8589934591u64 {
+                                                if ld129 < ld132 {
+                                                    vec_get384 = vec_get(Val(_103[1]), Val::u32((ld129 as u64) as u32));
+                                                    _103[7] = vec_get384.0;
+                                                    (*_108) = ld129.wrapping_add(1u32);
+                                                    _103[6] = 0u64;
+                                                    f22(fp, vec_get384);
+                                                    ld59 = _103[3];
+                                                    cmp65_not = (arg_payload1 & 255u64) == Tag::U32Val;
+                                                    match ld59 {
+                                                        1 => {
+                                                            cmp65_not = false;
+                                                            break 'b2;
+                                                        }
+                                                        _ => {
+                                                            if cmp65_not {
+                                                                to_val71 = Val(_103[5]);
+                                                                to_val72 = Val(arg_payload1 & 18446744069414584324u64);
+                                                                map_has_55 = map_has(to_val71, to_val72);
+                                                                payload73 = map_has_55.0;
+                                                                match payload73 {
+                                                                    1 => {
+                                                                        map_get_58 = map_get(to_val71, to_val72);
+                                                                        payload81 = map_get_58.0;
+                                                                        and82 = payload81 & 255u64;
+                                                                        match and82 {
+                                                                            Tag::VecObject => {
+                                                                                vec_len88 = vec_len(map_get_58);
+                                                                                (*_108) = 0u32;
+                                                                                _103[1] = payload81;
+                                                                                t96 = (vec_len88.0.wrapping_shr(32u64 as u32)) as u32;
+                                                                                (*_109) = t96;
+                                                                                match t96 {
+                                                                                    0 => {
+                                                                                        break 'b1;
+                                                                                    }
+                                                                                    _ => {
+                                                                                        vec_get388 = vec_get(map_get_58, Val::u32(0));
+                                                                                        payload389 = vec_get388.0;
+                                                                                        _103[4] = payload389;
+                                                                                        (*_108) = 1u32;
+                                                                                        _103[3] = 0u64;
+                                                                                        match payload389 as u8 {
+                                                                                            74 => {}
+                                                                                            14 => {}
+                                                                                            _ => {
                                                                                                 break 'b2;
-                                                                                            } else {
-                                                                                                ld203 = (*_113);
-                                                                                                ld206 = (*_114);
-                                                                                                cmp387 = ld206 < ld203;
-                                                                                                if payload386 < 4294967296u64 {
-                                                                                                    if cmp387 {
-                                                                                                        panic();
-                                                                                                    } else {
-                                                                                                        if ld206 == ld203 {
-                                                                                                            (*_110) = 3u32;
-                                                                                                            Symbol__NotRecursive__ = Val::symbol("NotRecursive"); // RecursiveEnum::NotRecursive
-                                                                                                            payload405 = Symbol__NotRecursive__.0;
-                                                                                                            _108[4] = payload405;
-                                                                                                            _108[3] = payload405;
-                                                                                                            vec_new_from_linear_memory409 = vec_new_from_linear_memory(Val::u32(fp as u32), Val::u32(1));
-                                                                                                            l0_0 = vec_new_from_linear_memory409;
-                                                                                                        } else {
-                                                                                                            break 'b2;
-                                                                                                        }
-                                                                                                    }
+                                                                                            }
+                                                                                        }
+                                                                                        symbol_index_in_linear_memory391 = symbol_index_in_linear_memory(vec_get388, Val::u32(1048792) /* "NotRecursive", "Recursive" */, Val::u32(2));
+                                                                                        payload392 = symbol_index_in_linear_memory391.0;
+                                                                                        if payload392 > 8589934591u64 {
+                                                                                            break 'b2;
+                                                                                        } else {
+                                                                                            ld212 = (*_108);
+                                                                                            ld215 = (*_109);
+                                                                                            cmp393 = ld215 < ld212;
+                                                                                            if payload392 < 4294967296u64 {
+                                                                                                if cmp393 {
+                                                                                                    panic();
                                                                                                 } else {
-                                                                                                    if cmp387 {
-                                                                                                        panic();
+                                                                                                    if ld215 == ld212 {
+                                                                                                        (*_105) = 3u32;
+                                                                                                        Symbol__NotRecursive__ = Val::symbol("NotRecursive"); // RecursiveEnum::NotRecursive
+                                                                                                        payload410 = Symbol__NotRecursive__.0;
+                                                                                                        _103[4] = payload410;
+                                                                                                        _103[3] = payload410;
+                                                                                                        vec_new_from_linear_memory414 = vec_new_from_linear_memory(Val::u32(fp as u32), Val::u32(1));
+                                                                                                        l0_0 = vec_new_from_linear_memory414;
                                                                                                     } else {
-                                                                                                        zx143 = ld203 as u64;
-                                                                                                        if ((ld206 as u64).wrapping_sub(zx143)) > 1u64 {
-                                                                                                            break 'b2;
-                                                                                                        } else {
-                                                                                                            bottom388 = unknown_i64();
-                                                                                                            match bottom388 {
-                                                                                                                0 => {
-                                                                                                                    vec_get396 = vec_get(Val(_108[1]), Val::u32(zx143 as u32));
-                                                                                                                    _108[7] = vec_get396.0;
-                                                                                                                    (*_113) = ld203.wrapping_add(1u32);
-                                                                                                                    _108[6] = 0u64;
-                                                                                                                    f22(_122, vec_get396);
-                                                                                                                    ld165 = _108[3];
-                                                                                                                    match ld165 {
-                                                                                                                        1 => {
-                                                                                                                            break 'b2;
+                                                                                                        break 'b2;
+                                                                                                    }
+                                                                                                }
+                                                                                            } else {
+                                                                                                if cmp393 {
+                                                                                                    panic();
+                                                                                                } else {
+                                                                                                    if ld215.wrapping_sub(ld212) < 2u32 {
+                                                                                                        if ld212 < ld215 {
+                                                                                                            vec_get402 = vec_get(Val(_103[1]), Val::u32((ld212 as u64) as u32));
+                                                                                                            _103[7] = vec_get402.0;
+                                                                                                            (*_108) = ld212.wrapping_add(1u32);
+                                                                                                            _103[6] = 0u64;
+                                                                                                            f22(fp, vec_get402);
+                                                                                                            ld174 = _103[3];
+                                                                                                            match ld174 {
+                                                                                                                1 => {
+                                                                                                                    break 'b2;
+                                                                                                                }
+                                                                                                                _ => {
+                                                                                                                    ld179 = _103[5];
+                                                                                                                    ld181 = _103[4];
+                                                                                                                    (*_105) = 3u32;
+                                                                                                                    f30(fp, 1048780u64, 9u64);
+                                                                                                                    ld193 = (*_105);
+                                                                                                                    match ld193 {
+                                                                                                                        0 => {
+                                                                                                                            ld197 = _103[4];
+                                                                                                                            _103[4] = ld179;
+                                                                                                                            _103[3] = ld181;
+                                                                                                                            to_val1 = Val::u32(fp as u32);
+                                                                                                                            Map__a____b__ = map_new_from_linear_memory(Val::u32(1048752) /* "a", "b" */, to_val1, Val::u32(2)); // Map{ a, b }
+                                                                                                                            _103[4] = Map__a____b__.0;
+                                                                                                                            _103[3] = ld197;
+                                                                                                                            vec_new_from_linear_memory_96 = vec_new_from_linear_memory(to_val1, Val::u32(2));
+                                                                                                                            l0_0 = vec_new_from_linear_memory_96;
                                                                                                                         }
                                                                                                                         _ => {
-                                                                                                                            ld170 = _108[5];
-                                                                                                                            ld172 = _108[4];
-                                                                                                                            (*_110) = 3u32;
-                                                                                                                            f30(_122, (1048780usize as *mut u8), 9u64);
-                                                                                                                            ld184 = (*_110);
-                                                                                                                            match ld184 {
-                                                                                                                                0 => {
-                                                                                                                                    ld188 = _108[4];
-                                                                                                                                    _108[4] = ld170;
-                                                                                                                                    _108[3] = ld172;
-                                                                                                                                    to_val1 = Val::u32(fp as u32);
-                                                                                                                                    Map__a____b__ = map_new_from_linear_memory(Val::u32(1048752) /* "a", "b" */, to_val1, Val::u32(2)); // Map{ a, b }
-                                                                                                                                    _108[4] = Map__a____b__.0;
-                                                                                                                                    _108[3] = ld188;
-                                                                                                                                    vec_new_from_linear_memory_101 = vec_new_from_linear_memory(to_val1, Val::u32(2));
-                                                                                                                                    l0_0 = vec_new_from_linear_memory_101;
-                                                                                                                                }
-                                                                                                                                _ => {
-                                                                                                                                    break 'b2;
-                                                                                                                                }
-                                                                                                                            }
+                                                                                                                            break 'b2;
                                                                                                                         }
                                                                                                                     }
                                                                                                                 }
-                                                                                                                _ => {
-                                                                                                                    slot24 = slot48;
-                                                                                                                    break 'b1;
-                                                                                                                }
                                                                                                             }
+                                                                                                        } else {
+                                                                                                            slot24 = slot48;
+                                                                                                            break 'b1;
                                                                                                         }
+                                                                                                    } else {
+                                                                                                        break 'b2;
                                                                                                     }
                                                                                                 }
                                                                                             }
                                                                                         }
-                                                                                        _ => {
-                                                                                            break 'b1;
-                                                                                        }
                                                                                     }
                                                                                 }
-                                                                                _ => {
-                                                                                    break 'b2;
-                                                                                }
+                                                                            }
+                                                                            _ => {
+                                                                                break 'b2;
                                                                             }
                                                                         }
-                                                                        _ => {
-                                                                            l0_0 = Val::VOID;
-                                                                        }
                                                                     }
-                                                                } else {
-                                                                    break 'b2;
+                                                                    _ => {
+                                                                        l0_0 = Val::VOID;
+                                                                    }
                                                                 }
+                                                            } else {
+                                                                break 'b2;
                                                             }
                                                         }
                                                     }
-                                                    _ => {
-                                                        slot24 = slot48;
-                                                        break 'b1;
-                                                    }
+                                                } else {
+                                                    slot24 = slot48;
+                                                    break 'b1;
                                                 }
+                                            } else {
+                                                break 'b2;
                                             }
                                         }
                                     }
-                                    to_val231 = l0_0;
-                                    return to_val231;
+                                    to_val240 = l0_0;
+                                    return to_val240;
                                 }
                             }
-                            _ => {}
                         }
                     }
                     (*((slot24 as *mut u64))) = 2u64;
@@ -674,79 +656,83 @@ pub fn recursive_enum(mut a: Val, mut key: Val) -> Val {
 }
 
 /// The `#[contracttype]` derive `<UdtEnum as TryFromVal<Env, Val>>::try_from_val`.
-fn UdtEnum_try_from_val(mut a0: *mut u8, mut a1: *mut u8) {
+fn UdtEnum_try_from_val(mut a0: u64, mut a1: u64) {
     unsafe {
         let mut frame: *mut u8;
         let mut slot24: *mut u8;
         let mut v: u64;
         let mut and: u64;
-        let mut vec_len_8: Val;
+        let mut vec_len_10: Val;
         let mut payload: u64;
         let mut slot16: *mut u8;
+        let mut t: u32;
         let mut fp: u64;
         let mut fp13: u64;
-        let mut bottom272: u64;
-        let mut vec_get_19: Val;
-        let mut payload273: u64;
+        let mut vec_get_22: Val;
+        let mut payload304: u64;
         let mut l5_0_sink: u8;
-        let mut symbol_index_in_linear_memory_29: Val;
-        let mut payload280: u64;
-        let mut ld35: u32;
+        let mut _27: u32;
+        let mut symbol_index_in_linear_memory_33: Val;
+        let mut payload311: u64;
         let mut ld38: u32;
-        let mut cmp281: bool;
-        let mut ld57: u64;
-        let mut ld62: u64;
-        let mut and73: u64;
+        let mut ld41: u32;
+        let mut cmp312: bool;
+        let mut ld61: u64;
+        let mut ld66: u64;
+        let mut and83: u64;
         let mut slot48: *mut u8;
-        let mut ld84: u32;
-        let mut ld93: u32;
+        let mut fp92: u64;
+        let mut ld94: u32;
+        let mut ld103: u32;
         let mut l6_0: u64;
-        let mut and97: u64;
-        let mut ld118: u64;
+        let mut and107: u64;
+        let mut ld129: u64;
         let mut l3_0: u64;
-        let mut and124: u64;
-        let mut and20: u64;
-        let mut ld153: u64;
-        let mut ld158: u64;
-        let mut and159: u64;
-        let mut ld183: u64;
-        let mut and189: u64;
-        let mut _90: [u64; 8];
+        let mut and135: u64;
+        let mut t141: u32;
+        let mut z: u64;
+        let mut cmp148: bool;
+        let mut ld173: u64;
+        let mut ld178: u64;
+        let mut and179: u64;
+        let mut ld209: u64;
+        let mut and215: u64;
+        let mut _94: [u64; 8];
         let mut to_val: Val;
-        let mut _94: *mut u32;
-        let mut _95: *mut u32;
-        let mut _96: u64;
-        let mut _116: *mut u8;
-        let mut _119: *mut u32;
-        let mut _128: *mut u8;
+        let mut _102: *mut u32;
+        let mut _103: *mut u32;
+        let mut _124: *mut u32;
         'b1: {
-            _90 = [0u64; 8];
-            frame = (&raw mut _90) as *mut u8;
+            _94 = [0u64; 8];
+            frame = (&raw mut _94) as *mut u8;
             slot24 = frame.wrapping_offset(24isize);
-            v = (*((a1 as *mut u64)));
+            v = (*(((((a1 as u32) as usize) as *mut u8) as *mut u64)));
             and = v & 255u64;
             match and {
                 Tag::VecObject => {
                     to_val = Val(v);
-                    vec_len_8 = vec_len(to_val);
-                    payload = vec_len_8.0;
+                    vec_len_10 = vec_len(to_val);
+                    payload = vec_len_10.0;
                     slot16 = frame.wrapping_offset(16isize);
-                    _90[1] = v;
-                    _94 = frame.wrapping_offset(20isize) as *mut u32;
-                    (*_94) = ((payload.wrapping_shr(32u64 as u32)) as u32);
-                    fp = slot24 as u64;
-                    fp13 = frame.wrapping_offset(8isize) as u64;
-                    bottom272 = unknown_i64();
-                    match bottom272 {
+                    _94[1] = v;
+                    t = (payload.wrapping_shr(32u64 as u32)) as u32;
+                    _102 = frame.wrapping_offset(20isize) as *mut u32;
+                    (*_102) = t;
+                    fp = (slot24 as u32) as u64;
+                    fp13 = (frame.wrapping_offset(8isize) as u32) as u64;
+                    match t {
                         0 => {
-                            vec_get_19 = vec_get(to_val, Val::u32(0));
-                            payload273 = vec_get_19.0;
-                            _90[4] = payload273;
-                            _95 = slot16 as *mut u32;
-                            (*_95) = 1u32;
-                            _90[3] = 0u64;
-                            and20 = payload273 & 255u64;
-                            match payload273 as u8 {
+                            l5_0_sink = 4u8;
+                        }
+                        _ => {
+                            vec_get_22 = vec_get(to_val, Val::u32(0));
+                            payload304 = vec_get_22.0;
+                            _94[4] = payload304;
+                            _103 = slot16 as *mut u32;
+                            (*_103) = 1u32;
+                            _94[3] = 0u64;
+                            z = payload304 & 255u64;
+                            match payload304 as u8 {
                                 74 => {}
                                 14 => {}
                                 _ => {
@@ -754,50 +740,46 @@ fn UdtEnum_try_from_val(mut a0: *mut u8, mut a1: *mut u8) {
                                     break 'b1;
                                 }
                             }
-                            symbol_index_in_linear_memory_29 = symbol_index_in_linear_memory(vec_get_19, Val::u32(1048692) /* "UdtA", "UdtB", "UdtC", "UdtD" */, Val::u32(4));
-                            payload280 = symbol_index_in_linear_memory_29.0;
-                            l3_0 = payload280.wrapping_shr(32u64 as u32);
-                            if payload280 > 17179869183u64 {
+                            symbol_index_in_linear_memory_33 = symbol_index_in_linear_memory(vec_get_22, Val::u32(1048692) /* "UdtA", "UdtB", "UdtC", "UdtD" */, Val::u32(4));
+                            payload311 = symbol_index_in_linear_memory_33.0;
+                            l3_0 = payload311.wrapping_shr(32u64 as u32);
+                            if payload311 > 17179869183u64 {
                                 l5_0_sink = 4u8;
                             } else {
-                                ld35 = (*_95);
-                                ld38 = (*_94);
-                                cmp281 = ld38 < ld35;
+                                ld38 = (*_103);
+                                ld41 = (*_102);
+                                cmp312 = ld41 < ld38;
                                 match l3_0 as u32 {
                                     3 => {
-                                        if cmp281 {
+                                        if cmp312 {
                                             panic();
                                         } else {
-                                            if ((ld38 as u64).wrapping_sub((ld35 as u64))) > 1u64 {
-                                                l5_0_sink = 4u8;
-                                                break 'b1;
-                                            } else {
-                                                _128 = (fp as usize) as *mut u8;
-                                                f15(_128, ((fp13 as usize) as *mut u8));
-                                                ld153 = _90[3];
-                                                match ld153 {
+                                            if ld41.wrapping_sub(ld38) < 2u32 {
+                                                f15(fp, fp13);
+                                                ld173 = _94[3];
+                                                match ld173 {
                                                     0 => {
-                                                        ld158 = _90[4];
-                                                        and159 = ld158 & 255u64;
-                                                        match and159 {
+                                                        ld178 = _94[4];
+                                                        and179 = ld178 & 255u64;
+                                                        match and179 {
                                                             Tag::VecObject => {
-                                                                _90[6] = 2u64;
-                                                                _90[7] = 2u64;
-                                                                vec_unpack_to_linear_memory(Val(ld158), Val::u32((frame.wrapping_offset(48isize) as u64) as u32), Val::u32(2));
-                                                                i64_try_from_val(_128, Val(_90[6]));
-                                                                ld183 = _90[3];
-                                                                match ld183 {
+                                                                _94[6] = 2u64;
+                                                                _94[7] = 2u64;
+                                                                vec_unpack_to_linear_memory(Val(ld178), Val::u32(((frame.wrapping_offset(48isize) as u32) as u64) as u32), Val::u32(2));
+                                                                i64_try_from_val(fp, Val(_94[6]));
+                                                                ld209 = _94[3];
+                                                                match ld209 {
                                                                     1 => {
                                                                         l5_0_sink = 4u8;
                                                                         break 'b1;
                                                                     }
                                                                     _ => {
-                                                                        l3_0 = _90[7];
-                                                                        and189 = l3_0 & 255u64;
-                                                                        match and189 {
+                                                                        l3_0 = _94[7];
+                                                                        and215 = l3_0 & 255u64;
+                                                                        match and215 {
                                                                             Tag::VecObject => {
-                                                                                payload = _90[4];
-                                                                                and20 = 16u64;
+                                                                                payload = _94[4];
+                                                                                z = 16u64;
                                                                                 l5_0_sink = 3u8;
                                                                                 l6_0 = 0u64;
                                                                             }
@@ -820,47 +802,47 @@ fn UdtEnum_try_from_val(mut a0: *mut u8, mut a1: *mut u8) {
                                                         break 'b1;
                                                     }
                                                 }
+                                            } else {
+                                                l5_0_sink = 4u8;
+                                                break 'b1;
                                             }
                                         }
                                     }
                                     1 => {
-                                        if cmp281 {
+                                        if cmp312 {
                                             panic();
                                         } else {
-                                            if ((ld38 as u64).wrapping_sub((ld35 as u64))) > 1u64 {
-                                                l5_0_sink = 4u8;
-                                                break 'b1;
-                                            } else {
-                                                f15(((fp as usize) as *mut u8), ((fp13 as usize) as *mut u8));
-                                                ld57 = _90[3];
-                                                match ld57 {
+                                            if ld41.wrapping_sub(ld38) < 2u32 {
+                                                f15(fp, fp13);
+                                                ld61 = _94[3];
+                                                match ld61 {
                                                     0 => {
-                                                        ld62 = _90[4];
-                                                        _90[3] = 2u64;
-                                                        _90[4] = 2u64;
-                                                        _90[5] = 2u64;
-                                                        and73 = ld62 & 255u64;
-                                                        match and73 {
+                                                        ld66 = _94[4];
+                                                        _94[3] = 2u64;
+                                                        _94[4] = 2u64;
+                                                        _94[5] = 2u64;
+                                                        and83 = ld66 & 255u64;
+                                                        match and83 {
                                                             Tag::MapObject => {
-                                                                f18(Val(ld62), 1048728u64, 3u64, fp, 3u64);
+                                                                f18(Val(ld66), 1048728u64, 3u64, fp, 3u64);
                                                                 slot48 = frame.wrapping_offset(48isize);
-                                                                _116 = ((slot48 as u64) as usize) as *mut u8;
-                                                                i64_try_from_val(_116, Val(_90[3]));
-                                                                _119 = slot48 as *mut u32;
-                                                                ld84 = (*_119);
-                                                                match ld84 {
+                                                                fp92 = (slot48 as u32) as u64;
+                                                                i64_try_from_val(fp92, Val(_94[3]));
+                                                                _124 = slot48 as *mut u32;
+                                                                ld94 = (*_124);
+                                                                match ld94 {
                                                                     0 => {
-                                                                        payload = _90[7];
-                                                                        i64_try_from_val(_116, Val(_90[4]));
-                                                                        ld93 = (*_119);
-                                                                        match ld93 {
+                                                                        payload = _94[7];
+                                                                        i64_try_from_val(fp92, Val(_94[4]));
+                                                                        ld103 = (*_124);
+                                                                        match ld103 {
                                                                             0 => {
-                                                                                l6_0 = _90[5];
-                                                                                and97 = l6_0 & 255u64;
-                                                                                match and97 {
+                                                                                l6_0 = _94[5];
+                                                                                and107 = l6_0 & 255u64;
+                                                                                match and107 {
                                                                                     Tag::VecObject => {
-                                                                                        l3_0 = _90[7];
-                                                                                        and20 = 24u64;
+                                                                                        l3_0 = _94[7];
+                                                                                        z = 24u64;
                                                                                         l5_0_sink = 1u8;
                                                                                     }
                                                                                     _ => {
@@ -892,36 +874,48 @@ fn UdtEnum_try_from_val(mut a0: *mut u8, mut a1: *mut u8) {
                                                         break 'b1;
                                                     }
                                                 }
+                                            } else {
+                                                l5_0_sink = 4u8;
+                                                break 'b1;
                                             }
                                         }
                                     }
                                     2 => {
-                                        if cmp281 {
+                                        if cmp312 {
                                             panic();
                                         } else {
-                                            if ((ld38 as u64).wrapping_sub((ld35 as u64))) > 1u64 {
-                                                l5_0_sink = 4u8;
-                                                break 'b1;
-                                            } else {
-                                                f15(((fp as usize) as *mut u8), ((fp13 as usize) as *mut u8));
-                                                ld118 = _90[3];
-                                                match ld118 {
+                                            if ld41.wrapping_sub(ld38) < 2u32 {
+                                                f15(fp, fp13);
+                                                ld129 = _94[3];
+                                                match ld129 {
                                                     0 => {
-                                                        l3_0 = _90[4];
-                                                        and124 = l3_0 & 255u64;
-                                                        match and124 {
+                                                        l3_0 = _94[4];
+                                                        and135 = l3_0 & 255u64;
+                                                        match and135 {
                                                             Tag::U32Val => {
-                                                                and20 = unknown_i64();
-                                                                match and20 {
-                                                                    9 => {
-                                                                        l5_0_sink = 4u8;
-                                                                        break 'b1;
+                                                                'b68: {
+                                                                    t141 = (l3_0.wrapping_shr(32u64 as u32)) as u32;
+                                                                    match t141 {
+                                                                        15 => {
+                                                                            z = 15u64;
+                                                                            cmp148 = t141 == 10u32;
+                                                                            if !cmp148 {
+                                                                                break 'b68;
+                                                                            }
+                                                                        }
+                                                                        _ => {
+                                                                            z = 9u64;
+                                                                            cmp148 = t141 == 10u32;
+                                                                            if !cmp148 {
+                                                                                l5_0_sink = 4u8;
+                                                                                break 'b1;
+                                                                            }
+                                                                        }
                                                                     }
-                                                                    _ => {
-                                                                        l5_0_sink = 2u8;
-                                                                        l6_0 = 0u64;
-                                                                    }
+                                                                    z = 10u64;
                                                                 }
+                                                                l5_0_sink = 2u8;
+                                                                l6_0 = 0u64;
                                                             }
                                                             _ => {
                                                                 l5_0_sink = 4u8;
@@ -934,14 +928,17 @@ fn UdtEnum_try_from_val(mut a0: *mut u8, mut a1: *mut u8) {
                                                         break 'b1;
                                                     }
                                                 }
+                                            } else {
+                                                l5_0_sink = 4u8;
+                                                break 'b1;
                                             }
                                         }
                                     }
                                     _ => {
-                                        if cmp281 {
+                                        if cmp312 {
                                             panic();
                                         } else {
-                                            if ld38 == ld35 {
+                                            if ld41 == ld38 {
                                                 l5_0_sink = 0u8;
                                                 l6_0 = 0u64;
                                             } else {
@@ -951,15 +948,12 @@ fn UdtEnum_try_from_val(mut a0: *mut u8, mut a1: *mut u8) {
                                         }
                                     }
                                 }
-                                _96 = a0 as u64;
-                                (*((a0.wrapping_offset(24isize) as *mut u64))) = l6_0;
-                                (*((a0.wrapping_offset(16isize) as *mut u64))) = l3_0;
-                                (*((a0.wrapping_offset(8isize) as *mut u64))) = payload;
-                                (*(a0.wrapping_offset(1isize))) = (and20 as u8);
+                                _27 = a0 as u32;
+                                (*((((_27.wrapping_add(24u32) as usize) as *mut u8) as *mut u64))) = l6_0;
+                                (*((((_27.wrapping_add(16u32) as usize) as *mut u8) as *mut u64))) = l3_0;
+                                (*((((_27.wrapping_add(8u32) as usize) as *mut u8) as *mut u64))) = payload;
+                                (*(((_27.wrapping_add(1u32) as usize) as *mut u8))) = (z as u8);
                             }
-                        }
-                        _ => {
-                            l5_0_sink = 4u8;
                         }
                     }
                 }
@@ -968,42 +962,44 @@ fn UdtEnum_try_from_val(mut a0: *mut u8, mut a1: *mut u8) {
                 }
             }
         }
-        (*a0) = l5_0_sink;
+        (*((((a0 as u32) as usize) as *mut u8))) = l5_0_sink;
         return;
     }
 }
 
-fn f15(mut a0: *mut u8, mut a1: *mut u8) {
+fn f15(mut a0: u64, mut a1: u64) {
     unsafe {
+        let mut _3: u32;
         let mut v: u32;
-        let mut bottom: u64;
+        let mut v33: u32;
         let mut l2_0: u64;
-        let mut v30: Val;
-        let mut vec_get_12: Val;
-        let mut _18: *mut u32;
-        _18 = a1.wrapping_offset(8isize) as *mut u32;
-        v = (*_18);
-        bottom = unknown_i64();
-        match bottom {
-            0 => {
-                v30 = Val((*((a1 as *mut u64))));
-                vec_get_12 = vec_get(v30, Val::u32((v as u64) as u32));
-                (*((a0.wrapping_offset(8isize) as *mut u64))) = vec_get_12.0;
-                (*_18) = v.wrapping_add(1u32);
-                l2_0 = 0u64;
-            }
-            _ => {
-                l2_0 = 2u64;
-            }
+        let mut v36: Val;
+        let mut vec_get_14: Val;
+        let mut _pre: u32;
+        let mut _21: *mut u32;
+        _3 = a1 as u32;
+        _21 = ((_3.wrapping_add(8u32) as usize) as *mut u8) as *mut u32;
+        v = (*_21);
+        v33 = (*((((_3.wrapping_add(12u32) as usize) as *mut u8) as *mut u32)));
+        if v < v33 {
+            v36 = Val((*((((_3 as usize) as *mut u8) as *mut u64))));
+            vec_get_14 = vec_get(v36, Val::u32((v as u64) as u32));
+            _pre = a0 as u32;
+            (*((((_pre.wrapping_add(8u32) as usize) as *mut u8) as *mut u64))) = vec_get_14.0;
+            (*_21) = v.wrapping_add(1u32);
+            l2_0 = 0u64;
+        } else {
+            _pre = a0 as u32;
+            l2_0 = 2u64;
         }
-        (*((a0 as *mut u64))) = l2_0;
+        (*((((_pre as usize) as *mut u8) as *mut u64))) = l2_0;
         return;
     }
 }
 
 fn f18(mut a0: Val, mut a1: u64, mut a2: u64, mut a3: u64, mut a4: u64) {
     unsafe {
-        if a2 == a4 {
+        if (a2 as u32) == (a4 as u32) {
             map_unpack_to_linear_memory(a0, Val::u32(a1 as u32), Val::u32(a3 as u32), Val::u32(a2 as u32));
             return;
         } else {
@@ -1013,9 +1009,10 @@ fn f18(mut a0: Val, mut a1: u64, mut a2: u64, mut a3: u64, mut a4: u64) {
 }
 
 /// <i64 as soroban_env_common::convert::TryFromVal<E,soroban_env_common::val::Val>>::try_from_val
-fn i64_try_from_val(mut a0: *mut u8, mut a1: Val) {
+fn i64_try_from_val(mut a0: u64, mut a1: Val) {
     unsafe {
         let mut l3_0: u64;
+        let mut _5: u32;
         let mut l1_0: u64;
         match a1.0 as u8 {
             65 => {
@@ -1031,8 +1028,9 @@ fn i64_try_from_val(mut a0: *mut u8, mut a1: Val) {
                 l3_0 = 1u64;
             }
         }
-        (*((a0 as *mut u64))) = l3_0;
-        (*((a0.wrapping_offset(8isize) as *mut u64))) = l1_0;
+        _5 = a0 as u32;
+        (*((((_5 as usize) as *mut u8) as *mut u64))) = l3_0;
+        (*((((_5.wrapping_add(8u32) as usize) as *mut u8) as *mut u64))) = l1_0;
         return;
     }
 }
@@ -1044,26 +1042,26 @@ fn panic() -> ! {
     }
 }
 
-fn f21(mut a0: *mut u8, mut a1: Val) {
+fn f21(mut a0: u64, mut a1: Val) {
     unsafe {
         let mut frame: *mut u8;
         let mut and: u64;
         let mut l4_0: u64;
         let mut ld: u64;
-        let mut ld18: u64;
-        let mut and19: u64;
-        let mut _19: [Val; 2];
-        let mut _23: u64;
+        let mut ld26: u64;
+        let mut and27: u64;
+        let mut _19: u32;
+        let mut _22: [Val; 2];
         'b1: {
-            _19 = [Val(0); 2];
-            frame = (&raw mut _19) as *mut u8;
-            _19[0] = Val::VOID;
-            _19[1] = Val::VOID;
+            _22 = [Val(0); 2];
+            frame = (&raw mut _22) as *mut u8;
+            _22[0] = Val::VOID;
+            _22[1] = Val::VOID;
             and = a1.0 & 255u64;
             match and {
                 Tag::MapObject => {
-                    map_unpack_to_linear_memory(a1, Val::u32(1048752) /* "a", "b" */, pos(&_19), Val::u32(2));
-                    ld = _19[0].0;
+                    map_unpack_to_linear_memory(a1, Val::u32(1048752) /* "a", "b" */, pos(&_22), Val::u32(2));
+                    ld = _22[0].0;
                     match ld as u8 {
                         74 => {}
                         14 => {}
@@ -1072,13 +1070,13 @@ fn f21(mut a0: *mut u8, mut a1: Val) {
                             break 'b1;
                         }
                     }
-                    ld18 = _19[1].0;
-                    and19 = ld18 & 255u64;
-                    match and19 {
+                    ld26 = _22[1].0;
+                    and27 = ld26 & 255u64;
+                    match and27 {
                         Tag::VecObject => {
-                            _23 = a0 as u64;
-                            (*((a0.wrapping_offset(16isize) as *mut u64))) = ld18;
-                            (*((a0.wrapping_offset(8isize) as *mut u64))) = ld;
+                            _19 = a0 as u32;
+                            (*((((_19.wrapping_add(16u32) as usize) as *mut u8) as *mut u64))) = ld26;
+                            (*((((_19.wrapping_add(8u32) as usize) as *mut u8) as *mut u64))) = ld;
                             l4_0 = 0u64;
                         }
                         _ => {
@@ -1091,31 +1089,31 @@ fn f21(mut a0: *mut u8, mut a1: Val) {
                 }
             }
         }
-        (*((a0 as *mut u64))) = l4_0;
+        (*(((((a0 as u32) as usize) as *mut u8) as *mut u64))) = l4_0;
         return;
     }
 }
 
-fn f22(mut a0: *mut u8, mut a1: Val) {
+fn f22(mut a0: u64, mut a1: Val) {
     unsafe {
         let mut frame: *mut u8;
         let mut and: u64;
         let mut l4_0: u64;
         let mut ld: u64;
-        let mut ld18: u64;
-        let mut and19: u64;
-        let mut _19: [Val; 2];
-        let mut _23: u64;
+        let mut ld26: u64;
+        let mut and27: u64;
+        let mut _19: u32;
+        let mut _22: [Val; 2];
         'b1: {
-            _19 = [Val(0); 2];
-            frame = (&raw mut _19) as *mut u8;
-            _19[0] = Val::VOID;
-            _19[1] = Val::VOID;
+            _22 = [Val(0); 2];
+            frame = (&raw mut _22) as *mut u8;
+            _22[0] = Val::VOID;
+            _22[1] = Val::VOID;
             and = a1.0 & 255u64;
             match and {
                 Tag::MapObject => {
-                    map_unpack_to_linear_memory(a1, Val::u32(1048752) /* "a", "b" */, pos(&_19), Val::u32(2));
-                    ld = _19[0].0;
+                    map_unpack_to_linear_memory(a1, Val::u32(1048752) /* "a", "b" */, pos(&_22), Val::u32(2));
+                    ld = _22[0].0;
                     match ld as u8 {
                         74 => {}
                         14 => {}
@@ -1124,13 +1122,13 @@ fn f22(mut a0: *mut u8, mut a1: Val) {
                             break 'b1;
                         }
                     }
-                    ld18 = _19[1].0;
-                    and19 = ld18 & 255u64;
-                    match and19 {
+                    ld26 = _22[1].0;
+                    and27 = ld26 & 255u64;
+                    match and27 {
                         Tag::MapObject => {
-                            _23 = a0 as u64;
-                            (*((a0.wrapping_offset(16isize) as *mut u64))) = ld18;
-                            (*((a0.wrapping_offset(8isize) as *mut u64))) = ld;
+                            _19 = a0 as u32;
+                            (*((((_19.wrapping_add(16u32) as usize) as *mut u8) as *mut u64))) = ld26;
+                            (*((((_19.wrapping_add(8u32) as usize) as *mut u8) as *mut u64))) = ld;
                             l4_0 = 0u64;
                         }
                         _ => {
@@ -1143,351 +1141,328 @@ fn f22(mut a0: *mut u8, mut a1: Val) {
                 }
             }
         }
-        (*((a0 as *mut u64))) = l4_0;
+        (*(((((a0 as u32) as usize) as *mut u8) as *mut u64))) = l4_0;
         return;
     }
 }
 
-fn f25(mut a0: *mut u8, mut a1: *mut u8) {
+fn f25(mut a0: u64, mut a1: u64) {
     unsafe {
+        let mut _3: u32;
         let mut v: u32;
-        let mut bottom: u64;
-        let mut v33: Val;
-        let mut vec_get_11: Val;
+        let mut v36: u32;
+        let mut v39: Val;
+        let mut vec_get_13: Val;
         let mut payload: u64;
-        let mut obj_to_i64_14: u64;
+        let mut obj_to_i64_16: u64;
         let mut l3_0: u64;
-        let mut _20: *mut u32;
-        _20 = a1.wrapping_offset(8isize) as *mut u32;
-        v = (*_20);
-        bottom = unknown_i64();
-        match bottom {
-            0 => {
-                v33 = Val((*((a1 as *mut u64))));
-                vec_get_11 = vec_get(v33, Val::u32((v as u64) as u32));
-                payload = vec_get_11.0;
-                match payload as u8 {
-                    65 => {
-                        obj_to_i64_14 = obj_to_i64(vec_get_11);
-                        l3_0 = 0u64;
-                    }
-                    7 => {
-                        obj_to_i64_14 = ((payload as i64).wrapping_shr(8i64 as u32)) as u64;
-                        l3_0 = 0u64;
-                    }
-                    _ => {
-                        obj_to_i64_14 = 34359740419u64;
-                        l3_0 = 1u64;
-                    }
+        let mut _pre: u32;
+        let mut _23: *mut u32;
+        _3 = a1 as u32;
+        _23 = ((_3.wrapping_add(8u32) as usize) as *mut u8) as *mut u32;
+        v = (*_23);
+        v36 = (*((((_3.wrapping_add(12u32) as usize) as *mut u8) as *mut u32)));
+        if v < v36 {
+            v39 = Val((*((((_3 as usize) as *mut u8) as *mut u64))));
+            vec_get_13 = vec_get(v39, Val::u32((v as u64) as u32));
+            payload = vec_get_13.0;
+            match payload as u8 {
+                65 => {
+                    obj_to_i64_16 = obj_to_i64(vec_get_13);
+                    l3_0 = 0u64;
                 }
-                (*((a0.wrapping_offset(8isize) as *mut u64))) = obj_to_i64_14;
-                (*_20) = v.wrapping_add(1u32);
+                7 => {
+                    obj_to_i64_16 = ((payload as i64).wrapping_shr(8i64 as u32)) as u64;
+                    l3_0 = 0u64;
+                }
+                _ => {
+                    obj_to_i64_16 = 34359740419u64;
+                    l3_0 = 1u64;
+                }
             }
-            _ => {
-                l3_0 = 2u64;
-            }
+            _pre = a0 as u32;
+            (*((((_pre.wrapping_add(8u32) as usize) as *mut u8) as *mut u64))) = obj_to_i64_16;
+            (*_23) = v.wrapping_add(1u32);
+        } else {
+            _pre = a0 as u32;
+            l3_0 = 2u64;
         }
-        (*((a0 as *mut u64))) = l3_0;
+        (*((((_pre as usize) as *mut u8) as *mut u64))) = l3_0;
         return;
     }
 }
 
-fn f30(mut a0: *mut u8, mut a1: *mut u8, mut a2: u64) {
+fn f30(mut a0: u64, mut a1: u64, mut a2: u64) {
     unsafe {
+        let mut t9: u32;
         let mut v: u8;
         let mut zx: u64;
-        let mut symbol_new_from_linear_memory_13: Val;
+        let mut t11: u32;
+        let mut _11: u32;
+        let mut symbol_new_from_linear_memory_17: Val;
         let mut l3_0: u64;
         let mut v_1: u8;
         let mut zx_1: u64;
-        let mut bottom_1: u64;
-        let mut add27_1: u64;
-        let mut or36_1: u64;
+        let mut t11_1: u32;
+        let mut z50_1: u64;
+        let mut or65_1: u64;
         let mut v_2: u8;
         let mut zx_2: u64;
-        let mut bottom_2: u64;
-        let mut add27_2: u64;
+        let mut t11_2: u32;
+        let mut z50_2: u64;
         let mut v_3: u8;
         let mut zx_3: u64;
-        let mut bottom_3: u64;
-        let mut add27_3: u64;
-        let mut or36_3: u64;
+        let mut t11_3: u32;
+        let mut z50_3: u64;
+        let mut or65_3: u64;
         let mut v_4: u8;
         let mut zx_4: u64;
-        let mut bottom_4: u64;
-        let mut add27_4: u64;
+        let mut t11_4: u32;
+        let mut z50_4: u64;
         let mut v_5: u8;
         let mut zx_5: u64;
-        let mut bottom_5: u64;
-        let mut add27_5: u64;
-        let mut or36_5: u64;
+        let mut t11_5: u32;
+        let mut z50_5: u64;
+        let mut or65_5: u64;
         let mut v_6: u8;
         let mut zx_6: u64;
-        let mut bottom_6: u64;
-        let mut add27_6: u64;
+        let mut t11_6: u32;
+        let mut z50_6: u64;
         let mut v_7: u8;
         let mut zx_7: u64;
-        let mut bottom_7: u64;
-        let mut add27_7: u64;
-        let mut or36_7: u64;
+        let mut t11_7: u32;
+        let mut z50_7: u64;
+        let mut or65_7: u64;
         let mut v_8: u8;
         let mut zx_8: u64;
-        let mut bottom_8: u64;
-        let mut add27_8: u64;
-        let mut bottom: u64;
+        let mut t11_8: u32;
+        let mut z50_8: u64;
         let mut l5_0: u64;
-        let mut _161: u64;
         'b2: {
             'b3: {
-                if !a2 > 9u64 {
-                    v = (*a1);
+                if !(a2 as u32) > 9u32 {
+                    t9 = a1 as u32;
+                    v = (*(((t9 as usize) as *mut u8)));
                     zx = v as u64;
+                    t11 = v as u32;
                     match v {
                         95 => {
                             l5_0 = 1u64;
                         }
                         _ => {
-                            if (zx.wrapping_add(208u64) & 254u64) < 10u64 {
-                                l5_0 = zx.wrapping_add(18446744073709551570u64);
+                            if (t11.wrapping_add(208u32) & 254u32) < 10u32 {
+                                l5_0 = zx.wrapping_add(4294967250u64) & 4294967295u64;
                             } else {
-                                if (zx.wrapping_add(191u64) & 254u64) < 26u64 {
-                                    l5_0 = zx.wrapping_add(18446744073709551563u64);
+                                if (t11.wrapping_add(191u32) & 254u32) < 26u32 {
+                                    l5_0 = zx.wrapping_add(4294967243u64) & 4294967295u64;
                                 } else {
-                                    bottom = unknown_i64();
-                                    match bottom {
-                                        0 => {
-                                            l5_0 = zx.wrapping_add(18446744073709551557u64);
-                                        }
-                                        _ => {
-                                            break 'b3;
-                                        }
+                                    if (t11.wrapping_add(159u32) & 254u32) > 25u32 {
+                                        break 'b3;
+                                    } else {
+                                        l5_0 = zx.wrapping_add(4294967237u64) & 4294967295u64;
                                     }
                                 }
                             }
                         }
                     }
-                    _161 = a1 as u64;
-                    v_1 = (*(a1.wrapping_offset(1isize)));
+                    v_1 = (*(((t9.wrapping_add(1u32) as usize) as *mut u8)));
                     zx_1 = v_1 as u64;
+                    t11_1 = v_1 as u32;
                     match v_1 {
                         95 => {
-                            add27_1 = 1u64;
+                            z50_1 = 1u64;
                         }
                         _ => {
-                            if (zx_1.wrapping_add(208u64) & 254u64) < 10u64 {
-                                add27_1 = zx_1.wrapping_add(18446744073709551570u64);
+                            if (t11_1.wrapping_add(208u32) & 254u32) < 10u32 {
+                                z50_1 = zx_1.wrapping_add(4294967250u64) & 4294967295u64;
                             } else {
-                                if (zx_1.wrapping_add(191u64) & 254u64) < 26u64 {
-                                    add27_1 = zx_1.wrapping_add(18446744073709551563u64);
+                                if (t11_1.wrapping_add(191u32) & 254u32) < 26u32 {
+                                    z50_1 = zx_1.wrapping_add(4294967243u64) & 4294967295u64;
                                 } else {
-                                    bottom_1 = unknown_i64();
-                                    match bottom_1 {
-                                        0 => {
-                                            add27_1 = zx_1.wrapping_add(18446744073709551557u64);
-                                        }
-                                        _ => {
-                                            break 'b3;
-                                        }
+                                    if (t11_1.wrapping_add(159u32) & 254u32) > 25u32 {
+                                        break 'b3;
+                                    } else {
+                                        z50_1 = zx_1.wrapping_add(4294967237u64) & 4294967295u64;
                                     }
                                 }
                             }
                         }
                     }
-                    or36_1 = (add27_1 & 255u64) | ((l5_0.wrapping_shl(6u64 as u32)) & 16320u64);
-                    v_2 = (*(a1.wrapping_offset(2isize)));
+                    or65_1 = (z50_1 & 255u64) | ((l5_0.wrapping_shl(6u64 as u32)) & 16320u64);
+                    v_2 = (*(((t9.wrapping_add(2u32) as usize) as *mut u8)));
                     zx_2 = v_2 as u64;
+                    t11_2 = v_2 as u32;
                     match v_2 {
                         95 => {
-                            add27_2 = 1u64;
+                            z50_2 = 1u64;
                         }
                         _ => {
-                            if (zx_2.wrapping_add(208u64) & 254u64) < 10u64 {
-                                add27_2 = zx_2.wrapping_add(18446744073709551570u64);
+                            if (t11_2.wrapping_add(208u32) & 254u32) < 10u32 {
+                                z50_2 = zx_2.wrapping_add(4294967250u64) & 4294967295u64;
                             } else {
-                                if (zx_2.wrapping_add(191u64) & 254u64) < 26u64 {
-                                    add27_2 = zx_2.wrapping_add(18446744073709551563u64);
+                                if (t11_2.wrapping_add(191u32) & 254u32) < 26u32 {
+                                    z50_2 = zx_2.wrapping_add(4294967243u64) & 4294967295u64;
                                 } else {
-                                    bottom_2 = unknown_i64();
-                                    match bottom_2 {
-                                        0 => {
-                                            add27_2 = zx_2.wrapping_add(18446744073709551557u64);
-                                        }
-                                        _ => {
-                                            break 'b3;
-                                        }
+                                    if (t11_2.wrapping_add(159u32) & 254u32) > 25u32 {
+                                        break 'b3;
+                                    } else {
+                                        z50_2 = zx_2.wrapping_add(4294967237u64) & 4294967295u64;
                                     }
                                 }
                             }
                         }
                     }
-                    v_3 = (*(a1.wrapping_offset(3isize)));
+                    v_3 = (*(((t9.wrapping_add(3u32) as usize) as *mut u8)));
                     zx_3 = v_3 as u64;
+                    t11_3 = v_3 as u32;
                     match v_3 {
                         95 => {
-                            add27_3 = 1u64;
+                            z50_3 = 1u64;
                         }
                         _ => {
-                            if (zx_3.wrapping_add(208u64) & 254u64) < 10u64 {
-                                add27_3 = zx_3.wrapping_add(18446744073709551570u64);
+                            if (t11_3.wrapping_add(208u32) & 254u32) < 10u32 {
+                                z50_3 = zx_3.wrapping_add(4294967250u64) & 4294967295u64;
                             } else {
-                                if (zx_3.wrapping_add(191u64) & 254u64) < 26u64 {
-                                    add27_3 = zx_3.wrapping_add(18446744073709551563u64);
+                                if (t11_3.wrapping_add(191u32) & 254u32) < 26u32 {
+                                    z50_3 = zx_3.wrapping_add(4294967243u64) & 4294967295u64;
                                 } else {
-                                    bottom_3 = unknown_i64();
-                                    match bottom_3 {
-                                        0 => {
-                                            add27_3 = zx_3.wrapping_add(18446744073709551557u64);
-                                        }
-                                        _ => {
-                                            break 'b3;
-                                        }
+                                    if (t11_3.wrapping_add(159u32) & 254u32) > 25u32 {
+                                        break 'b3;
+                                    } else {
+                                        z50_3 = zx_3.wrapping_add(4294967237u64) & 4294967295u64;
                                     }
                                 }
                             }
                         }
                     }
-                    or36_3 = (add27_3 & 255u64) | ((or36_1.wrapping_shl(12u64 as u32)) | ((add27_2.wrapping_shl(6u64 as u32)) & 16320u64));
-                    v_4 = (*(a1.wrapping_offset(4isize)));
+                    or65_3 = (z50_3 & 255u64) | ((or65_1.wrapping_shl(12u64 as u32)) | ((z50_2.wrapping_shl(6u64 as u32)) & 16320u64));
+                    v_4 = (*(((t9.wrapping_add(4u32) as usize) as *mut u8)));
                     zx_4 = v_4 as u64;
+                    t11_4 = v_4 as u32;
                     match v_4 {
                         95 => {
-                            add27_4 = 1u64;
+                            z50_4 = 1u64;
                         }
                         _ => {
-                            if (zx_4.wrapping_add(208u64) & 254u64) < 10u64 {
-                                add27_4 = zx_4.wrapping_add(18446744073709551570u64);
+                            if (t11_4.wrapping_add(208u32) & 254u32) < 10u32 {
+                                z50_4 = zx_4.wrapping_add(4294967250u64) & 4294967295u64;
                             } else {
-                                if (zx_4.wrapping_add(191u64) & 254u64) < 26u64 {
-                                    add27_4 = zx_4.wrapping_add(18446744073709551563u64);
+                                if (t11_4.wrapping_add(191u32) & 254u32) < 26u32 {
+                                    z50_4 = zx_4.wrapping_add(4294967243u64) & 4294967295u64;
                                 } else {
-                                    bottom_4 = unknown_i64();
-                                    match bottom_4 {
-                                        0 => {
-                                            add27_4 = zx_4.wrapping_add(18446744073709551557u64);
-                                        }
-                                        _ => {
-                                            break 'b3;
-                                        }
+                                    if (t11_4.wrapping_add(159u32) & 254u32) > 25u32 {
+                                        break 'b3;
+                                    } else {
+                                        z50_4 = zx_4.wrapping_add(4294967237u64) & 4294967295u64;
                                     }
                                 }
                             }
                         }
                     }
-                    v_5 = (*(a1.wrapping_offset(5isize)));
+                    v_5 = (*(((t9.wrapping_add(5u32) as usize) as *mut u8)));
                     zx_5 = v_5 as u64;
+                    t11_5 = v_5 as u32;
                     match v_5 {
                         95 => {
-                            add27_5 = 1u64;
+                            z50_5 = 1u64;
                         }
                         _ => {
-                            if (zx_5.wrapping_add(208u64) & 254u64) < 10u64 {
-                                add27_5 = zx_5.wrapping_add(18446744073709551570u64);
+                            if (t11_5.wrapping_add(208u32) & 254u32) < 10u32 {
+                                z50_5 = zx_5.wrapping_add(4294967250u64) & 4294967295u64;
                             } else {
-                                if (zx_5.wrapping_add(191u64) & 254u64) < 26u64 {
-                                    add27_5 = zx_5.wrapping_add(18446744073709551563u64);
+                                if (t11_5.wrapping_add(191u32) & 254u32) < 26u32 {
+                                    z50_5 = zx_5.wrapping_add(4294967243u64) & 4294967295u64;
                                 } else {
-                                    bottom_5 = unknown_i64();
-                                    match bottom_5 {
-                                        0 => {
-                                            add27_5 = zx_5.wrapping_add(18446744073709551557u64);
-                                        }
-                                        _ => {
-                                            break 'b3;
-                                        }
+                                    if (t11_5.wrapping_add(159u32) & 254u32) > 25u32 {
+                                        break 'b3;
+                                    } else {
+                                        z50_5 = zx_5.wrapping_add(4294967237u64) & 4294967295u64;
                                     }
                                 }
                             }
                         }
                     }
-                    or36_5 = (add27_5 & 255u64) | ((or36_3.wrapping_shl(12u64 as u32)) | ((add27_4.wrapping_shl(6u64 as u32)) & 16320u64));
-                    v_6 = (*(a1.wrapping_offset(6isize)));
+                    or65_5 = (z50_5 & 255u64) | ((or65_3.wrapping_shl(12u64 as u32)) | ((z50_4.wrapping_shl(6u64 as u32)) & 16320u64));
+                    v_6 = (*(((t9.wrapping_add(6u32) as usize) as *mut u8)));
                     zx_6 = v_6 as u64;
+                    t11_6 = v_6 as u32;
                     match v_6 {
                         95 => {
-                            add27_6 = 1u64;
+                            z50_6 = 1u64;
                         }
                         _ => {
-                            if (zx_6.wrapping_add(208u64) & 254u64) < 10u64 {
-                                add27_6 = zx_6.wrapping_add(18446744073709551570u64);
+                            if (t11_6.wrapping_add(208u32) & 254u32) < 10u32 {
+                                z50_6 = zx_6.wrapping_add(4294967250u64) & 4294967295u64;
                             } else {
-                                if (zx_6.wrapping_add(191u64) & 254u64) < 26u64 {
-                                    add27_6 = zx_6.wrapping_add(18446744073709551563u64);
+                                if (t11_6.wrapping_add(191u32) & 254u32) < 26u32 {
+                                    z50_6 = zx_6.wrapping_add(4294967243u64) & 4294967295u64;
                                 } else {
-                                    bottom_6 = unknown_i64();
-                                    match bottom_6 {
-                                        0 => {
-                                            add27_6 = zx_6.wrapping_add(18446744073709551557u64);
-                                        }
-                                        _ => {
-                                            break 'b3;
-                                        }
+                                    if (t11_6.wrapping_add(159u32) & 254u32) > 25u32 {
+                                        break 'b3;
+                                    } else {
+                                        z50_6 = zx_6.wrapping_add(4294967237u64) & 4294967295u64;
                                     }
                                 }
                             }
                         }
                     }
-                    v_7 = (*(a1.wrapping_offset(7isize)));
+                    v_7 = (*(((t9.wrapping_add(7u32) as usize) as *mut u8)));
                     zx_7 = v_7 as u64;
+                    t11_7 = v_7 as u32;
                     match v_7 {
                         95 => {
-                            add27_7 = 1u64;
+                            z50_7 = 1u64;
                         }
                         _ => {
-                            if (zx_7.wrapping_add(208u64) & 254u64) < 10u64 {
-                                add27_7 = zx_7.wrapping_add(18446744073709551570u64);
+                            if (t11_7.wrapping_add(208u32) & 254u32) < 10u32 {
+                                z50_7 = zx_7.wrapping_add(4294967250u64) & 4294967295u64;
                             } else {
-                                if (zx_7.wrapping_add(191u64) & 254u64) < 26u64 {
-                                    add27_7 = zx_7.wrapping_add(18446744073709551563u64);
+                                if (t11_7.wrapping_add(191u32) & 254u32) < 26u32 {
+                                    z50_7 = zx_7.wrapping_add(4294967243u64) & 4294967295u64;
                                 } else {
-                                    bottom_7 = unknown_i64();
-                                    match bottom_7 {
-                                        0 => {
-                                            add27_7 = zx_7.wrapping_add(18446744073709551557u64);
-                                        }
-                                        _ => {
-                                            break 'b3;
-                                        }
+                                    if (t11_7.wrapping_add(159u32) & 254u32) > 25u32 {
+                                        break 'b3;
+                                    } else {
+                                        z50_7 = zx_7.wrapping_add(4294967237u64) & 4294967295u64;
                                     }
                                 }
                             }
                         }
                     }
-                    or36_7 = (add27_7 & 255u64) | ((or36_5.wrapping_shl(12u64 as u32)) | ((add27_6.wrapping_shl(6u64 as u32)) & 16320u64));
-                    v_8 = (*(a1.wrapping_offset(8isize)));
+                    or65_7 = (z50_7 & 255u64) | ((or65_5.wrapping_shl(12u64 as u32)) | ((z50_6.wrapping_shl(6u64 as u32)) & 16320u64));
+                    v_8 = (*(((t9.wrapping_add(8u32) as usize) as *mut u8)));
                     zx_8 = v_8 as u64;
+                    t11_8 = v_8 as u32;
                     match v_8 {
                         95 => {
-                            add27_8 = 1u64;
+                            z50_8 = 1u64;
                         }
                         _ => {
-                            if (zx_8.wrapping_add(208u64) & 254u64) < 10u64 {
-                                add27_8 = zx_8.wrapping_add(18446744073709551570u64);
+                            if (t11_8.wrapping_add(208u32) & 254u32) < 10u32 {
+                                z50_8 = zx_8.wrapping_add(4294967250u64) & 4294967295u64;
                             } else {
-                                if (zx_8.wrapping_add(191u64) & 254u64) < 26u64 {
-                                    add27_8 = zx_8.wrapping_add(18446744073709551563u64);
+                                if (t11_8.wrapping_add(191u32) & 254u32) < 26u32 {
+                                    z50_8 = zx_8.wrapping_add(4294967243u64) & 4294967295u64;
                                 } else {
-                                    bottom_8 = unknown_i64();
-                                    match bottom_8 {
-                                        0 => {
-                                            add27_8 = zx_8.wrapping_add(18446744073709551557u64);
-                                        }
-                                        _ => {
-                                            break 'b3;
-                                        }
+                                    if (t11_8.wrapping_add(159u32) & 254u32) > 25u32 {
+                                        break 'b3;
+                                    } else {
+                                        z50_8 = zx_8.wrapping_add(4294967237u64) & 4294967295u64;
                                     }
                                 }
                             }
                         }
                     }
-                    l3_0 = ((or36_7.wrapping_shl(14u64 as u32)) | ((add27_8.wrapping_shl(8u64 as u32)) & 65280u64)) | 14u64;
+                    l3_0 = ((or65_7.wrapping_shl(14u64 as u32)) | ((z50_8.wrapping_shl(8u64 as u32)) & 65280u64)) | 14u64;
                     break 'b2;
                 }
             }
-            symbol_new_from_linear_memory_13 = symbol_new_from_linear_memory(Val::u32((a1 as u64) as u32), Val::u32(a2 as u32)); // Symbol(@Val::u32((a1 as u64) as u32), Val::u32(a2 as u32))
-            l3_0 = symbol_new_from_linear_memory_13.0;
+            symbol_new_from_linear_memory_17 = symbol_new_from_linear_memory(Val::u32(a1 as u32), Val::u32(a2 as u32)); // Symbol(@Val::u32(a1 as u32), Val::u32(a2 as u32))
+            l3_0 = symbol_new_from_linear_memory_17.0;
         }
-        (*((a0 as *mut u64))) = 0u64;
-        (*((a0.wrapping_offset(8isize) as *mut u64))) = l3_0;
+        _11 = a0 as u32;
+        (*((((_11 as usize) as *mut u8) as *mut u64))) = 0u64;
+        (*((((_11.wrapping_add(8u32) as usize) as *mut u8) as *mut u64))) = l3_0;
         return;
     }
 }

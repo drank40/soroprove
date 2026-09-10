@@ -1,7 +1,7 @@
 ; sdk 26.0.1 rustc 1.95.0; fingerprints 26.0.1+rustc1.95.0.txt: 2 of 2 helpers named, 0 by shape
 ; ModuleID = 'ponytail'
 source_filename = "ponytail"
-target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target datalayout = "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20"
 
 %Val = type { i64 }
 
@@ -43,12 +43,12 @@ c1:                                               ; preds = %entry
 
 fall4:                                            ; preds = %entry
   %lshr = lshr i64 %arg_payload, 32
+  %t = trunc i64 %lshr to i32
   %v_Symbol__persisted__ = tail call %Val @soroban.val.from_payload(i64 3867323444879862030)
   %v_true = tail call %Val @soroban.val.from_payload(i64 1)
   %Persistent = tail call i64 @soroban.storage_type(i64 1)
   %put_contract_data = tail call %Val @ledger.put_contract_data(%Val %v_Symbol__persisted__, %Val %v_true, i64 %Persistent)
-  %sel = trunc i64 %lshr to i32
-  switch i32 %sel, label %c7 [
+  switch i32 %t, label %c7 [
     i32 0, label %c6
     i32 1, label %c5
     i32 2, label %c9

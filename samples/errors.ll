@@ -83,12 +83,15 @@ fall2:                                            ; preds = %entry
 fall3:                                            ; preds = %fall2
   %get5 = load i64, ptr %l0, align 4
   %lshr = lshr i64 %get5, 32
-  %and6 = and i64 %lshr, 255
-  store i64 %and6, ptr %l1, align 4
-  %cmp7 = icmp eq i64 %and6, 5
-  %zext8 = zext i1 %cmp7 to i64
-  %brif9 = icmp ne i64 %zext8, 0
-  br i1 %brif9, label %c1, label %fall4
+  %t = trunc i64 %lshr to i32
+  %and6 = and i32 %t, 255
+  %z = zext i32 %and6 to i64
+  store i64 %z, ptr %l1, align 4
+  %t7 = trunc i64 %z to i32
+  %cmp8 = icmp eq i32 %t7, 5
+  %zext9 = zext i1 %cmp8 to i64
+  %brif10 = icmp ne i64 %zext9, 0
+  br i1 %brif10, label %c1, label %fall4
 
 fall4:                                            ; preds = %fall3
   %v_Symbol__persisted__ = call %Val @soroban.val.from_payload(i64 3867323444879862030)
@@ -96,8 +99,8 @@ fall4:                                            ; preds = %fall3
   %Persistent = call i64 @soroban.storage_type(i64 1)
   %put_contract_data = call %Val @ledger.put_contract_data(%Val %v_Symbol__persisted__, %Val %v_true, i64 %Persistent)
   store i64 4294967299, ptr %l0, align 4
-  %get10 = load i64, ptr %l1, align 4
-  %sel = trunc i64 %get10 to i32
+  %get11 = load i64, ptr %l1, align 4
+  %sel = trunc i64 %get11 to i32
   switch i32 %sel, label %c7 [
     i32 0, label %c6
     i32 1, label %c5
@@ -106,8 +109,8 @@ fall4:                                            ; preds = %fall3
   ]
 
 c5:                                               ; preds = %c6, %fall4
-  %get11 = load i64, ptr %l0, align 4
-  %to_val = call %Val @soroban.val.from_payload(i64 %get11)
+  %get12 = load i64, ptr %l0, align 4
+  %to_val = call %Val @soroban.val.from_payload(i64 %get12)
   ret %Val %to_val
 
 c6:                                               ; preds = %fall4

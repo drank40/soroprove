@@ -96,14 +96,14 @@ extern "C" {
 pub fn hello(mut flag: Val) -> Val {
     unsafe {
         let mut arg_payload: u64;
-        let mut lshr: u64;
+        let mut t: u32;
         let mut l0_0: Val;
         let mut to_val: Val;
         arg_payload = flag.0;
         if (arg_payload < 21474836480u64) & ((arg_payload & 255u64) == Tag::U32Val) {
-            lshr = arg_payload.wrapping_shr(32u64 as u32);
+            t = (arg_payload.wrapping_shr(32u64 as u32)) as u32;
             put_contract_data(Val::sym("persisted"), Val::TRUE, StorageType::Persistent);
-            match lshr as u32 {
+            match t {
                 0 /* Flag::A */ => {
                     l0_0 = Val::sym("hello");
                 }

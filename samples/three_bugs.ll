@@ -131,23 +131,23 @@ entry:
   br i1 %brif, label %c4, label %fall5
 
 c1:                                               ; preds = %c3
-  %get62 = load i64, ptr %l3, align 4
-  ret i64 %get62
+  %get64 = load i64, ptr %l3, align 4
+  ret i64 %get64
 
 c2:                                               ; preds = %fall10, %fall8, %c4, %fall6, %fall5
   call void @soroban.trap()
   unreachable
 
 c3:                                               ; preds = %fall9, %fall7
-  %slot4056 = getelementptr i8, ptr %frame, i64 40
-  %ld57 = load i64, ptr %slot4056, align 1
-  store i64 %ld57, ptr %l3, align 4
-  %slot3258 = getelementptr i8, ptr %frame, i64 32
-  %ld59 = load i64, ptr %slot3258, align 1
-  %eqz = icmp eq i64 %ld59, 0
-  %zext60 = zext i1 %eqz to i64
-  %brif61 = icmp ne i64 %zext60, 0
-  br i1 %brif61, label %c1, label %fall10
+  %slot4058 = getelementptr i8, ptr %frame, i64 40
+  %ld59 = load i64, ptr %slot4058, align 1
+  store i64 %ld59, ptr %l3, align 4
+  %slot3260 = getelementptr i8, ptr %frame, i64 32
+  %ld61 = load i64, ptr %slot3260, align 1
+  %eqz = icmp eq i64 %ld61, 0
+  %zext62 = zext i1 %eqz to i64
+  %brif63 = icmp ne i64 %zext62, 0
+  br i1 %brif63, label %c1, label %fall10
 
 c4:                                               ; preds = %entry
   %get24 = load i64, ptr %l0, align 4
@@ -181,11 +181,13 @@ fall6:                                            ; preds = %fall5
   %lc = call i64 @f25(i64 %fp7)
   store i64 %lc, ptr %l3, align 4
   %get8 = load i64, ptr %l1, align 4
-  %add = add i64 %get8, 8
+  %t = trunc i64 %get8 to i32
+  %add = add i32 %t, 8
+  %z = zext i32 %add to i64
   %get9 = load i64, ptr %l0, align 4
   %slot3210 = getelementptr i8, ptr %frame, i64 32
   %fp11 = ptrtoint ptr %slot3210 to i64
-  call void @f28(i64 %fp11, i64 %add, i64 %get9)
+  call void @f28(i64 %fp11, i64 %z, i64 %get9)
   %slot3212 = getelementptr i8, ptr %frame, i64 32
   %ld13 = load i32, ptr %slot3212, align 1
   %zx14 = zext i32 %ld13 to i64
@@ -219,30 +221,32 @@ fall8:                                            ; preds = %c4
   store i64 %lc36, ptr %l3, align 4
   %get37 = load i64, ptr %l0, align 4
   %get38 = load i64, ptr %l1, align 4
-  %add39 = add i64 %get38, 8
-  %slot3240 = getelementptr i8, ptr %frame, i64 32
-  %fp41 = ptrtoint ptr %slot3240 to i64
-  call void @f18(i64 %fp41, i64 %get37, i64 %add39)
+  %t39 = trunc i64 %get38 to i32
+  %add40 = add i32 %t39, 8
+  %z41 = zext i32 %add40 to i64
   %slot3242 = getelementptr i8, ptr %frame, i64 32
-  %ld43 = load i32, ptr %slot3242, align 1
-  %zx44 = zext i32 %ld43 to i64
-  %brif45 = icmp ne i64 %zx44, 0
-  br i1 %brif45, label %c2, label %fall9
+  %fp43 = ptrtoint ptr %slot3242 to i64
+  call void @f18(i64 %fp43, i64 %get37, i64 %z41)
+  %slot3244 = getelementptr i8, ptr %frame, i64 32
+  %ld45 = load i32, ptr %slot3244, align 1
+  %zx46 = zext i32 %ld45 to i64
+  %brif47 = icmp ne i64 %zx46, 0
+  br i1 %brif47, label %c2, label %fall9
 
 fall9:                                            ; preds = %fall8
-  %slot4046 = getelementptr i8, ptr %frame, i64 40
-  %ld47 = load i64, ptr %slot4046, align 1
-  %slot1648 = getelementptr i8, ptr %frame, i64 16
-  store i64 %ld47, ptr %slot1648, align 1
-  %get49 = load i64, ptr %l3, align 4
-  %slot850 = getelementptr i8, ptr %frame, i64 8
-  store i64 %get49, ptr %slot850, align 1
-  %get51 = load i64, ptr %l0, align 4
-  %slot3252 = getelementptr i8, ptr %frame, i64 32
-  %fp53 = ptrtoint ptr %slot3252 to i64
-  %slot854 = getelementptr i8, ptr %frame, i64 8
-  %fp55 = ptrtoint ptr %slot854 to i64
-  call void @f31(i64 %fp53, i64 %fp55, i64 %get51)
+  %slot4048 = getelementptr i8, ptr %frame, i64 40
+  %ld49 = load i64, ptr %slot4048, align 1
+  %slot1650 = getelementptr i8, ptr %frame, i64 16
+  store i64 %ld49, ptr %slot1650, align 1
+  %get51 = load i64, ptr %l3, align 4
+  %slot852 = getelementptr i8, ptr %frame, i64 8
+  store i64 %get51, ptr %slot852, align 1
+  %get53 = load i64, ptr %l0, align 4
+  %slot3254 = getelementptr i8, ptr %frame, i64 32
+  %fp55 = ptrtoint ptr %slot3254 to i64
+  %slot856 = getelementptr i8, ptr %frame, i64 8
+  %fp57 = ptrtoint ptr %slot856 to i64
+  call void @f31(i64 %fp55, i64 %fp57, i64 %get53)
   br label %c3
 
 fall10:                                           ; preds = %c3
@@ -335,20 +339,20 @@ entry:
   br i1 %brif, label %c2, label %fall3
 
 c1:                                               ; preds = %fall4
-  %get10 = load i64, ptr %l2, align 4
+  %get11 = load i64, ptr %l2, align 4
   %slot8 = getelementptr i8, ptr %frame, i64 8
   %fp = ptrtoint ptr %slot8 to i64
-  call void @f12(i64 %fp, i64 %get10)
-  %slot811 = getelementptr i8, ptr %frame, i64 8
-  %ld = load i64, ptr %slot811, align 1
+  call void @f12(i64 %fp, i64 %get11)
+  %slot812 = getelementptr i8, ptr %frame, i64 8
+  %ld = load i64, ptr %slot812, align 1
   %slot16 = getelementptr i8, ptr %frame, i64 16
-  %ld12 = load i64, ptr %slot16, align 1
+  %ld13 = load i64, ptr %slot16, align 1
   %slot31 = getelementptr i8, ptr %frame, i64 31
-  %fp13 = ptrtoint ptr %slot31 to i64
-  %lc = call i64 @f13(i64 %ld, i64 %ld12, i64 %fp13)
+  %fp14 = ptrtoint ptr %slot31 to i64
+  %lc = call i64 @f13(i64 %ld, i64 %ld13, i64 %fp14)
   store i64 %lc, ptr %l0, align 4
-  %get14 = load i64, ptr %l0, align 4
-  ret i64 %get14
+  %get15 = load i64, ptr %l0, align 4
+  ret i64 %get15
 
 c2:                                               ; preds = %fall5, %fall3, %entry
   call void @soroban.trap()
@@ -366,11 +370,14 @@ fall4:                                            ; preds = %fall3
   %get5 = load i64, ptr %l0, align 4
   %lshr = lshr i64 %get5, 32
   store i64 %lshr, ptr %l2, align 4
-  %and6 = and i64 %lshr, 255
-  %cmp7 = icmp ne i64 %and6, 255
-  %zext8 = zext i1 %cmp7 to i64
-  %brif9 = icmp ne i64 %zext8, 0
-  br i1 %brif9, label %c1, label %fall5
+  %t = trunc i64 %lshr to i32
+  %and6 = and i32 %t, 255
+  %z = zext i32 %and6 to i64
+  %t7 = trunc i64 %z to i32
+  %cmp8 = icmp ne i32 %t7, 255
+  %zext9 = zext i1 %cmp8 to i64
+  %brif10 = icmp ne i64 %zext9, 0
+  br i1 %brif10, label %c1, label %fall5
 
 fall5:                                            ; preds = %fall4
   br label %c2
@@ -386,8 +393,10 @@ entry:
   store i64 0, ptr %l2, align 4
   %frame = alloca [16 x i8], align 1
   %get = load i64, ptr %l1, align 4
-  %and = and i64 %get, 255
-  %sel = trunc i64 %and to i32
+  %t = trunc i64 %get to i32
+  %and = and i32 %t, 255
+  %z = zext i32 %and to i64
+  %sel = trunc i64 %z to i32
   switch i32 %sel, label %c4 [
     i32 0, label %c2
     i32 1, label %c6
@@ -624,10 +633,12 @@ fall2:                                            ; preds = %entry
   %ld2 = load i64, ptr %slot8, align 1
   store i64 %ld2, ptr %l5, align 4
   %get3 = load i64, ptr %l2, align 4
-  %add = add i64 %get3, 8
+  %t = trunc i64 %get3 to i32
+  %add = add i32 %t, 8
+  %z = zext i32 %add to i64
   %get4 = load i64, ptr %l1, align 4
   %fp5 = ptrtoint ptr %frame to i64
-  call void @f28(i64 %fp5, i64 %add, i64 %get4)
+  call void @f28(i64 %fp5, i64 %z, i64 %get4)
   %ld6 = load i32, ptr %frame, align 1
   %zx7 = zext i32 %ld6 to i64
   %brif8 = icmp ne i64 %zx7, 0
@@ -678,10 +689,12 @@ c2:                                               ; preds = %fall4, %entry
 
 fall3:                                            ; preds = %entry
   %get1 = load i64, ptr %l1, align 4
-  %add = add i64 %get1, 8
+  %t = trunc i64 %get1 to i32
+  %add = add i32 %t, 8
+  %z = zext i32 %add to i64
   %get2 = load i64, ptr %l0, align 4
   %fp = ptrtoint ptr %frame to i64
-  call void @f28(i64 %fp, i64 %add, i64 %get2)
+  call void @f28(i64 %fp, i64 %z, i64 %get2)
   %ld3 = load i64, ptr %frame, align 1
   %cmp = icmp eq i64 %ld3, 1
   %zext = zext i1 %cmp to i64
@@ -890,7 +903,8 @@ entry:
   call void @f46(i64 %fp, i64 %ld, i64 %ld2)
   %ld3 = load i32, ptr %frame, align 1
   %zx = zext i32 %ld3 to i64
-  %cmp = icmp ne i64 %zx, 1
+  %t = trunc i64 %zx to i32
+  %cmp = icmp ne i32 %t, 1
   %zext = zext i1 %cmp to i64
   %brif = icmp ne i64 %zext, 0
   br i1 %brif, label %c2, label %fall3
@@ -1050,14 +1064,18 @@ entry:
   store i64 %1, ptr %l1, align 4
   store i64 %2, ptr %l2, align 4
   %get = load i64, ptr %l1, align 4
-  %shl = shl i64 %get, 32
+  %t = trunc i64 %get to i32
+  %z = zext i32 %t to i64
+  %shl = shl i64 %z, 32
   %or = or i64 %shl, 4
   %get1 = load i64, ptr %l2, align 4
-  %shl2 = shl i64 %get1, 32
-  %or3 = or i64 %shl2, 4
+  %t2 = trunc i64 %get1 to i32
+  %z3 = zext i32 %t2 to i64
+  %shl4 = shl i64 %z3, 32
+  %or5 = or i64 %shl4, 4
   %to_val = call %Val @soroban.val.from_payload(i64 %or)
-  %to_val4 = call %Val @soroban.val.from_payload(i64 %or3)
-  %vec_new_from_linear_memory = call %Val @vec.vec_new_from_linear_memory(%Val %to_val, %Val %to_val4)
+  %to_val6 = call %Val @soroban.val.from_payload(i64 %or5)
+  %vec_new_from_linear_memory = call %Val @vec.vec_new_from_linear_memory(%Val %to_val, %Val %to_val6)
   %payload = call i64 @soroban.val.payload(%Val %vec_new_from_linear_memory)
   ret i64 %payload
 }
@@ -1076,25 +1094,33 @@ entry:
   store i64 %4, ptr %l4, align 4
   %get = load i64, ptr %l2, align 4
   %get1 = load i64, ptr %l4, align 4
-  %cmp = icmp eq i64 %get, %get1
+  %t = trunc i64 %get to i32
+  %t2 = trunc i64 %get1 to i32
+  %cmp = icmp eq i32 %t, %t2
   %zext = zext i1 %cmp to i64
   %brif = icmp ne i64 %zext, 0
   br i1 %brif, label %c1, label %fall2
 
 c1:                                               ; preds = %entry
-  %get2 = load i64, ptr %l1, align 4
-  %shl = shl i64 %get2, 32
+  %get3 = load i64, ptr %l1, align 4
+  %t4 = trunc i64 %get3 to i32
+  %z = zext i32 %t4 to i64
+  %shl = shl i64 %z, 32
   %or = or i64 %shl, 4
-  %get3 = load i64, ptr %l3, align 4
-  %shl4 = shl i64 %get3, 32
-  %or5 = or i64 %shl4, 4
-  %get6 = load i64, ptr %l2, align 4
-  %shl7 = shl i64 %get6, 32
-  %or8 = or i64 %shl7, 4
+  %get5 = load i64, ptr %l3, align 4
+  %t6 = trunc i64 %get5 to i32
+  %z7 = zext i32 %t6 to i64
+  %shl8 = shl i64 %z7, 32
+  %or9 = or i64 %shl8, 4
+  %get10 = load i64, ptr %l2, align 4
+  %t11 = trunc i64 %get10 to i32
+  %z12 = zext i32 %t11 to i64
+  %shl13 = shl i64 %z12, 32
+  %or14 = or i64 %shl13, 4
   %to_val = call %Val @soroban.val.from_payload(i64 %or)
-  %to_val9 = call %Val @soroban.val.from_payload(i64 %or5)
-  %to_val10 = call %Val @soroban.val.from_payload(i64 %or8)
-  %map_new_from_linear_memory = call %Val @map.map_new_from_linear_memory(%Val %to_val, %Val %to_val9, %Val %to_val10)
+  %to_val15 = call %Val @soroban.val.from_payload(i64 %or9)
+  %to_val16 = call %Val @soroban.val.from_payload(i64 %or14)
+  %map_new_from_linear_memory = call %Val @map.map_new_from_linear_memory(%Val %to_val, %Val %to_val15, %Val %to_val16)
   %payload = call i64 @soroban.val.payload(%Val %map_new_from_linear_memory)
   ret i64 %payload
 
@@ -1112,14 +1138,18 @@ entry:
   store i64 %1, ptr %l1, align 4
   store i64 %2, ptr %l2, align 4
   %get = load i64, ptr %l1, align 4
-  %shl = shl i64 %get, 32
+  %t = trunc i64 %get to i32
+  %z = zext i32 %t to i64
+  %shl = shl i64 %z, 32
   %or = or i64 %shl, 4
   %get1 = load i64, ptr %l2, align 4
-  %shl2 = shl i64 %get1, 32
-  %or3 = or i64 %shl2, 4
+  %t2 = trunc i64 %get1 to i32
+  %z3 = zext i32 %t2 to i64
+  %shl4 = shl i64 %z3, 32
+  %or5 = or i64 %shl4, 4
   %to_val = call %Val @soroban.val.from_payload(i64 %or)
-  %to_val4 = call %Val @soroban.val.from_payload(i64 %or3)
-  %symbol_new_from_linear_memory = call %Val @buf.symbol_new_from_linear_memory(%Val %to_val, %Val %to_val4)
+  %to_val6 = call %Val @soroban.val.from_payload(i64 %or5)
+  %symbol_new_from_linear_memory = call %Val @buf.symbol_new_from_linear_memory(%Val %to_val, %Val %to_val6)
   %payload = call i64 @soroban.val.payload(%Val %symbol_new_from_linear_memory)
   ret i64 %payload
 }
@@ -1187,7 +1217,8 @@ entry:
   store i64 0, ptr %l4, align 4
   %frame = alloca [16 x i8], align 1
   %get = load i64, ptr %l2, align 4
-  %cmp = icmp ugt i64 %get, 9
+  %t = trunc i64 %get to i32
+  %cmp = icmp ugt i32 %t, 9
   %zext = zext i1 %cmp to i64
   %brif = icmp ne i64 %zext, 0
   br i1 %brif, label %c2, label %fall3
@@ -1196,15 +1227,15 @@ c1:                                               ; preds = %c2, %fall9, %fall7
   ret void
 
 c2:                                               ; preds = %entry
-  %get25 = load i64, ptr %l0, align 4
-  %get26 = load i64, ptr %l2, align 4
-  %ea27 = add i64 %get25, 8
-  call void @soroban.store32(i64 %ea27, i64 %get26)
-  %get28 = load i64, ptr %l0, align 4
-  %ea29 = add i64 %get28, 4
-  call void @soroban.store8(i64 %ea29, i64 0)
-  %get30 = load i64, ptr %l0, align 4
-  call void @soroban.store32(i64 %get30, i64 1)
+  %get29 = load i64, ptr %l0, align 4
+  %get30 = load i64, ptr %l2, align 4
+  %ea31 = add i64 %get29, 8
+  call void @soroban.store32(i64 %ea31, i64 %get30)
+  %get32 = load i64, ptr %l0, align 4
+  %ea33 = add i64 %get32, 4
+  call void @soroban.store8(i64 %ea33, i64 0)
+  %get34 = load i64, ptr %l0, align 4
+  call void @soroban.store32(i64 %get34, i64 1)
   br label %c1
 
 fall3:                                            ; preds = %entry
@@ -1225,10 +1256,11 @@ c6:                                               ; preds = %h4
   %slot87 = getelementptr i8, ptr %frame, i64 8
   %ld8 = load i8, ptr %slot87, align 1
   %zx = zext i8 %ld8 to i64
-  %cmp9 = icmp eq i64 %zx, 255
-  %zext10 = zext i1 %cmp9 to i64
-  %brif11 = icmp ne i64 %zext10, 0
-  br i1 %brif11, label %c8, label %fall9
+  %t9 = trunc i64 %zx to i32
+  %cmp10 = icmp eq i32 %t9, 255
+  %zext11 = zext i1 %cmp10 to i64
+  %brif12 = icmp ne i64 %zext11, 0
+  br i1 %brif12, label %c8, label %fall9
 
 fall7:                                            ; preds = %h4
   %get3 = load i64, ptr %l0, align 4
@@ -1242,29 +1274,33 @@ fall7:                                            ; preds = %h4
   br label %c1
 
 c8:                                               ; preds = %c6
-  %get17 = load i64, ptr %l2, align 4
-  %add = add i64 %get17, -1
-  store i64 %add, ptr %l2, align 4
-  %get18 = load i64, ptr %l1, align 4
-  %add19 = add i64 %get18, 1
-  store i64 %add19, ptr %l1, align 4
-  %get20 = load i64, ptr %l4, align 4
-  %shl21 = shl i64 %get20, 6
+  %get18 = load i64, ptr %l2, align 4
+  %t19 = trunc i64 %get18 to i32
+  %add = add i32 %t19, -1
+  %z = zext i32 %add to i64
+  store i64 %z, ptr %l2, align 4
+  %get20 = load i64, ptr %l1, align 4
+  %t21 = trunc i64 %get20 to i32
+  %add22 = add i32 %t21, 1
+  %z23 = zext i32 %add22 to i64
+  store i64 %z23, ptr %l1, align 4
+  %get24 = load i64, ptr %l4, align 4
+  %shl25 = shl i64 %get24, 6
   %slot9 = getelementptr i8, ptr %frame, i64 9
-  %ld22 = load i8, ptr %slot9, align 1
-  %zx23 = zext i8 %ld22 to i64
-  %or24 = or i64 %shl21, %zx23
-  store i64 %or24, ptr %l4, align 4
+  %ld26 = load i8, ptr %slot9, align 1
+  %zx27 = zext i8 %ld26 to i64
+  %or28 = or i64 %shl25, %zx27
+  store i64 %or28, ptr %l4, align 4
   br label %h4
 
 fall9:                                            ; preds = %c6
-  %get12 = load i64, ptr %l0, align 4
-  %slot813 = getelementptr i8, ptr %frame, i64 8
-  %ld14 = load i64, ptr %slot813, align 1
-  %ea15 = add i64 %get12, 4
-  call void @soroban.store64(i64 %ea15, i64 %ld14)
-  %get16 = load i64, ptr %l0, align 4
-  call void @soroban.store32(i64 %get16, i64 1)
+  %get13 = load i64, ptr %l0, align 4
+  %slot814 = getelementptr i8, ptr %frame, i64 8
+  %ld15 = load i64, ptr %slot814, align 1
+  %ea16 = add i64 %get13, 4
+  call void @soroban.store64(i64 %ea16, i64 %ld15)
+  %get17 = load i64, ptr %l0, align 4
+  call void @soroban.store32(i64 %get17, i64 1)
   br label %c1
 }
 
@@ -1278,73 +1314,97 @@ entry:
   store i64 0, ptr %l2, align 4
   store i64 1, ptr %l2, align 4
   %get = load i64, ptr %l1, align 4
-  %and = and i64 %get, 255
-  %cmp = icmp eq i64 %and, 95
+  %t = trunc i64 %get to i32
+  %and = and i32 %t, 255
+  %z = zext i32 %and to i64
+  %t1 = trunc i64 %z to i32
+  %cmp = icmp eq i32 %t1, 95
   %zext = zext i1 %cmp to i64
   %brif = icmp ne i64 %zext, 0
   br i1 %brif, label %c1, label %fall2
 
 c1:                                               ; preds = %c3, %c4, %c7, %entry
-  %get27 = load i64, ptr %l0, align 4
-  call void @soroban.store8(i64 %get27, i64 255)
-  %get28 = load i64, ptr %l0, align 4
-  %get29 = load i64, ptr %l2, align 4
-  %ea30 = add i64 %get28, 1
-  call void @soroban.store8(i64 %ea30, i64 %get29)
+  %get49 = load i64, ptr %l0, align 4
+  call void @soroban.store8(i64 %get49, i64 255)
+  %get50 = load i64, ptr %l0, align 4
+  %get51 = load i64, ptr %l2, align 4
+  %ea52 = add i64 %get50, 1
+  call void @soroban.store8(i64 %ea52, i64 %get51)
   ret void
 
 fall2:                                            ; preds = %entry
-  %get1 = load i64, ptr %l1, align 4
-  %add = add i64 %get1, -48
-  %and2 = and i64 %add, 255
-  %cmp3 = icmp ult i64 %and2, 10
-  %zext4 = zext i1 %cmp3 to i64
-  %brif5 = icmp ne i64 %zext4, 0
-  br i1 %brif5, label %c4, label %fall5
+  %get2 = load i64, ptr %l1, align 4
+  %t3 = trunc i64 %get2 to i32
+  %add = add i32 %t3, -48
+  %z4 = zext i32 %add to i64
+  %t5 = trunc i64 %z4 to i32
+  %and6 = and i32 %t5, 255
+  %z7 = zext i32 %and6 to i64
+  %t8 = trunc i64 %z7 to i32
+  %cmp9 = icmp ult i32 %t8, 10
+  %zext10 = zext i1 %cmp9 to i64
+  %brif11 = icmp ne i64 %zext10, 0
+  br i1 %brif11, label %c4, label %fall5
 
 c3:                                               ; preds = %fall5
-  %get25 = load i64, ptr %l1, align 4
-  %add26 = add i64 %get25, -53
-  store i64 %add26, ptr %l2, align 4
+  %get45 = load i64, ptr %l1, align 4
+  %t46 = trunc i64 %get45 to i32
+  %add47 = add i32 %t46, -53
+  %z48 = zext i32 %add47 to i64
+  store i64 %z48, ptr %l2, align 4
   br label %c1
 
 c4:                                               ; preds = %fall2
-  %get23 = load i64, ptr %l1, align 4
-  %add24 = add i64 %get23, -46
-  store i64 %add24, ptr %l2, align 4
+  %get41 = load i64, ptr %l1, align 4
+  %t42 = trunc i64 %get41 to i32
+  %add43 = add i32 %t42, -46
+  %z44 = zext i32 %add43 to i64
+  store i64 %z44, ptr %l2, align 4
   br label %c1
 
 fall5:                                            ; preds = %fall2
-  %get6 = load i64, ptr %l1, align 4
-  %add7 = add i64 %get6, -65
-  %and8 = and i64 %add7, 255
-  %cmp9 = icmp ult i64 %and8, 26
-  %zext10 = zext i1 %cmp9 to i64
-  %brif11 = icmp ne i64 %zext10, 0
-  br i1 %brif11, label %c3, label %fall6
+  %get12 = load i64, ptr %l1, align 4
+  %t13 = trunc i64 %get12 to i32
+  %add14 = add i32 %t13, -65
+  %z15 = zext i32 %add14 to i64
+  %t16 = trunc i64 %z15 to i32
+  %and17 = and i32 %t16, 255
+  %z18 = zext i32 %and17 to i64
+  %t19 = trunc i64 %z18 to i32
+  %cmp20 = icmp ult i32 %t19, 26
+  %zext21 = zext i1 %cmp20 to i64
+  %brif22 = icmp ne i64 %zext21, 0
+  br i1 %brif22, label %c3, label %fall6
 
 fall6:                                            ; preds = %fall5
-  %get12 = load i64, ptr %l1, align 4
-  %add13 = add i64 %get12, -97
-  %and14 = and i64 %add13, 255
-  %cmp15 = icmp ult i64 %and14, 26
-  %zext16 = zext i1 %cmp15 to i64
-  %brif17 = icmp ne i64 %zext16, 0
-  br i1 %brif17, label %c7, label %fall8
+  %get23 = load i64, ptr %l1, align 4
+  %t24 = trunc i64 %get23 to i32
+  %add25 = add i32 %t24, -97
+  %z26 = zext i32 %add25 to i64
+  %t27 = trunc i64 %z26 to i32
+  %and28 = and i32 %t27, 255
+  %z29 = zext i32 %and28 to i64
+  %t30 = trunc i64 %z29 to i32
+  %cmp31 = icmp ult i32 %t30, 26
+  %zext32 = zext i1 %cmp31 to i64
+  %brif33 = icmp ne i64 %zext32, 0
+  br i1 %brif33, label %c7, label %fall8
 
 c7:                                               ; preds = %fall6
-  %get21 = load i64, ptr %l1, align 4
-  %add22 = add i64 %get21, -59
-  store i64 %add22, ptr %l2, align 4
+  %get37 = load i64, ptr %l1, align 4
+  %t38 = trunc i64 %get37 to i32
+  %add39 = add i32 %t38, -59
+  %z40 = zext i32 %add39 to i64
+  store i64 %z40, ptr %l2, align 4
   br label %c1
 
 fall8:                                            ; preds = %fall6
-  %get18 = load i64, ptr %l0, align 4
-  %get19 = load i64, ptr %l1, align 4
-  %ea = add i64 %get18, 1
-  call void @soroban.store8(i64 %ea, i64 %get19)
-  %get20 = load i64, ptr %l0, align 4
-  call void @soroban.store8(i64 %get20, i64 1)
+  %get34 = load i64, ptr %l0, align 4
+  %get35 = load i64, ptr %l1, align 4
+  %ea = add i64 %get34, 1
+  call void @soroban.store8(i64 %ea, i64 %get35)
+  %get36 = load i64, ptr %l0, align 4
+  call void @soroban.store8(i64 %get36, i64 1)
   ret void
 }
 
@@ -1373,10 +1433,14 @@ entry:
   store i64 %2, ptr %l2, align 4
   %get = load i64, ptr %l0, align 4
   %get1 = load i64, ptr %l1, align 4
-  %shl = shl i64 %get1, 1
-  %or = or i64 %shl, 1
-  %get2 = load i64, ptr %l2, align 4
-  call void @f51(i64 %get, i64 %or, i64 %get2)
+  %t = trunc i64 %get1 to i32
+  %shl = shl i32 %t, 1
+  %z = zext i32 %shl to i64
+  %t2 = trunc i64 %z to i32
+  %or = or i32 %t2, 1
+  %z3 = zext i32 %or to i64
+  %get4 = load i64, ptr %l2, align 4
+  call void @f51(i64 %get, i64 %z3, i64 %get4)
   call void @soroban.trap()
   unreachable
 }

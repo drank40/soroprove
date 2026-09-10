@@ -153,8 +153,8 @@ pub fn read(mut a: Val, mut b: Val) -> Val {
         let mut and: u64;
         let mut cmp_not_not75: bool;
         let mut pair_key: Val;
-        let mut vec_new_from_linear_memory_21: Val;
-        let mut has_contract_data_23: Val;
+        let mut vec_new_from_linear_memory_23: Val;
+        let mut has_contract_data_25: Val;
         let mut to_val: Val;
         arg_payload = a.0;
         arg_payload1 = b.0;
@@ -164,9 +164,9 @@ pub fn read(mut a: Val, mut b: Val) -> Val {
             Tag::AddressObject => {
                 if cmp_not_not75 {
                     pair_key = Val::map(&["a", "b"], &[a, b]); // PairKey { a, b }
-                    vec_new_from_linear_memory_21 = Val::vec(&[Val::sym("Pair") /* DataKey::Pair */, pair_key]); // DataKey::Pair(PairKey { a, b })
-                    has_contract_data_23 = has_contract_data(vec_new_from_linear_memory_21, StorageType::Persistent);
-                    to_val = Val((has_contract_data_23.0 == 1u64) as u64);
+                    vec_new_from_linear_memory_23 = Val::vec(&[Val::sym("Pair") /* DataKey::Pair */, pair_key]); // DataKey::Pair(PairKey { a, b })
+                    has_contract_data_25 = has_contract_data(vec_new_from_linear_memory_23, StorageType::Persistent);
+                    to_val = Val((has_contract_data_25.0 == 1u64) as u64);
                     return to_val;
                 }
             }
@@ -205,15 +205,15 @@ fn f51() -> ! {
     unsafe {
         let mut frame: *mut u8;
         let mut slot12: *mut u8;
-        let mut _9: [u64; 4];
-        _9 = [0u64; 4];
-        frame = (&raw mut _9) as *mut u8;
+        let mut _8: [u64; 4];
+        _8 = [0u64; 4];
+        frame = (&raw mut _8) as *mut u8;
         (*((frame.wrapping_offset(16isize) as *mut u32))) = 29u32;
         slot12 = frame.wrapping_offset(12isize);
         (*((slot12 as *mut u32))) = 1048577u32;
         (*((frame.wrapping_offset(28isize) as *mut u16))) = 1u16;
         (*((frame.wrapping_offset(24isize) as *mut u32))) = 1048604u32;
-        (*((frame.wrapping_offset(20isize) as *mut u32))) = ((slot12 as u64) as u32);
+        (*((frame.wrapping_offset(20isize) as *mut u32))) = (slot12 as u32);
         trap();
     }
 }

@@ -87,8 +87,6 @@ pub unsafe fn str_at<'a>(pos: u64, len: u64) -> &'a str { core::str::from_utf8_u
 //   fn set_flag()
 
 extern "C" {
-    /// wasm import `b.j`
-    pub fn symbol_new_from_linear_memory(a0: Val, a1: Val) -> Val;
     /// wasm import `x.5`
     pub fn fail_with_error(a0: Val) -> Val;
     /// wasm import `l.0`
@@ -103,8 +101,6 @@ extern "C" {
 
 /// The SDK constructors the imports above implement, their data as literals: the host reads the same bytes.
 impl Val {
-    /// `Symbol::new`.
-    pub fn symbol(s: &str) -> Val { unsafe { symbol_new_from_linear_memory(Val::u32(s.as_ptr() as usize as u32), Val::u32(s.len() as u32)) } }
     /// `Vec::from_array`.
     pub fn vec<const N: usize>(a: &[Val; N]) -> Val { unsafe { vec_new_from_linear_memory(pos(a), Val::u32(N as u32)) } }
     /// A struct as the map it becomes, field names sorted: `&[&str; N]` is the (position, length) array the host reads the keys from.
@@ -123,19 +119,14 @@ pub fn read(mut a: Val, mut b: Val) -> Val {
         let mut arg_payload1: u64;
         let mut and: u64;
         let mut cmp3_not: bool;
-        let mut bottom_2: u64;
-        let mut bottom_3: u64;
-        let mut bottom_1: u64;
-        let mut Symbol__Pair__: Val;
-        let mut payload: u64;
         let mut pair_key: Val;
-        let mut vec_new_from_linear_memory_25: Val;
-        let mut has_contract_data_27: Val;
-        let mut _31: [u64; 4];
-        let mut to_val9: Val;
+        let mut vec_new_from_linear_memory_18: Val;
+        let mut has_contract_data_20: Val;
+        let mut _24: [u64; 4];
+        let mut to_val15: Val;
         let mut to_val: Val;
-        _31 = [0u64; 4];
-        frame = (&raw mut _31) as *mut u8;
+        _24 = [0u64; 4];
+        frame = (&raw mut _24) as *mut u8;
         arg_payload = a.0;
         arg_payload1 = b.0;
         and = arg_payload & 255u64;
@@ -143,39 +134,15 @@ pub fn read(mut a: Val, mut b: Val) -> Val {
         match and {
             Tag::AddressObject => {
                 if cmp3_not {
-                    bottom_1 = unknown_i64();
-                    'b6: {
-                        match bottom_1 {
-                            0 => {
-                                bottom_2 = unknown_i64();
-                                match bottom_2 {
-                                    0 => {
-                                        bottom_3 = unknown_i64();
-                                        match bottom_3 {
-                                            0 => {
-                                                payload = 1852552974u64;
-                                                break 'b6;
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            _ => {}
-                        }
-                        Symbol__Pair__ = Val::symbol("Pair"); // DataKey::Pair
-                        payload = Symbol__Pair__.0;
-                    }
-                    _31[2] = arg_payload1;
-                    _31[1] = arg_payload;
-                    to_val9 = Val::u32((frame.wrapping_offset(8isize) as u64) as u32);
-                    pair_key = map_new_from_linear_memory(Val::u32(1048624) /* "a", "b" */, to_val9, Val::u32(2)); // PairKey { a, b }
-                    _31[2] = pair_key.0;
-                    _31[1] = payload;
-                    vec_new_from_linear_memory_25 = vec_new_from_linear_memory(to_val9, Val::u32(2)); // DataKey::Pair(PairKey { a, b })
-                    has_contract_data_27 = has_contract_data(vec_new_from_linear_memory_25, StorageType::Persistent);
-                    to_val = Val((has_contract_data_27.0 == 1u64) as u64);
+                    _24[2] = arg_payload1;
+                    _24[1] = arg_payload;
+                    to_val15 = Val::u32(((frame.wrapping_offset(8isize) as u32) as u64) as u32);
+                    pair_key = map_new_from_linear_memory(Val::u32(1048624) /* "a", "b" */, to_val15, Val::u32(2)); // PairKey { a, b }
+                    _24[2] = pair_key.0;
+                    _24[1] = 1852552974u64;
+                    vec_new_from_linear_memory_18 = vec_new_from_linear_memory(to_val15, Val::u32(2)); // DataKey::Pair(PairKey { a, b })
+                    has_contract_data_20 = has_contract_data(vec_new_from_linear_memory_18, StorageType::Persistent);
+                    to_val = Val((has_contract_data_20.0 == 1u64) as u64);
                     return to_val;
                 }
             }
@@ -248,15 +215,15 @@ fn f25() -> ! {
     unsafe {
         let mut frame: *mut u8;
         let mut slot12: *mut u8;
-        let mut _9: [u64; 4];
-        _9 = [0u64; 4];
-        frame = (&raw mut _9) as *mut u8;
+        let mut _8: [u64; 4];
+        _8 = [0u64; 4];
+        frame = (&raw mut _8) as *mut u8;
         (*((frame.wrapping_offset(16isize) as *mut u32))) = 29u32;
         slot12 = frame.wrapping_offset(12isize);
         (*((slot12 as *mut u32))) = 1048576u32;
         (*((frame.wrapping_offset(28isize) as *mut u16))) = 1u16;
         (*((frame.wrapping_offset(24isize) as *mut u32))) = 1048604u32;
-        (*((frame.wrapping_offset(20isize) as *mut u32))) = ((slot12 as u64) as u32);
+        (*((frame.wrapping_offset(20isize) as *mut u32))) = (slot12 as u32);
         trap();
     }
 }

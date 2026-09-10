@@ -126,19 +126,38 @@ fn summaries<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'tcx>], s
         }
         s.split_once(" {").map(|(st, _)| st).filter(|st| spec.struct_fields.contains_key(*st)).map(str::to_string)
     };
-    let mut renames = HashMap::new();
-    for (f, shapes) in &prev.ret_shapes {
+    let mut renames: HashMap<String, (String, String)> = HashMap::new();
+    let mut used: HashSet<String> = HashSet::new();
+    // Two helpers for one derive (a monomorphisation, a wrapper): numbered.
+    let name = |used: &mut HashSet<String>, base: String| -> String {
+        let mut n = base.clone();
+        let mut k = 2;
+        while !used.insert(n.clone()) {
+            n = format!("{base}_{k}");
+            k += 1;
+        }
+        n
+    };
+    let mut fs: Vec<&String> = prev.ret_shapes.keys().collect();
+    fs.sort();
+    for f in fs {
+        let shapes = &prev.ret_shapes[f];
         let owners: Vec<Option<String>> = shapes.iter().map(|(s, ..)| owner(s)).collect();
         if let Some(Some(t)) = owners.first().filter(|_| is_helper(f)) {
             if owners.iter().all(|o| o.as_deref() == Some(t.as_str())) {
-                renames.insert(f.clone(), (format!("{t}_into_val"), format!("/// The `#[contracttype]` derive `<{t} as IntoVal<Env, Val>>::into_val`.\n")));
+                let id = name(&mut used, format!("{t}_into_val"));
+                renames.insert(f.clone(), (id, format!("/// The `#[contracttype]` derive `<{t} as IntoVal<Env, Val>>::into_val`.\n")));
             }
         }
     }
-    for (f, types) in &prev.unpacks {
+    let mut fs: Vec<&String> = prev.unpacks.keys().collect();
+    fs.sort();
+    for f in fs {
+        let types = &prev.unpacks[f];
         if let Some(t) = types.first().filter(|_| is_helper(f) && !renames.contains_key(f)) {
             if types.iter().all(|x| x == t) {
-                renames.insert(f.clone(), (format!("{t}_try_from_val"), format!("/// The `#[contracttype]` derive `<{t} as TryFromVal<Env, Val>>::try_from_val`.\n")));
+                let id = name(&mut used, format!("{t}_try_from_val"));
+                renames.insert(f.clone(), (id, format!("/// The `#[contracttype]` derive `<{t} as TryFromVal<Env, Val>>::try_from_val`.\n")));
             }
         }
     }
@@ -1623,7 +1642,8 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                     if let Some(k) = self.konst_u64(&ab.1) {
                         if self.is_tag(&ab.0) {
                             if let Some(n) = tag_name(k) {
-                                b = format!("Tag::{n}");
+                                // The tag consts are u64; an i32-wide tag compares as u32.
+                                b = if ab.0.ty(&self.body.local_decls, self.tcx) == self.tcx.types.u32 { format!("Tag::{n} as u32") } else { format!("Tag::{n}") };
                             }
                         } else if let Some(i) = self.payload_of_param(&ab.0) {
                             // A parameter's payload against a literal: the literal is a Val.
@@ -3112,9 +3132,11 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                         }
                     }
                 } else {
+                    let tag = self.is_tag(discr);
+                    // The tag consts are u64; an i32-wide tag is matched as u64.
+                    let d = if tag && discr.ty(&self.body.local_decls, self.tcx) == self.tcx.types.u32 { format!("{d} as u64") } else { d };
                     self.line(format!("match {d} {{"));
                     self.depth += 1;
-                    let tag = self.is_tag(discr);
                     let en = self.enum_of(discr).map(str::to_string);
                     for (v, t) in targets.iter() {
                         let lines = self.capture(|s| s.branch(bb, t, tail))?;

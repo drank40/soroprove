@@ -30,7 +30,7 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
-use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple};
 use inkwell::types::{AnyTypeEnum, BasicMetadataTypeEnum, BasicTypeEnum, IntType, StructType};
 use inkwell::values::{
     AnyValue, AsValueRef, BasicValue, BasicValueEnum, CallSiteValue, FunctionValue, InstructionOpcode,
@@ -137,7 +137,7 @@ enum SV<'ctx> {
     Unknown,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Lbl<'ctx> {
     /// Where a `br` to this depth goes: a loop header, or a continuation.
     target: BasicBlock<'ctx>,
@@ -151,6 +151,9 @@ struct Lbl<'ctx> {
     /// every path that reaches the label stores its value, the continuation
     /// loads it, and mem2reg makes the phi. A `br` to a loop carries nothing.
     slot: Option<PointerValue<'ctx>>,
+    /// The operand stack below this block when it opened. What the block
+    /// pushes is its own; what was there before is still there after `end`.
+    saved: Vec<SV<'ctx>>,
     is_loop: bool,
 }
 
@@ -202,14 +205,21 @@ struct Mem {
 }
 
 impl Mem {
-    fn bytes(&self, addr: u64, n: usize) -> Option<&[u8]> {
+    fn bytes(&self, addr: u64, n: usize) -> Option<Vec<u8>> {
         if self.written {
             return None;
         }
-        self.segs.iter().find_map(|(base, d)| {
-            let off = addr.checked_sub(*base)? as usize;
-            d.get(off..off.checked_add(n)?)
-        })
+        // Linear memory is zero-initialised and the encoder trims a segment's
+        // trailing zeros: past a segment's end, up to the next one, is zero.
+        let (base, d) = self.segs.iter().find(|(base, d)| addr >= *base && addr < base + d.len() as u64)?;
+        let off = (addr - base) as usize;
+        let end = off.checked_add(n)?;
+        if self.segs.iter().any(|(b2, _)| *b2 > *base && *b2 < base + end as u64) {
+            return None;
+        }
+        let mut out = d[off..d.len().min(end)].to_vec();
+        out.resize(n, 0);
+        Some(out)
     }
 
     /// A `bits`-wide load at a constant address, as the i64 the model carries.
@@ -231,6 +241,8 @@ struct Mod {
     /// Function index -> (identifier, demangled path) for every helper whose
     /// fingerprint matched a known SDK function.
     fnames: HashMap<u32, (String, String)>,
+    /// The function table's slots, for `call_indirect`: function indices.
+    table: Vec<Option<u32>>,
 }
 
 /// A helper's name: what the fingerprints say it is, else `fN`.
@@ -645,6 +657,9 @@ struct Fun<'ctx, 'a> {
     /// backend does.
     frame: Option<(PointerValue<'ctx>, u64)>,
     frame_local: Option<u32>,
+    /// Locals assigned once, with an address in the frame: reading one is
+    /// that address, not an integer that lost its provenance.
+    frame_alias: HashMap<u32, i64>,
 }
 
 impl<'ctx, 'a> Fun<'ctx, 'a> {
@@ -709,7 +724,10 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
     }
 
     fn pop(&mut self) -> SV<'ctx> {
-        self.stack.pop().unwrap_or(SV::Unknown)
+        self.stack.pop().unwrap_or_else(|| {
+            why("underflow");
+            SV::Unknown
+        })
     }
 
     /// A linear-memory access. A constant address inside an unwritten data
@@ -828,7 +846,10 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
                         let p = self.frame_ptr(fr, o);
                         SV::Reg(self.b.build_ptr_to_int(p, self.rt.i64t, "fp").expect("ptrtoint").into())
                     }
-                    None => SV::Unknown,
+                    None => {
+                        why("frame address without a frame");
+                        SV::Unknown
+                    }
                 };
                 self.use_as(v, want)
             }
@@ -847,7 +868,20 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
         self.use_as(v, VT::Raw64).into_int_value()
     }
 
-    fn binop(&mut self, op: &str) {
+    /// The value model is i64-wide. An i32 operation is done in i32 -- its
+    /// operands truncated, its result zero-extended -- so a wrapped value
+    /// never leaks its high bits into a compare, a shift or a division. LLVM
+    /// folds the width casts that turn out redundant.
+    fn narrow(&mut self, v: inkwell::values::IntValue<'ctx>) -> inkwell::values::IntValue<'ctx> {
+        let i32t = self.rt.i64t.get_context().i32_type();
+        self.b.build_int_truncate(v, i32t, "t").expect("trunc")
+    }
+
+    fn widen(&mut self, v: inkwell::values::IntValue<'ctx>) -> inkwell::values::IntValue<'ctx> {
+        self.b.build_int_z_extend(v, self.rt.i64t, "z").expect("zext")
+    }
+
+    fn binop(&mut self, op: &str, w32: bool) {
         let b = self.pop();
         let a = self.pop();
         // Frame arithmetic stays symbolic: `frame + 8` is a slot, not an int.
@@ -858,7 +892,12 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
             ("sub", SV::Frame(o), SV::Const(k)) => return self.stack.push(SV::Frame(o.wrapping_sub(k))),
             _ => {}
         }
-        let (x, y) = (self.use_int(a), self.use_int(b));
+        let (mut x, mut y) = (self.use_int(a), self.use_int(b));
+        if w32 {
+            x = self.narrow(x);
+            y = self.narrow(y);
+        }
+        // ponytail: wasm traps on division by zero; LLVM's udiv/sdiv leave it undefined.
         let r = match op {
             "add" => self.b.build_int_add(x, y, "add"),
             "sub" => self.b.build_int_sub(x, y, "sub"),
@@ -868,16 +907,25 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
             "xor" => self.b.build_xor(x, y, "xor"),
             "shl" => self.b.build_left_shift(x, y, "shl"),
             "lshr" => self.b.build_right_shift(x, y, false, "lshr"),
+            "udiv" => self.b.build_int_unsigned_div(x, y, "udiv"),
+            "sdiv" => self.b.build_int_signed_div(x, y, "sdiv"),
+            "urem" => self.b.build_int_unsigned_rem(x, y, "urem"),
+            "srem" => self.b.build_int_signed_rem(x, y, "srem"),
             _ => self.b.build_right_shift(x, y, true, "ashr"),
         }
         .expect("binop");
+        let r = if w32 { self.widen(r) } else { r };
         self.stack.push(SV::Reg(r.into()));
     }
 
-    fn cmp(&mut self, p: IntPredicate) {
+    fn cmp(&mut self, p: IntPredicate, w32: bool) {
         let b = self.pop();
         let a = self.pop();
-        let (x, y) = (self.use_int(a), self.use_int(b));
+        let (mut x, mut y) = (self.use_int(a), self.use_int(b));
+        if w32 {
+            x = self.narrow(x);
+            y = self.narrow(y);
+        }
         let c = self.b.build_int_compare(p, x, y, "cmp").expect("cmp");
         let z = self
             .b
@@ -912,6 +960,49 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
         let v = if keep { self.stack.last().copied().unwrap_or(SV::Unknown) } else { self.pop() };
         let iv = self.use_int(v);
         self.b.build_store(slot, iv).expect("store");
+    }
+}
+
+/// The function table as a constant array of function pointers, made once
+/// per module: `call_indirect` loads its slot and calls by the type it names.
+/// A slot holding an import or nothing is null.
+fn table_global<'ctx>(ctx: &'ctx Context, m: &Module<'ctx>, md: &Mod, local_sigs: &HashMap<u32, (usize, usize)>, rt: &Rt<'ctx>) -> Option<inkwell::values::GlobalValue<'ctx>> {
+    if md.table.is_empty() {
+        return None;
+    }
+    if let Some(g) = m.get_global("__table") {
+        return Some(g);
+    }
+    let pt = ctx.ptr_type(AddressSpace::default());
+    let elems: Vec<PointerValue<'ctx>> = md
+        .table
+        .iter()
+        .map(|slot| {
+            let Some(fi) = slot else { return pt.const_null() };
+            let Some((np, nr)) = local_sigs.get(fi).copied() else { return pt.const_null() };
+            let fname = fn_name(md, *fi);
+            let f = m.get_function(&fname).unwrap_or_else(|| {
+                let ps: Vec<BasicMetadataTypeEnum> = (0..np).map(|_| rt.i64t.into()).collect();
+                let t = if nr == 0 { ctx.void_type().fn_type(&ps, false) } else { rt.i64t.fn_type(&ps, false) };
+                let f = m.add_function(&fname, t, None);
+                wasm_type_attrs(ctx, f, *fi, md);
+                f
+            });
+            f.as_global_value().as_pointer_value()
+        })
+        .collect();
+    let g = m.add_global(pt.array_type(elems.len() as u32), None, "__table");
+    g.set_initializer(&pt.const_array(&elems));
+    g.set_constant(true);
+    g.set_linkage(Linkage::Internal);
+    Some(g)
+}
+
+/// Why a bottom was made, when asked (`PONYTAIL_WHY_UNKNOWN`): the lowering's
+/// own gaps, counted over a corpus.
+fn why(what: &str) {
+    if std::env::var_os("PONYTAIL_WHY_UNKNOWN").is_some() {
+        eprintln!("unknown: {what}");
     }
 }
 
@@ -967,6 +1058,7 @@ fn lower<'ctx>(
         n: 0,
         frame: None,
         frame_local: None,
+        frame_alias: HashMap::new(),
     };
 
     // Locals in allocas; `mem2reg` promotes them to SSA with real phis. Doing
@@ -996,18 +1088,32 @@ fn lower<'ctx>(
     // back to the stack pointer. Recovered as an alloca, the frame is the
     // function-local memory it really is: dead stores go, and the SP traffic
     // through @g0 with them. Anything else touching @g0 is lowered as is.
+    let mut set_counts: HashMap<u32, usize> = HashMap::new();
+    for o in ops {
+        if let Operator::LocalSet { local_index } | Operator::LocalTee { local_index } = o {
+            *set_counts.entry(*local_index).or_default() += 1;
+        }
+    }
     let mut skip = 0;
-    if let [Operator::GlobalGet { global_index: 0 }, Operator::I32Const { value: n }, Operator::I32Sub, Operator::LocalTee { local_index: l }, Operator::GlobalSet { global_index: 0 }, ..] =
-        ops
-    {
+    // `i32.sub N`, or `i32.add -N` from older LLVMs: the same frame.
+    let prologue = match ops {
+        [Operator::GlobalGet { global_index: 0 }, Operator::I32Const { value: n }, Operator::I32Sub, Operator::LocalTee { local_index: l }, Operator::GlobalSet { global_index: 0 }, ..] if *n > 0 => {
+            Some((*n as u64, *l))
+        }
+        [Operator::GlobalGet { global_index: 0 }, Operator::I32Const { value: n }, Operator::I32Add, Operator::LocalTee { local_index: l }, Operator::GlobalSet { global_index: 0 }, ..] if *n < 0 => {
+            Some((n.unsigned_abs() as u64, *l))
+        }
+        _ => None,
+    };
+    if let Some((n, l)) = prologue {
         let sets = ops
             .iter()
-            .filter(|o| matches!(o, Operator::LocalSet { local_index } | Operator::LocalTee { local_index } if local_index == l))
+            .filter(|o| matches!(o, Operator::LocalSet { local_index } | Operator::LocalTee { local_index } if *local_index == l))
             .count();
-        if *n > 0 && sets == 1 {
-            let fr = b.build_alloca(ctx.i8_type().array_type(*n as u32), "frame").expect("alloca");
-            fun.frame = Some((fr, *n as u64));
-            fun.frame_local = Some(*l);
+        if sets == 1 {
+            let fr = b.build_alloca(ctx.i8_type().array_type(n as u32), "frame").expect("alloca");
+            fun.frame = Some((fr, n));
+            fun.frame_local = Some(l);
             skip = 5;
         }
     }
@@ -1032,6 +1138,7 @@ fn lower<'ctx>(
         else_bb: None,
         slot: None,
         is_loop: false,
+        saved: Vec::new(),
     });
 
     for (i, op) in ops.iter().enumerate().skip(skip) {
@@ -1054,7 +1161,10 @@ fn lower<'ctx>(
                     let v = fun.b.build_load(rt.i64t, g.as_pointer_value(), &format!("g{global_index}")).expect("load");
                     fun.stack.push(SV::Reg(v));
                 }
-                None => fun.stack.push(SV::Unknown),
+                None => {
+                    why("global");
+                    fun.stack.push(SV::Unknown)
+                }
             },
             Operator::GlobalSet { global_index } => {
                 let v = fun.pop();
@@ -1070,14 +1180,16 @@ fn lower<'ctx>(
             }
             Operator::Block { blockty } => {
                 let cont = fun.blk("c");
-                fun.labels.push(Lbl { target: cont, cont, else_bb: None, slot: slot_for(blockty), is_loop: false });
+                let saved = fun.stack.clone();
+                fun.labels.push(Lbl { target: cont, cont, else_bb: None, slot: slot_for(blockty), is_loop: false, saved });
             }
             Operator::Loop { blockty } => {
                 let h = fun.blk("h");
                 fun.br(h);
                 fun.b.position_at_end(h);
                 let cont = fun.blk("lc");
-                fun.labels.push(Lbl { target: h, cont, else_bb: None, slot: slot_for(blockty), is_loop: true });
+                let saved = fun.stack.clone();
+                fun.labels.push(Lbl { target: h, cont, else_bb: None, slot: slot_for(blockty), is_loop: true, saved });
             }
             Operator::If { blockty } => {
                 let slot = slot_for(blockty);
@@ -1095,13 +1207,14 @@ fn lower<'ctx>(
                         .build_conditional_branch(nz, then_bb, else_bb)
                         .expect("condbr");
                 }
-                fun.labels.push(Lbl { target: cont, cont, else_bb: Some(else_bb), slot, is_loop: false });
+                let saved = fun.stack.clone();
+                fun.labels.push(Lbl { target: cont, cont, else_bb: Some(else_bb), slot, is_loop: false, saved });
                 fun.b.position_at_end(then_bb);
                 let _ = i;
             }
             Operator::Else => {
-                let (cont, eb) = match fun.labels.last_mut() {
-                    Some(l) => (l.cont, l.else_bb.take()),
+                let (cont, eb, saved) = match fun.labels.last_mut() {
+                    Some(l) => (l.cont, l.else_bb.take(), l.saved.clone()),
                     None => return Err("else with no frame".into()),
                 };
                 // The then arm's value is the if's result on this path.
@@ -1111,7 +1224,8 @@ fn lower<'ctx>(
                 if let Some(bb) = eb {
                     fun.b.position_at_end(bb);
                 }
-                fun.stack.clear();
+                // The else arm starts from the stack the `if` was entered with.
+                fun.stack = saved;
             }
             Operator::End => {
                 let Some(fr) = fun.labels.pop() else { continue };
@@ -1139,10 +1253,10 @@ fn lower<'ctx>(
                     fun.br(fr.cont);
                 }
                 fun.b.position_at_end(fr.cont);
-                // The operand stack is not threaded across `end`; a typed
-                // label's one result comes through its slot instead, and
-                // locals go through allocas. mem2reg builds the phis.
-                fun.stack.clear();
+                // What the block pushed is gone with it; what was below it is
+                // still there. A typed label's one result comes through its
+                // slot, and locals go through allocas: mem2reg builds the phis.
+                fun.stack = fr.saved;
                 if let Some(slot) = fr.slot {
                     let v = fun.b.build_load(rt.i64t, slot, "blk").expect("load");
                     fun.stack.push(SV::Reg(v));
@@ -1225,7 +1339,12 @@ fn lower<'ctx>(
                     fun.stack.push(SV::Frame(0));
                     continue;
                 }
+                if let Some(o) = fun.frame_alias.get(local_index) {
+                    fun.stack.push(SV::Frame(*o));
+                    continue;
+                }
                 let Some(p) = fun.locals.get(*local_index as usize).copied() else {
+                    why("local");
                     fun.stack.push(SV::Unknown);
                     continue;
                 };
@@ -1234,6 +1353,11 @@ fn lower<'ctx>(
             }
             Operator::LocalSet { local_index } | Operator::LocalTee { local_index } => {
                 let v = fun.pop();
+                if let SV::Frame(o) = v {
+                    if set_counts.get(local_index).copied() == Some(1) {
+                        fun.frame_alias.insert(*local_index, o);
+                    }
+                }
                 let iv = fun.use_int(v);
                 if let Some(p) = fun.locals.get(*local_index as usize).copied() {
                     fun.b.build_store(p, iv).expect("store");
@@ -1298,41 +1422,176 @@ fn lower<'ctx>(
                         fun.stack.push(SV::Reg(v));
                     }
                 } else {
+                    why("call to an unknown function");
                     fun.stack.push(SV::Unknown);
                 }
             }
-            Operator::I64Add | Operator::I32Add => fun.binop("add"),
-            Operator::I64Sub | Operator::I32Sub => fun.binop("sub"),
-            Operator::I64Mul | Operator::I32Mul => fun.binop("mul"),
-            Operator::I64And | Operator::I32And => fun.binop("and"),
-            Operator::I64Or | Operator::I32Or => fun.binop("or"),
-            Operator::I64Xor | Operator::I32Xor => fun.binop("xor"),
-            Operator::I64Shl | Operator::I32Shl => fun.binop("shl"),
-            Operator::I64ShrU | Operator::I32ShrU => fun.binop("lshr"),
-            Operator::I64ShrS | Operator::I32ShrS => fun.binop("ashr"),
-            Operator::I64Eq | Operator::I32Eq => fun.cmp(IntPredicate::EQ),
-            Operator::I64Ne | Operator::I32Ne => fun.cmp(IntPredicate::NE),
-            Operator::I64LtU | Operator::I32LtU => fun.cmp(IntPredicate::ULT),
-            Operator::I64GtU | Operator::I32GtU => fun.cmp(IntPredicate::UGT),
-            Operator::I64LtS | Operator::I32LtS => fun.cmp(IntPredicate::SLT),
-            Operator::I64GtS | Operator::I32GtS => fun.cmp(IntPredicate::SGT),
+            Operator::I64Add => fun.binop("add", false),
+            Operator::I64Sub => fun.binop("sub", false),
+            Operator::I64Mul => fun.binop("mul", false),
+            Operator::I64And => fun.binop("and", false),
+            Operator::I64Or => fun.binop("or", false),
+            Operator::I64Xor => fun.binop("xor", false),
+            Operator::I64Shl => fun.binop("shl", false),
+            Operator::I64ShrU => fun.binop("lshr", false),
+            Operator::I64ShrS => fun.binop("ashr", false),
+            Operator::I64DivU => fun.binop("udiv", false),
+            Operator::I64DivS => fun.binop("sdiv", false),
+            Operator::I64RemU => fun.binop("urem", false),
+            Operator::I64RemS => fun.binop("srem", false),
+            Operator::I32Add => fun.binop("add", true),
+            Operator::I32Sub => fun.binop("sub", true),
+            Operator::I32Mul => fun.binop("mul", true),
+            Operator::I32And => fun.binop("and", true),
+            Operator::I32Or => fun.binop("or", true),
+            Operator::I32Xor => fun.binop("xor", true),
+            Operator::I32Shl => fun.binop("shl", true),
+            Operator::I32ShrU => fun.binop("lshr", true),
+            Operator::I32ShrS => fun.binop("ashr", true),
+            Operator::I32DivU => fun.binop("udiv", true),
+            Operator::I32DivS => fun.binop("sdiv", true),
+            Operator::I32RemU => fun.binop("urem", true),
+            Operator::I32RemS => fun.binop("srem", true),
+            Operator::I64Eq => fun.cmp(IntPredicate::EQ, false),
+            Operator::I64Ne => fun.cmp(IntPredicate::NE, false),
+            Operator::I64LtU => fun.cmp(IntPredicate::ULT, false),
+            Operator::I64GtU => fun.cmp(IntPredicate::UGT, false),
+            Operator::I64LeU => fun.cmp(IntPredicate::ULE, false),
+            Operator::I64GeU => fun.cmp(IntPredicate::UGE, false),
+            Operator::I64LtS => fun.cmp(IntPredicate::SLT, false),
+            Operator::I64GtS => fun.cmp(IntPredicate::SGT, false),
+            Operator::I64LeS => fun.cmp(IntPredicate::SLE, false),
+            Operator::I64GeS => fun.cmp(IntPredicate::SGE, false),
+            Operator::I32Eq => fun.cmp(IntPredicate::EQ, true),
+            Operator::I32Ne => fun.cmp(IntPredicate::NE, true),
+            Operator::I32LtU => fun.cmp(IntPredicate::ULT, true),
+            Operator::I32GtU => fun.cmp(IntPredicate::UGT, true),
+            Operator::I32LeU => fun.cmp(IntPredicate::ULE, true),
+            Operator::I32GeU => fun.cmp(IntPredicate::UGE, true),
+            Operator::I32LtS => fun.cmp(IntPredicate::SLT, true),
+            Operator::I32GtS => fun.cmp(IntPredicate::SGT, true),
+            Operator::I32LeS => fun.cmp(IntPredicate::SLE, true),
+            Operator::I32GeS => fun.cmp(IntPredicate::SGE, true),
             Operator::I64Eqz | Operator::I32Eqz => {
                 let v = fun.pop();
-                let iv = fun.use_int(v);
-                let c = fun
-                    .b
-                    .build_int_compare(IntPredicate::EQ, iv, rt.i64t.const_zero(), "eqz")
-                    .expect("icmp");
+                let mut iv = fun.use_int(v);
+                if matches!(op, Operator::I32Eqz) {
+                    iv = fun.narrow(iv);
+                }
+                let zero = iv.get_type().const_zero();
+                let c = fun.b.build_int_compare(IntPredicate::EQ, iv, zero, "eqz").expect("icmp");
                 let z = fun.b.build_int_z_extend(c, rt.i64t, "zext").expect("zext");
                 fun.stack.push(SV::Reg(z.into()));
             }
-            // ponytail: the value model is i64-wide, so width casts are identity.
-            Operator::I32WrapI64
-            | Operator::I64ExtendI32U
-            | Operator::I64ExtendI32S
-            | Operator::I64Extend32S
-            | Operator::I32Extend8S
-            | Operator::I32Extend16S => {}
+            // `select`: the condition is an i32; the values are whatever they are.
+            Operator::Select | Operator::TypedSelect { .. } => {
+                let c = fun.pop();
+                let v2 = fun.pop();
+                let v1 = fun.pop();
+                let ci = fun.use_int(c);
+                let ci = fun.narrow(ci);
+                let nz = fun.b.build_int_compare(IntPredicate::NE, ci, ci.get_type().const_zero(), "sel").expect("icmp");
+                let (x, y) = (fun.use_int(v1), fun.use_int(v2));
+                let r = fun.b.build_select(nz, x, y, "select").expect("select");
+                fun.stack.push(SV::Reg(r));
+            }
+            Operator::I64Clz | Operator::I32Clz | Operator::I64Ctz | Operator::I32Ctz | Operator::I64Popcnt | Operator::I32Popcnt => {
+                let v = fun.pop();
+                let mut iv = fun.use_int(v);
+                let w32 = matches!(op, Operator::I32Clz | Operator::I32Ctz | Operator::I32Popcnt);
+                if w32 {
+                    iv = fun.narrow(iv);
+                }
+                let (name, zero_is_poison) = match op {
+                    Operator::I64Clz | Operator::I32Clz => ("llvm.ctlz", true),
+                    Operator::I64Ctz | Operator::I32Ctz => ("llvm.cttz", true),
+                    _ => ("llvm.ctpop", false),
+                };
+                let intr = inkwell::intrinsics::Intrinsic::find(name)
+                    .and_then(|i| i.get_declaration(m, &[iv.get_type().into()]))
+                    .expect("bit intrinsic");
+                let mut args: Vec<inkwell::values::BasicMetadataValueEnum> = vec![iv.into()];
+                if zero_is_poison {
+                    args.push(ctx.bool_type().const_zero().into());
+                }
+                let cs = fun.b.build_call(intr, &args, "bits").expect("call");
+                if let ValueKind::Basic(r) = cs.try_as_basic_value() {
+                    let r = r.into_int_value();
+                    let r = if w32 { fun.widen(r) } else { r };
+                    fun.stack.push(SV::Reg(r.into()));
+                }
+            }
+            // Width casts, in an i64-wide model: a wrap is nothing (the i32
+            // operations narrow what they use); the extends are real.
+            Operator::I32WrapI64 => {}
+            // A frame address has no high bits to clear: it stays the frame
+            // address, so the slot folds still see it.
+            Operator::I64ExtendI32U => match fun.pop() {
+                v @ SV::Frame(_) => fun.stack.push(v),
+                SV::Const(k) => fun.stack.push(SV::Const(k & 0xffff_ffff)),
+                v => {
+                    let iv = fun.use_int(v);
+                    let iv = fun.narrow(iv);
+                    let r = fun.widen(iv);
+                    fun.stack.push(SV::Reg(r.into()));
+                }
+            },
+            Operator::I64ExtendI32S | Operator::I64Extend32S | Operator::I64Extend8S | Operator::I64Extend16S | Operator::I32Extend8S | Operator::I32Extend16S => {
+                let v = fun.pop();
+                let iv = fun.use_int(v);
+                let bits = match op {
+                    Operator::I64Extend8S | Operator::I32Extend8S => 8,
+                    Operator::I64Extend16S | Operator::I32Extend16S => 16,
+                    _ => 32,
+                };
+                let small_t = match bits {
+                    8 => ctx.i8_type(),
+                    16 => ctx.i16_type(),
+                    _ => ctx.i32_type(),
+                };
+                let small = fun.b.build_int_truncate(iv, small_t, "t").expect("trunc");
+                let r = if matches!(op, Operator::I32Extend8S | Operator::I32Extend16S) {
+                    let s32 = fun.b.build_int_s_extend(small, ctx.i32_type(), "s").expect("sext");
+                    fun.widen(s32)
+                } else {
+                    fun.b.build_int_s_extend(small, rt.i64t, "s").expect("sext")
+                };
+                fun.stack.push(SV::Reg(r.into()));
+            }
+            // Through the table: a load of the function pointer, a call by type.
+            Operator::CallIndirect { type_index, .. } => {
+                let (np, nr) = md
+                    .types
+                    .0
+                    .get(*type_index as usize)
+                    .and_then(|st| match &st.composite_type.inner {
+                        wasmparser::CompositeInnerType::Func(ft) => Some((ft.params().len(), ft.results().len())),
+                        _ => None,
+                    })
+                    .unwrap_or((0, 0));
+                let idx = fun.pop();
+                let mut a: Vec<SV> = (0..np).map(|_| fun.pop()).collect();
+                a.reverse();
+                let Some(tbl) = table_global(ctx, m, md, local_sigs, rt) else {
+                    why("call_indirect without a table");
+                    if nr > 0 {
+                        fun.stack.push(SV::Unknown);
+                    }
+                    continue;
+                };
+                let ii = fun.use_int(idx);
+                let pt = ctx.ptr_type(AddressSpace::default());
+                let arr_t = pt.array_type(md.table.len() as u32);
+                let slot = unsafe { fun.b.build_in_bounds_gep(arr_t, tbl.as_pointer_value(), &[rt.i64t.const_zero(), ii], "tbl") }.expect("gep");
+                let fp = fun.b.build_load(pt, slot, "fp").expect("load").into_pointer_value();
+                let ps: Vec<BasicMetadataTypeEnum> = (0..np).map(|_| rt.i64t.into()).collect();
+                let fty = if nr == 0 { ctx.void_type().fn_type(&ps, false) } else { rt.i64t.fn_type(&ps, false) };
+                let args: Vec<inkwell::values::BasicMetadataValueEnum> = a.into_iter().map(|v| fun.use_as(v, VT::Raw64).into()).collect();
+                let cs = fun.b.build_indirect_call(fty, fp, &args, "ic").expect("call");
+                if let ValueKind::Basic(v) = cs.try_as_basic_value() {
+                    fun.stack.push(SV::Reg(v));
+                }
+            }
             // Anything unmodelled yields bottom, never a plausible value -- but
             // pops exactly what it consumes. A blanket push here left a
             // phantom on the stack, and the `global.set 0` in every Rust
@@ -1343,6 +1602,7 @@ fn lower<'ctx>(
                     fun.pop();
                 }
                 for _ in 0..pushes {
+                    why(&format!("{op:?}").split(|c| c == ' ' || c == '{').next().unwrap_or("op").to_string());
                     fun.stack.push(SV::Unknown);
                 }
             }
@@ -1526,12 +1786,20 @@ fn define_memory<'ctx>(ctx: &'ctx Context, m: &Module<'ctx>, rt: &Rt<'ctx>) {
 /// simplifycfg turns a `switch` into a lookup table, hiding the very arms this
 /// tool exists to keep.
 fn optimize(m: &Module, mem: &Mem) -> Result<(), String> {
-    Target::initialize_native(&InitializationConfig::default())?;
-    let triple = TargetMachine::get_default_triple();
-    let tm = Target::from_triple(&triple)
-        .map_err(|e| e.to_string())?
-        .create_target_machine(&triple, "generic", "", OptimizationLevel::Less, RelocMode::Default, CodeModel::Default)
-        .ok_or("no target machine")?;
+    // wasm32's own target when this LLVM has it: 32-bit pointers, so an
+    // address widened to i64 has no high bits and the frame folds see
+    // through the i32 arithmetic. Else the native target.
+    let make = |triple: &TargetTriple| {
+        Target::from_triple(triple).ok()?.create_target_machine(triple, "generic", "", OptimizationLevel::Less, RelocMode::Default, CodeModel::Default)
+    };
+    Target::initialize_webassembly(&InitializationConfig::default());
+    let tm = match make(&TargetTriple::create("wasm32-unknown-unknown")) {
+        Some(tm) => tm,
+        None => {
+            Target::initialize_native(&InitializationConfig::default())?;
+            make(&TargetMachine::get_default_triple()).ok_or("no target machine")?
+        }
+    };
     m.set_data_layout(&tm.get_target_data().get_data_layout());
     let run = |p: &str| m.run_passes(p, &tm, PassBuilderOptions::create()).map_err(|e| e.to_string());
     run("default<O1>")?;
@@ -1786,7 +2054,7 @@ fn decode_lm(
     // Positions and lengths cross the boundary as U32Vals: tag 4, value in the top 32 bits.
     let u = |k: usize| args.get(k).copied().flatten().filter(|p| p & 0xff == 4).map(|p| p >> 32);
     let text = |k: usize| -> Option<String> {
-        Some(String::from_utf8_lossy(mem.bytes(u(k)?, u(k + 1)? as usize)?).into_owned())
+        Some(String::from_utf8_lossy(&mem.bytes(u(k)?, u(k + 1)? as usize)?).into_owned())
     };
     let vals = |pos: u64, len: u64| -> Option<Vec<String>> {
         (0..len).map(|i| mem.load(pos + 8 * i, 64, false).map(|v| explain_val(v as u64))).collect()
@@ -1799,7 +2067,7 @@ fn decode_lm(
             .map(|i| {
                 let p = mem.load(pos + 8 * i, 32, false)? as u64;
                 let l = mem.load(pos + 8 * i + 4, 32, false)? as usize;
-                Some(format!("{:?}", String::from_utf8_lossy(mem.bytes(p, l)?)))
+                Some(format!("{:?}", String::from_utf8_lossy(&mem.bytes(p, l)?)))
             })
             .collect()
     };
@@ -1864,6 +2132,7 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
     let mut spec = spec::Spec::default();
     let mut names: HashMap<u32, String> = HashMap::new();
     let mut meta: Vec<(String, String)> = Vec::new();
+    let mut fn_table: Vec<Option<u32>> = Vec::new();
 
     for p in Parser::new(0).parse_all(wasm) {
         match p.expect("parse") {
@@ -1961,6 +2230,26 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
                     mem.globals.push((const_expr(&g.init_expr).unwrap_or(0), g.ty.mutable));
                 }
             }
+            // The function table: what `call_indirect` selects from.
+            Payload::ElementSection(r) => {
+                for e in r {
+                    let e = e.expect("element");
+                    let wasmparser::ElementKind::Active { table_index, offset_expr } = &e.kind else { continue };
+                    if table_index.unwrap_or(0) != 0 {
+                        continue;
+                    }
+                    let Some(base) = const_expr(offset_expr) else { continue };
+                    let wasmparser::ElementItems::Functions(fs) = e.items else { continue };
+                    for (i, fi) in fs.into_iter().enumerate() {
+                        let Ok(fi) = fi else { continue };
+                        let at = base as usize + i;
+                        if fn_table.len() <= at {
+                            fn_table.resize(at + 1, None);
+                        }
+                        fn_table[at] = Some(fi);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -2022,7 +2311,7 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
         bodies.len() - exp_idx.len(),
         by_shape
     );
-    let mut md = Mod { types, mem, wasm_sigs, fnames };
+    let mut md = Mod { types, mem, wasm_sigs, fnames, table: fn_table };
     md.mem.written = writes_data(&bodies, &md, &imports, &local_sigs);
 
     let ctx = Context::create();

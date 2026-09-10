@@ -266,7 +266,9 @@ pub fn header(m: &Module, sigs: &infer::Sigs) -> Result<String, String> {
         if gv.as_pointer_value().get_first_use().is_none() {
             continue; // the stack pointer, once every frame is an alloca
         }
-        let init = gv.get_initializer().and_then(|v| v.into_int_value().get_zero_extended_constant()).unwrap_or(0);
+        // The function table is LLVM's own; the Rust calls through it are direct or dropped.
+        let Some(init) = gv.get_initializer().filter(|v| v.is_int_value()) else { continue };
+        let init = init.into_int_value().get_zero_extended_constant().unwrap_or(0);
         let _ = writeln!(s, "pub static mut {}: u64 = {init};", gv.get_name().to_string_lossy().to_uppercase());
     }
     let mut ext = String::new();

@@ -1,7 +1,7 @@
 ; sdk 25.3.2 rustc 1.97.1; fingerprints 25.3.2.txt: 4 of 43 helpers named, 3 by shape
 ; ModuleID = 'ponytail'
 source_filename = "ponytail"
-target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target datalayout = "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20"
 
 %Val = type { i64 }
 
@@ -47,8 +47,8 @@ c2:                                               ; preds = %entry
 
 fall4:                                            ; preds = %entry
   %lshr = lshr i64 %arg_payload, 32
-  %1 = trunc i64 %lshr to i8
-  switch i8 %1, label %c4 [
+  %t = trunc i64 %lshr to i8
+  switch i8 %t, label %c4 [
     i8 0, label %f12.exit.sink.split
     i8 1, label %f12.exit
     i8 2, label %c5
@@ -95,25 +95,27 @@ c1:                                               ; preds = %entry
 
 fall2:                                            ; preds = %entry
   call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %frame73)
-  %fp = ptrtoint ptr %frame73 to i64
-  %fp12 = getelementptr inbounds i8, ptr %frame73, i64 8
+  %2 = ptrtoint ptr %frame73 to i32
+  %fp = zext i32 %2 to i64
+  %fp12 = getelementptr inbounds i8, ptr %frame73, i32 8
   store i64 %arg_payload1, ptr %fp12, align 8
   store i64 %arg_payload, ptr %frame73, align 8
-  %shl4 = shl i64 %fp, 32
-  %or5 = or disjoint i64 %shl4, 4
+  %z7 = shl nuw i64 %fp, 32
+  %or9 = or disjoint i64 %z7, 4
   %v_u32_1048636 = call %Val @soroban.val.from_payload(i64 4503857325408260)
-  %to_val9 = call %Val @soroban.val.from_payload(i64 %or5)
+  %to_val15 = call %Val @soroban.val.from_payload(i64 %or9)
   %v_u32_2 = call %Val @soroban.val.from_payload(i64 8589934596)
-  %pair_key = call %Val @map.map_new_from_linear_memory(%Val %v_u32_1048636, %Val %to_val9, %Val %v_u32_2)
+  %pair_key = call %Val @map.map_new_from_linear_memory(%Val %v_u32_1048636, %Val %to_val15, %Val %v_u32_2)
   %payload = call i64 @soroban.val.payload(%Val %pair_key)
   call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %frame73)
   call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %frame)
-  %slot8 = getelementptr inbounds i8, ptr %frame, i64 8
+  %slot8 = getelementptr inbounds i8, ptr %frame, i32 8
   store i64 %payload, ptr %slot8, align 8
   store i64 1852552974, ptr %frame, align 8
-  %fp77 = ptrtoint ptr %frame to i64
-  %shl = shl i64 %fp77, 32
-  %or = or disjoint i64 %shl, 4
+  %3 = ptrtoint ptr %frame to i32
+  %fp77 = zext i32 %3 to i64
+  %z = shl nuw i64 %fp77, 32
+  %or = or disjoint i64 %z, 4
   %to_val78 = call %Val @soroban.val.from_payload(i64 %or)
   %vec_new_from_linear_memory = call %Val @vec.vec_new_from_linear_memory(%Val %to_val78, %Val %v_u32_2)
   %payload79 = call i64 @soroban.val.payload(%Val %vec_new_from_linear_memory)
@@ -157,18 +159,17 @@ entry:
 define internal fastcc void @f51() unnamed_addr #1 {
 entry:
   %frame = alloca [32 x i8], align 1
-  %slot16 = getelementptr inbounds i8, ptr %frame, i64 16
+  %slot16 = getelementptr inbounds i8, ptr %frame, i32 16
   store i32 29, ptr %slot16, align 1
-  %slot12 = getelementptr inbounds i8, ptr %frame, i64 12
+  %slot12 = getelementptr inbounds i8, ptr %frame, i32 12
   store i32 1048577, ptr %slot12, align 1
-  %slot28 = getelementptr inbounds i8, ptr %frame, i64 28
+  %slot28 = getelementptr inbounds i8, ptr %frame, i32 28
   store i16 1, ptr %slot28, align 1
-  %slot24 = getelementptr inbounds i8, ptr %frame, i64 24
+  %slot24 = getelementptr inbounds i8, ptr %frame, i32 24
   store i32 1048604, ptr %slot24, align 1
-  %fp = ptrtoint ptr %slot12 to i64
-  %slot20 = getelementptr inbounds i8, ptr %frame, i64 20
-  %t6 = trunc i64 %fp to i32
-  store i32 %t6, ptr %slot20, align 1
+  %0 = ptrtoint ptr %slot12 to i32
+  %slot20 = getelementptr inbounds i8, ptr %frame, i32 20
+  store i32 %0, ptr %slot20, align 1
   call void @soroban.trap()
   unreachable
 }
