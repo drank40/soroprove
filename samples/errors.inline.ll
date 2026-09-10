@@ -1,3 +1,4 @@
+; sdk 26.0.1 rustc 1.95.0; fingerprints 26.0.1+rustc1.95.0.txt: 2 of 2 helpers named, 0 by shape
 ; ModuleID = 'ponytail'
 source_filename = "ponytail"
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
@@ -63,22 +64,22 @@ c6:                                               ; preds = %fall4
   br label %c5
 
 c7:                                               ; preds = %fall4
-  tail call fastcc void @f3(i64 38654705667)
+  tail call fastcc void @Env_fail_with_error(i64 38654705667)
   tail call void @soroban.trap()
   unreachable
 
 c8:                                               ; preds = %fall4
-  tail call fastcc void @f4()
+  tail call fastcc void @panic_fmt()
   unreachable
 
 c9:                                               ; preds = %fall4
-  tail call fastcc void @f3(i64 4294967299)
+  tail call fastcc void @Env_fail_with_error(i64 4294967299)
   tail call void @soroban.trap()
   unreachable
 }
 
 ; Function Attrs: memory(inaccessiblemem: readwrite)
-define internal fastcc void @f3(i64 "wasm.type"="i64" %0) unnamed_addr #5 {
+define internal fastcc void @Env_fail_with_error(i64 "wasm.type"="i64" %0) unnamed_addr #5 {
 entry:
   %to_val = tail call %Val @soroban.val.from_payload(i64 %0)
   %fail_with_error = tail call %Val @context.fail_with_error(%Val %to_val)
@@ -86,7 +87,7 @@ entry:
 }
 
 ; Function Attrs: noreturn
-define internal fastcc void @f4() unnamed_addr #1 {
+define internal fastcc void @panic_fmt() unnamed_addr #6 {
 entry:
   tail call void @soroban.trap()
   unreachable
@@ -97,7 +98,8 @@ attributes #1 = { noreturn }
 attributes #2 = { memory(inaccessiblemem: readwrite) "soroban.import"="x.5" "soroban.sig"="(Error) -> Void" }
 attributes #3 = { memory(inaccessiblemem: readwrite) "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }
 attributes #4 = { "spec.sig"="fn hello(flag: Flag) -> Result<Symbol, Error>" }
-attributes #5 = { memory(inaccessiblemem: readwrite) }
+attributes #5 = { memory(inaccessiblemem: readwrite) "sdk.name"="<soroban_sdk::env::Env as soroban_env_common::env::Env>::fail_with_error" }
+attributes #6 = { noreturn "sdk.name"="core::panicking::panic_fmt" }
 
 !soroban.spec = !{!0, !1, !2}
 !soroban.rodata = !{!3}

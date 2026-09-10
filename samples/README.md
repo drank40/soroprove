@@ -337,6 +337,40 @@ declare %Val @ledger.put_contract_data(%Val, %Val, i64) #1
 attributes #1 = { "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }
 ```
 
+## SDK fingerprints: `fingerprints/`
+
+A contract is mostly the SDK: conversions, storage internals, panics,
+compiler-builtins. The binary says which SDK and rustc built it
+(`contractmetav0`: `rssdkver`, `rsver`; `ponytail-wasm x.wasm --sdk` prints
+them), and for a given version the SDK's functions are known exactly, so
+`fingerprints/gen.sh <sdk-version> [rust-toolchain]` builds the reference
+contract in `fingerprints/ref/` against that version with symbol names kept,
+lifts it, and writes `<version>.txt` (or `<version>+rustc<ver>.txt`): one line
+per SDK/core function -- two fingerprints and the demangled path. The table
+lands in `$PONYTAIL_FINGERPRINTS`, else `~/.cache/ponytail-wasm/fingerprints`;
+the tables the samples and tests need are checked in here, and are searched
+too. Every lift picks the table nearest the binary's version (toolchain match
+preferred), names each helper whose fingerprint it knows, stamps the path as
+the `sdk.name` attribute, and says what it did in the IR's first line:
+
+```
+; sdk 22.0.7 rustc 1.81.0; fingerprints 25.3.2.txt (nearest): 9 of 91 helpers named, 4 by shape
+```
+
+Two fingerprints, because the same source does not give the same bytes. The
+exact one hashes the code with data addresses normalised and callees replaced
+by their own fingerprints, one round deep; it matches only the same build.
+The shape one is order-free -- signature, host functions called, constants,
+call and loop counts -- and survives what wasm-opt and register allocation do
+to a function (`if` for `block/br_if`, values on the stack for locals); it is
+trusted only when it names exactly one function. In the Rust, a named helper
+is `fn Storage_has_internal(..)` under a `///` line with the full path.
+
+Ceiling: the reference has to leave a function out of line for it to be in
+the table, and a `#[contracttype]` derive is the contract's own code, so a
+big mainnet contract names ten to twenty of its helpers this way; the rest
+are its business logic. A wider reference is a wider table.
+
 ## Wider corpus, not vendored
 
 The gate during development ran against 43 SDK-derived fixtures and 24 real

@@ -21,6 +21,9 @@ cd "$(dirname "$0")"
 
 BIN=../target/release/ponytail-wasm
 [ -x "$BIN" ] || { echo "build ponytail-wasm first: nix-shell --run 'cargo build --release'" >&2; exit 2; }
+# The SDK fingerprint tables checked in next door, so the goldens name the
+# same helpers on every machine (see ../fingerprints/gen.sh).
+export PONYTAIL_FINGERPRINTS="$PWD/../fingerprints"
 
 # `release` is the profile real contracts ship with. `fat` inlines more, which
 # produces genuinely different codegen for the same source -- useful corpus

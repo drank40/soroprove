@@ -228,6 +228,14 @@ struct Mod {
     /// function index: the one type fact the binary states outright. On
     /// wasm32 a pointer is always `i32` and a Val always `i64`.
     wasm_sigs: HashMap<u32, (Vec<&'static str>, Vec<&'static str>)>,
+    /// Function index -> (identifier, demangled path) for every helper whose
+    /// fingerprint matched a known SDK function.
+    fnames: HashMap<u32, (String, String)>,
+}
+
+/// A helper's name: what the fingerprints say it is, else `fN`.
+fn fn_name(md: &Mod, fi: u32) -> String {
+    md.fnames.get(&fi).map(|(id, _)| id.clone()).unwrap_or_else(|| format!("f{fi}"))
 }
 
 fn valtype_name(v: wasmparser::ValType) -> &'static str {
@@ -245,14 +253,235 @@ fn valtype_name(v: wasmparser::ValType) -> &'static str {
 /// parameter and one on the return, so it survives whatever LLVM does to the
 /// signature later (dead-argument elimination keeps attributes with their
 /// argument) and the MIR stage can seed its type inference from it.
-fn wasm_type_attrs(ctx: &Context, f: FunctionValue, sig: Option<&(Vec<&'static str>, Vec<&'static str>)>) {
-    let Some((params, results)) = sig else { return };
+fn wasm_type_attrs(ctx: &Context, f: FunctionValue, fi: u32, md: &Mod) {
+    if let Some((_, full)) = md.fnames.get(&fi) {
+        f.add_attribute(AttributeLoc::Function, ctx.create_string_attribute("sdk.name", full));
+    }
+    let Some((params, results)) = md.wasm_sigs.get(&fi) else { return };
     for (i, t) in params.iter().enumerate() {
         f.add_attribute(AttributeLoc::Param(i as u32), ctx.create_string_attribute("wasm.type", t));
     }
     if let Some(t) = results.first() {
         f.add_attribute(AttributeLoc::Return, ctx.create_string_attribute("wasm.type", t));
     }
+}
+
+fn fnv(s: &str) -> u64 {
+    s.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3))
+}
+
+/// Two fingerprints per function. Exact: the code, hashed (FNV-1a) with what
+/// varies between builds of the same source taken out -- a constant that is
+/// a data address becomes `D`, a call to a lifted function becomes that
+/// function's own fingerprint, one round deep, so a wrapper is told apart by
+/// what it wraps. Shape: order-free -- the signature, the host functions
+/// called, the constants, the number of calls and loops -- which survives
+/// what wasm-opt and register allocation do to the same function: `if` for
+/// `block/br_if`, values on the stack for locals.
+fn fingerprints(
+    bodies: &[(usize, Vec<Operator>)],
+    sigs: &[String],
+    n_imports: u32,
+    imports: &HashMap<u32, &'static HostFn>,
+    segs: &[(u64, Vec<u8>)],
+) -> Vec<(u64, u64)> {
+    let is_data = |v: i32| segs.iter().any(|(b, d)| (v as u32 as u64) >= *b && (v as u32 as u64) < b + d.len() as u64);
+    let shape = |i: usize, ops: &[Operator]| -> u64 {
+        let (mut hosts, mut consts, mut calls, mut loops) = (Vec::new(), Vec::new(), 0usize, 0usize);
+        for op in ops {
+            match op {
+                Operator::I32Const { value } if !is_data(*value) => consts.push(*value as i64),
+                Operator::I64Const { value } => consts.push(*value),
+                Operator::Call { function_index } => match imports.get(function_index) {
+                    Some(hf) => hosts.push(hf.name),
+                    None => calls += 1,
+                },
+                Operator::Loop { .. } => loops += 1,
+                _ => {}
+            }
+        }
+        hosts.sort();
+        consts.sort();
+        fnv(&format!("{} {hosts:?} {consts:?} {calls} {loops}", sigs.get(i).map(String::as_str).unwrap_or("")))
+    };
+    let round = |prev: Option<&Vec<u64>>| -> Vec<u64> {
+        bodies
+            .iter()
+            .map(|(n_locals, ops)| {
+                let mut h: u64 = 0xcbf29ce484222325;
+                let mut feed = |s: &str| {
+                    for b in s.bytes() {
+                        h ^= b as u64;
+                        h = h.wrapping_mul(0x100000001b3);
+                    }
+                };
+                feed(&n_locals.to_string());
+                for op in ops {
+                    match op {
+                        Operator::I32Const { value } if is_data(*value) => feed("D"),
+                        Operator::Call { function_index } => match (imports.get(function_index), function_index.checked_sub(n_imports)) {
+                            (Some(hf), _) => feed(hf.name),
+                            (None, Some(l)) => feed(&prev.and_then(|p| p.get(l as usize)).map(|fp| format!("F{fp:x}")).unwrap_or_else(|| "F".into())),
+                            _ => feed("F"),
+                        },
+                        other => feed(&format!("{other:?}")),
+                    }
+                }
+                h
+            })
+            .collect()
+    };
+    let first = round(None);
+    round(Some(&first)).into_iter().enumerate().map(|(i, exact)| (exact, shape(i, &bodies[i].1))).collect()
+}
+
+/// `--fingerprints`, on a reference build that kept its symbol names: one
+/// line per named, non-exported function that is not the reference crate's
+/// own -- fingerprint, then the demangled path. The header says which SDK
+/// and rustc built it.
+fn fingerprint_table(fps: &[(u64, u64)], names: &HashMap<u32, String>, exported: &std::collections::HashSet<u32>, n_imports: u32, sdk: Option<&str>, rustc: Option<&str>) -> String {
+    let mut out = format!("# sdk {}\n# rustc {}\n# exact shape name\n", sdk.unwrap_or("?"), rustc.unwrap_or("?"));
+    for (i, (exact, shape)) in fps.iter().enumerate() {
+        let fi = n_imports + i as u32;
+        let Some(n) = names.get(&fi) else { continue };
+        let full = format!("{:#}", rustc_demangle::demangle(n));
+        if exported.contains(&fi) || full.contains("ponytail_ref") {
+            continue;
+        }
+        let _ = writeln!(out, "{exact:016x} {shape:016x} {full}");
+    }
+    out
+}
+
+/// A loaded table: exact fingerprint -> name, and shape -> names.
+#[derive(Default)]
+struct Table {
+    exact: HashMap<u64, String>,
+    shape: HashMap<u64, Vec<String>>,
+}
+
+impl Table {
+    /// The name for a function: its exact fingerprint's, else its shape's
+    /// when that names exactly one function.
+    fn name(&self, exact: u64, shape: u64) -> Option<(&str, bool)> {
+        if let Some(n) = self.exact.get(&exact) {
+            return Some((n, true));
+        }
+        match self.shape.get(&shape).map(Vec::as_slice) {
+            Some([n]) => Some((n, false)),
+            _ => None,
+        }
+    }
+}
+
+/// The cached table nearest the binary's SDK version: `<dir>/<sdk>.txt`, or
+/// `<sdk>+rustc<ver>.txt` when the reference was built with a chosen
+/// toolchain (preferred when it is the binary's). The dir is
+/// `PONYTAIL_FINGERPRINTS`; else both ~/.cache/ponytail-wasm/fingerprints,
+/// which gen.sh fills, and the tables checked in with this source. Returns
+/// the table and a note for the IR header.
+fn load_fingerprints(sdk: Option<&str>, rustc: Option<&str>) -> (Table, String) {
+    let dirs: Vec<String> = match std::env::var("PONYTAIL_FINGERPRINTS") {
+        Ok(d) => vec![d],
+        Err(_) => vec![
+            format!("{}/.cache/ponytail-wasm/fingerprints", std::env::var("HOME").unwrap_or_default()),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/fingerprints").to_string(),
+        ],
+    };
+    let ver = |s: &str| -> Vec<u64> { s.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+    let want = ver(sdk.unwrap_or("0"));
+    // (version distance, toolchain differs, path): least wins.
+    let mut best: Option<(u64, bool, std::path::PathBuf)> = None;
+    for dir in &dirs {
+        let Ok(rd) = std::fs::read_dir(dir) else { continue };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Some(stem) = name.strip_suffix(".txt") else { continue };
+            let (s, tc) = stem.split_once("+rustc").map(|(a, b)| (a, Some(b))).unwrap_or((stem, None));
+            let have = ver(s);
+            let dist: u64 = (0..3).map(|i| have.get(i).copied().unwrap_or(0).abs_diff(want.get(i).copied().unwrap_or(0)) << (32 - 16 * i)).sum();
+            let cand = (dist, tc != rustc, e.path());
+            if best.as_ref().map_or(true, |b| (cand.0, cand.1) < (b.0, b.1)) {
+                best = Some(cand);
+            }
+        }
+    }
+    let Some((dist, _, path)) = best else {
+        return (Table::default(), format!("no fingerprints in {}; run fingerprints/gen.sh {}", dirs.join(" or "), sdk.unwrap_or("<sdk version>")));
+    };
+    let mut table = Table::default();
+    for l in std::fs::read_to_string(&path).unwrap_or_default().lines() {
+        let mut it = l.splitn(3, ' ');
+        let (Some(exact), Some(shape), Some(name)) = (it.next(), it.next(), it.next()) else { continue };
+        let (Ok(exact), Ok(shape)) = (u64::from_str_radix(exact, 16), u64::from_str_radix(shape, 16)) else { continue };
+        // Two functions with one body: say both.
+        table
+            .exact
+            .entry(exact)
+            .and_modify(|n| {
+                if !n.contains(name) {
+                    n.push_str(" | ");
+                    n.push_str(name);
+                }
+            })
+            .or_insert_with(|| name.to_string());
+        let names = table.shape.entry(shape).or_default();
+        if !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+    }
+    let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    (table, format!("fingerprints {file}{}", if dist > 0 { " (nearest)" } else { "" }))
+}
+
+/// A Rust identifier for a demangled path: `Type_method` for a method or a
+/// trait impl, the bare name otherwise. `<soroban_sdk::vec::Vec<T> as
+/// TryFromVal<E, Val>>::try_from_val` -> `Vec_try_from_val`.
+fn sdk_ident(full: &str) -> String {
+    let full = full.split(" | ").next().unwrap_or(full);
+    let strip = |s: &str| -> String {
+        let mut d = 0i32;
+        s.chars()
+            .filter(|&c| {
+                if c == '<' {
+                    d += 1
+                }
+                let keep = d == 0;
+                if c == '>' {
+                    d -= 1
+                }
+                keep
+            })
+            .collect()
+    };
+    let (ty, method) = if let Some(rest) = full.strip_prefix('<') {
+        let mut d = 1i32;
+        let close = rest
+            .char_indices()
+            .find(|&(_, c)| {
+                if c == '<' {
+                    d += 1
+                }
+                if c == '>' {
+                    d -= 1
+                }
+                d == 0
+            })
+            .map(|(i, _)| i)
+            .unwrap_or(rest.len());
+        let ty = strip(rest[..close].split(" as ").next().unwrap_or(""));
+        (ty, strip(rest.get(close + 1..).unwrap_or("")).trim_start_matches(':').to_string())
+    } else {
+        let s = strip(full);
+        let mut segs = s.rsplit("::");
+        let m = segs.next().unwrap_or("").to_string();
+        (segs.next().filter(|t| t.starts_with(char::is_uppercase)).unwrap_or("").to_string(), m)
+    };
+    // `<U as IntoVal<E, T>>` is the blanket impl: no type to name. A tuple is one.
+    let ty = if ty.starts_with('(') { "Tuple" } else { ty.rsplit("::").next().unwrap_or("").trim_start_matches('&') };
+    let ty = if ty.len() == 1 && ty.starts_with(char::is_uppercase) { "" } else { ty };
+    let raw = if ty.is_empty() { method } else { format!("{ty}_{method}") };
+    raw.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect()
 }
 
 /// A wasm load or store, reduced to what the i64-wide model needs.
@@ -1033,7 +1262,7 @@ fn lower<'ctx>(
                     let r = fun.call1(callee, &args, short);
                     fun.stack.push(SV::Reg(r));
                 } else if let Some((np, nr)) = local_sigs.get(function_index).copied() {
-                    let fname = format!("f{function_index}");
+                    let fname = fn_name(md, *function_index);
                     let callee = m.get_function(&fname).unwrap_or_else(|| {
                         let ps: Vec<BasicMetadataTypeEnum> =
                             (0..np).map(|_| rt.i64t.into()).collect();
@@ -1043,7 +1272,7 @@ fn lower<'ctx>(
                             rt.i64t.fn_type(&ps, false)
                         };
                         let f = m.add_function(&fname, t, None);
-                        wasm_type_attrs(ctx, f, md.wasm_sigs.get(function_index));
+                        wasm_type_attrs(ctx, f, *function_index, md);
                         f
                     });
                     let mut a: Vec<SV> = (0..np).map(|_| fun.pop()).collect();
@@ -1165,7 +1394,7 @@ fn lower<'ctx>(
 fn main() {
     let mut args = std::env::args().skip(1);
     let Some(path) = args.next() else {
-        eprintln!("usage: ponytail-wasm <contract.wasm> [export|--all|--inline]");
+        eprintln!("usage: ponytail-wasm <contract.wasm> [export|--all|--inline|--sdk|--fingerprints]");
         std::process::exit(2);
     };
     let only = args.next();
@@ -1627,6 +1856,8 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
     let mut types = Types(Vec::new());
     let mut mem = Mem::default();
     let mut spec = spec::Spec::default();
+    let mut names: HashMap<u32, String> = HashMap::new();
+    let mut meta: Vec<(String, String)> = Vec::new();
 
     for p in Parser::new(0).parse_all(wasm) {
         match p.expect("parse") {
@@ -1688,6 +1919,26 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
                 bodies.push((n_locals, ops));
             }
             Payload::CustomSection(c) if c.name() == "contractspecv0" => spec = spec::parse(c.data()),
+            // The SDK stamps its own version and rustc's: `rssdkver`, `rsver`.
+            Payload::CustomSection(c) if c.name() == "contractmetav0" => {
+                use stellar_xdr::curr::{Limited, Limits, ReadXdr, ScMetaEntry};
+                for e in ScMetaEntry::read_xdr_iter(&mut Limited::new(c.data(), Limits::none())).flatten() {
+                    let ScMetaEntry::ScMetaV0(m) = e;
+                    meta.push((m.key.to_utf8_string_lossy(), m.val.to_utf8_string_lossy()));
+                }
+            }
+            // Symbol names, when the build kept them: the reference build does.
+            Payload::CustomSection(c) => {
+                if let wasmparser::KnownCustom::Name(r) = c.as_known() {
+                    for n in r.into_iter().flatten() {
+                        if let wasmparser::Name::Function(map) = n {
+                            for wasmparser::Naming { index, name } in map.into_iter().flatten() {
+                                names.insert(index, name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
             Payload::DataSection(r) => {
                 for d in r {
                     let d = d.expect("data");
@@ -1718,7 +1969,54 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
             wasm_sigs.insert(n_imports + i as u32, w.clone());
         }
     }
-    let mut md = Mod { types, mem, wasm_sigs };
+    // Which SDK built this, and what its functions are called.
+    let sdk_version = meta.iter().find(|(k, _)| k == "rssdkver").map(|(_, v)| v.split('#').next().unwrap_or(v).to_string());
+    let rust_version = meta.iter().find(|(k, _)| k == "rsver").map(|(_, v)| v.clone());
+    let sig_strs: Vec<String> = (0..bodies.len())
+        .map(|i| func_types.get(i).and_then(|t| wasm_types.get(*t as usize)).map(|(p, r)| format!("{p:?}->{r:?}")).unwrap_or_default())
+        .collect();
+    let fps = fingerprints(&bodies, &sig_strs, n_imports, &imports, &mem.segs);
+    let exp_idx: std::collections::HashSet<u32> = exports.iter().map(|(_, i)| *i).collect();
+    if only == Some("--fingerprints") {
+        return Ok(fingerprint_table(&fps, &names, &exp_idx, n_imports, sdk_version.as_deref(), rust_version.as_deref()));
+    }
+    if only == Some("--sdk") {
+        return Ok(format!("{} {}\n", sdk_version.as_deref().unwrap_or("?"), rust_version.as_deref().unwrap_or("?")));
+    }
+    let (table, table_note) = load_fingerprints(sdk_version.as_deref(), rust_version.as_deref());
+    let mut fnames: HashMap<u32, (String, String)> = HashMap::new();
+    let mut used: std::collections::HashSet<String> = exports.iter().map(|(n, _)| n.clone()).collect();
+    let mut by_shape = 0;
+    for (i, (exact, shape)) in fps.iter().enumerate() {
+        let fi = n_imports + i as u32;
+        if exp_idx.contains(&fi) {
+            continue;
+        }
+        if let Some((full, is_exact)) = table.name(*exact, *shape) {
+            by_shape += !is_exact as usize;
+            // Bodies that are one trap are every panic at once: say so.
+            let mut id = if full.contains(" | ") && full.split(" | ").all(|n| n.contains("panic") || n.contains("fail")) {
+                "panic".to_string()
+            } else {
+                sdk_ident(full)
+            };
+            if !used.insert(id.clone()) {
+                id = format!("{id}_{fi}");
+                used.insert(id.clone());
+            }
+            fnames.insert(fi, (id, full.to_string()));
+        }
+    }
+    let sdk_note = format!(
+        "; sdk {} rustc {}; {}: {} of {} helpers named, {} by shape\n",
+        sdk_version.as_deref().unwrap_or("?"),
+        rust_version.as_deref().unwrap_or("?"),
+        table_note,
+        fnames.len(),
+        bodies.len() - exp_idx.len(),
+        by_shape
+    );
+    let mut md = Mod { types, mem, wasm_sigs, fnames };
     md.mem.written = writes_data(&bodies, &md, &imports, &local_sigs);
 
     let ctx = Context::create();
@@ -1776,7 +2074,7 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
         for i in 0..bodies.len() as u32 {
             let fi = n_imports + i;
             if !named.contains(&fi) {
-                targets.push((format!("f{fi}"), fi));
+                targets.push((fn_name(&md, fi), fi));
             }
         }
     }
@@ -1816,7 +2114,7 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
             Some(_) => continue,
             None => m.add_function(name, fty, None),
         };
-        wasm_type_attrs(&ctx, f, md.wasm_sigs.get(fidx));
+        wasm_type_attrs(&ctx, f, *fidx, &md);
         // An export's declared parameter names and types, from the spec.
         if let Some((_, params, ret)) = spec.fns.iter().find(|(n, ..)| n == name) {
             for (i, (pn, pt)) in params.iter().enumerate() {
@@ -1833,7 +2131,7 @@ fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, String> {
         plan.push((f, local, np, nr, val_abi));
     }
 
-    let mut notes = String::new();
+    let mut notes = sdk_note;
     for (f, local, np, nr, val_abi) in plan {
         let Some((n_locals, ops)) = bodies.get(local as usize) else {
             continue;
@@ -2087,6 +2385,25 @@ mod tests {
         assert!(ir.contains("%put_contract_data = call %Val @ledger.put_contract_data("), "{ir}");
         // And the declaration still says which wasm import it came from.
         assert!(ir.contains("\"soroban.import\"=\"l._\""), "{ir}");
+    }
+
+    #[test]
+    fn fingerprints_name_the_sdk_helpers() {
+        // The table for the sample's own SDK version is checked in; exact
+        // fingerprints name what the reference built the same way, shapes
+        // name what register allocation laid out differently.
+        std::env::set_var("PONYTAIL_FINGERPRINTS", concat!(env!("CARGO_MANIFEST_DIR"), "/fingerprints"));
+        let wasm = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/three_bugs.wasm")).unwrap();
+        let ir = lower_module(&wasm, Some("--all")).unwrap();
+        assert!(ir.starts_with("; sdk 25.3.2 rustc 1.97.1; fingerprints 25.3.2.txt: 4 of 43 helpers named, 3 by shape\n"), "{}", ir.lines().next().unwrap_or(""));
+        assert!(ir.contains("@Symbol_new(") && ir.contains("\"sdk.name\"=\"<soroban_sdk::symbol::Symbol>::new\""), "{ir}");
+        assert_eq!(sdk_ident("<soroban_sdk::vec::Vec<T> as soroban_env_common::convert::TryFromVal<E, Val>>::try_from_val"), "Vec_try_from_val");
+        assert_eq!(sdk_ident("<U as soroban_sdk::env::IntoVal<E,T>>::into_val"), "into_val");
+        assert_eq!(sdk_ident("<(a::Val, a::Val) as a::TryIntoVal<E, a::Val>>::try_into_val"), "Tuple_try_into_val");
+        assert_eq!(sdk_ident("compiler_builtins::mem::memcpy"), "memcpy");
+        assert_eq!(sdk_ident("core::ptr::drop_in_place<soroban_sdk::vec::Vec<T>>"), "drop_in_place");
+        // The version query, for gen.sh.
+        assert_eq!(lower_module(&wasm, Some("--sdk")).unwrap(), "25.3.2 1.97.1\n");
     }
 
     #[test]

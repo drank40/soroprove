@@ -61,15 +61,15 @@ fn hello(_1: Val) -> Val {
     }
 
     bb5: {
-        _12 = f3(const Val(38654705667_u64)) -> [return: bb10, unwind unreachable];
+        _12 = Env_fail_with_error(const Val(38654705667_u64)) -> [return: bb10, unwind unreachable];
     }
 
     bb6: {
-        _14 = f4() -> unwind unreachable;
+        _14 = panic_fmt() -> unwind unreachable;
     }
 
     bb7: {
-        _15 = f3(const Val(4294967299_u64)) -> [return: bb11, unwind unreachable];
+        _15 = Env_fail_with_error(const Val(4294967299_u64)) -> [return: bb11, unwind unreachable];
     }
 
     bb8: {
@@ -91,9 +91,9 @@ fn hello(_1: Val) -> Val {
     }
 }
 
-// MIR for `f3` 0 ponytail
+// MIR for `Env_fail_with_error` 0 ponytail
 
-fn f3(_1: Val) -> () {
+fn Env_fail_with_error(_1: Val) -> () {
     debug a0 => _1;
     debug to_val => _1;
     debug fail_with_error => _2;
@@ -109,9 +109,9 @@ fn f3(_1: Val) -> () {
     }
 }
 
-// MIR for `f4` 0 ponytail
+// MIR for `panic_fmt` 0 ponytail
 
-fn f4() -> ! {
+fn panic_fmt() -> ! {
     let mut _0: !;
     let mut _1: !;
 

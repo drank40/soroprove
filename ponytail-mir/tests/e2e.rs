@@ -54,6 +54,11 @@ fn rust_from_mir_is_structured_decoded_and_typechecks() {
     assert!(rs.contains("/// spec: fn pick(f: Flag) -> Result<Symbol, Error>\npub fn pick(mut f: Val) -> Val"), "{rs}");
     assert!(pick.contains("3 /* Flag::D */ =>"), "{pick}");
     assert!(rs.contains("//   struct PairKey { a: Address, b: Address }"), "{rs}");
+    // A helper the SDK fingerprints named comes out under that name, with
+    // the demangled path as its doc (errors.wasm: sdk 26.0.1, rustc 1.95.0).
+    let (ok, errs, err) = run(&[concat!(env!("CARGO_MANIFEST_DIR"), "/../samples/errors.inline.ll"), "--rust"]);
+    assert!(ok, "{err}");
+    assert!(errs.contains("/// <soroban_sdk::env::Env as soroban_env_common::env::Env>::fail_with_error\nfn Env_fail_with_error(mut a0: Val)"), "{errs}");
     // stable rustc is the type checker for the output.
     let dir = std::env::temp_dir().join(format!("ponytail-mir-e2e-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

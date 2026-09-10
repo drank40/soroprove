@@ -1,0 +1,51 @@
+# sdk 26.0.1
+# rustc 1.97.1
+# exact shape name
+27badd256abeec53 3bae929c8beedec6 <soroban_sdk::env::Env as soroban_env_common::env::Env>::extend_contract_data_ttl
+4787855114805c0d a7d8538912029d64 <soroban_sdk::storage::Storage>::has_internal
+ca787f7b700fd7ee 34c428ded535e00d <i128 as soroban_env_common::convert::TryFromVal<soroban_sdk::env::Env, soroban_env_common::val::Val>>::try_from_val
+81e3d459a30df5aa 666a19228191809a <u64 as soroban_sdk::env::IntoVal<soroban_sdk::env::Env, soroban_env_common::val::Val>>::into_val
+8a0c2261eef2d7fa 3167e4c8a9706505 core::result::unwrap_failed
+7f49e1002a8eeb1d 8ff136d6fe1b17f8 <soroban_sdk::env::Env as soroban_env_common::env::Env>::fail_with_error
+cca672eb6bb22836 d436842dde0cbea3 <soroban_env_common::val::Val as soroban_env_common::convert::TryFromVal<soroban_sdk::env::Env, i64>>::try_from_val
+7f2cc38e6dbeedc4 f121512b20744ffd <u64 as soroban_env_common::convert::TryFromVal<soroban_sdk::env::Env, soroban_env_common::val::Val>>::try_from_val
+ddff970c8b05e1b0 4fbf0ea31467783c <soroban_env_common::val::Val as soroban_env_common::convert::TryFromVal<soroban_sdk::env::Env, u64>>::try_from_val
+02eb776a023c6ea1 2f492a0a95523719 <core::ops::range::RangeTo<usize> as core::slice::index::SliceIndex<[u8]>>::index_mut
+8a0c2261eef2d7fa d34aaf0be4f7da91 core::slice::index::slice_index_fail
+90abaf7183df78df 9246d133e3045763 <soroban_env_common::val::Val as soroban_env_common::convert::TryFromVal<soroban_sdk::env::Env, i128>>::try_from_val
+bac323cc20f9f329 f664f740507ba7f8 <soroban_sdk::env::Env as soroban_env_common::env::EnvBase>::map_new_from_slices
+ff882926c42eee44 d2824ffdc5e3aaf7 <i64 as soroban_env_common::convert::TryFromVal<soroban_sdk::env::Env, soroban_env_common::val::Val>>::try_from_val
+2debc251975fdc2f 868cd122c206685a <soroban_sdk::symbol::Symbol as soroban_env_common::convert::TryFromVal<soroban_sdk::env::Env, &str>>::try_from_val
+f2b3d5c633914c59 a5adede1990148cf <soroban_env_guest::guest::Guest as soroban_env_common::env::EnvBase>::vec_new_from_slice
+eeb66cb85966bf2f 47a0605fad2d595f <(soroban_env_common::val::Val, soroban_env_common::val::Val) as soroban_env_common::convert::TryIntoVal<soroban_sdk::env::Env, soroban_env_common::val::Val>>::try_into_val
+d3063414dd0fc3c0 4b34a016caba7be3 <(soroban_sdk::symbol::Symbol, soroban_sdk::address::Address) as soroban_sdk::env::IntoVal<soroban_sdk::env::Env, soroban_sdk::vec::Vec<soroban_env_common::val::Val>>>::into_val
+a7577363d9e73681 4d2c1580358e45a2 <(soroban_sdk::symbol::Symbol, soroban_sdk::address::Address) as soroban_sdk::env::IntoVal<soroban_sdk::env::Env, soroban_env_common::val::Val>>::into_val
+cc7078bbf4935500 685c40591c52ef31 <u128 as soroban_sdk::env::IntoVal<soroban_sdk::env::Env, soroban_env_common::val::Val>>::into_val
+d08c2715e653dc54 42f81cf0cf94bc89 <soroban_env_common::val::Val as soroban_env_common::convert::TryFromVal<soroban_sdk::env::Env, u128>>::try_from_val
+5bb99d1bc11ae67a 666a19228191809a <i64 as soroban_sdk::env::IntoVal<soroban_sdk::env::Env, soroban_env_common::val::Val>>::into_val
+c573cd45d17f9138 d78eff2da4603748 <u128 as soroban_env_common::convert::TryFromVal<soroban_sdk::env::Env, soroban_env_common::val::Val>>::try_from_val
+d30edf1922516c82 40c564f61b58b7b1 <soroban_sdk::env::Env as soroban_env_common::env::EnvBase>::bytes_copy_to_slice
+77177346dbe55133 8367ddffba28251d <soroban_sdk::env::Env as soroban_env_common::env::EnvBase>::bytes_new_from_slice
+bdb4d0c486e532fd 1481c15b44f8fa10 <soroban_sdk::ledger::Ledger>::sequence
+8b04d5bc1f56e636 93d36c85148a4dba <soroban_sdk::ledger::Ledger>::timestamp
+8a0c2261eef2d7fa 15df7c63ce62844b core::panicking::panic
+64ab130afbc301b3 794d663bc2720d5f <soroban_sdk::address::Address as core::cmp::Ord>::cmp
+f2f219bdf361ba70 685c40591c52ef31 <soroban_env_common::val::Val as soroban_sdk::env::FromVal<soroban_sdk::env::Env, i128>>::from_val
+46d551c66ccad507 4194f127a4e37786 <soroban_sdk::env::Env>::invoke_contract::<()>
+5da72b31c4ebb03f 1b8fbf0f36d5b2e2 core::option::unwrap_failed
+22f0b3919e51f027 8e08406015424e7b <soroban_sdk::symbol::Symbol>::new
+261ca5c48ae25133 222bec26585f1aed <soroban_sdk::env::Env as soroban_env_common::env::EnvBase>::string_new_from_slice
+b880418869323f24 28be49c8a4882ffa core::panicking::panic_fmt
+10fe2842d6a4655f b2af2990438ed77a <soroban_env_common::symbol::Symbol as soroban_env_common::convert::TryFromVal<soroban_sdk::env::Env, &str>>::try_from_val
+8eb45b5c544228ed e36c280605f80ff5 compiler_builtins::int::specialized_div_rem::u128_div_rem
+d295fb5c39c8bc21 cba1319b65fb7f11 __modti3
+07a8cc3a2e8ae4f0 3645f464d7f88faa __lshrti3
+6dba6cf7d7c8af31 ea14135f644b1c67 __umodti3
+0a88e05492fbcf49 2c4e53d86c746983 compiler_builtins::mem::memcpy
+c48d288a5333f792 eaa62cce64200963 memcpy
+97815dd6617d2f99 d3ec94695cdd6667 __divti3
+61df190589b7d488 4d932fab7321b469 memset
+c4f538c7373df182 3645f464d7f88faa __ashlti3
+430ae37fbe47eca7 3ead9b7370c170cf __multi3
+34976c298b2fe4c2 b3516b07a63311cc __muloti4
+2bd1a4dab81aa1f2 ea14135f644b1c67 __udivti3

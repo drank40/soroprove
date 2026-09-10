@@ -226,6 +226,16 @@ pub fn spec_lines(m: &Module) -> Vec<String> {
     meta_lines(m, "soroban.spec")
 }
 
+/// `name demangled::path` for every function the fingerprints named.
+pub fn sdk_names(m: &Module) -> Vec<String> {
+    m.get_functions()
+        .filter_map(|f| {
+            let a = f.get_string_attribute(AttributeLoc::Function, "sdk.name")?;
+            Some(format!("{} {}", rs_name(&f.get_name().to_string_lossy()), a.get_string_value().to_string_lossy()))
+        })
+        .collect()
+}
+
 pub fn meta_lines(m: &Module, key: &str) -> Vec<String> {
     m.get_global_metadata(key)
         .iter()
@@ -385,6 +395,7 @@ impl Callbacks for Lift {
                 llvm(|l| meta_lines(&l.m, "soroban.keys")),
                 llvm(|l| meta_lines(&l.m, "soroban.strings")),
                 llvm(|l| meta_lines(&l.m, "soroban.rodata")),
+                llvm(|l| sdk_names(&l.m)),
             );
             let text = rs::emit(tcx, &env, &head, &bodies, &spec).unwrap_or_else(|e| fatal(&e));
             std::io::Write::write_all(&mut out, text.as_bytes()).expect("write");

@@ -145,6 +145,8 @@ pub struct Spec {
     strings: HashMap<u64, String>,
     /// The read-only data segments (`soroban.rodata`), base and bytes.
     rodata: Vec<(u64, Vec<u8>)>,
+    /// Function -> the SDK function its fingerprint says it is (`sdk.name`).
+    sdk: HashMap<String, String>,
 }
 
 /// Split on `sep` outside any brackets.
@@ -170,8 +172,9 @@ fn split_top(s: &str, sep: char) -> Vec<String> {
 }
 
 impl Spec {
-    pub fn parse(lines: Vec<String>, key_lines: Vec<String>, string_lines: Vec<String>, rodata_lines: Vec<String>) -> Spec {
+    pub fn parse(lines: Vec<String>, key_lines: Vec<String>, string_lines: Vec<String>, rodata_lines: Vec<String>, sdk_lines: Vec<String>) -> Spec {
         let mut s = Spec::default();
+        s.sdk = sdk_lines.iter().filter_map(|l| l.split_once(' ')).map(|(f, n)| (f.to_string(), n.to_string())).collect();
         for l in rodata_lines {
             if let Some((base, hex)) = l.split_once(' ') {
                 let bytes: Vec<u8> = (0..hex.len() / 2).filter_map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()).collect();
@@ -2015,13 +2018,16 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             self.body.args_iter().map(|l| format!("mut {}: {}", self.local(l), ty_str(tcx, self.body.local_decls[l].ty))).collect();
         // The SDK's text constructor: its position and length are one `&str`.
         let mut prologue = String::new();
-        let mut doc = String::new();
+        // What the fingerprints say this is, else what its shape says.
+        let mut doc = self.spec.sdk.get(&self.fname).map(|n| format!("/// {n}\n")).unwrap_or_default();
         if let Some(&(i, j, kind)) = self.prev.text_helpers.get(&self.fname) {
             let ty = |l: Local| ty_str(tcx, self.body.local_decls[l].ty);
             let (pi, pj) = (Local::from_usize(i + 1), Local::from_usize(j + 1));
             let ptr = if ty(pi).starts_with('*') { format!("s.as_ptr() as {}", ty(pi)) } else { format!("s.as_ptr() as usize as {}", ty(pi)) };
             prologue = format!("        let mut {}: {} = {ptr};\n        let mut {}: {} = s.len() as {};\n", self.local(pi), ty(pi), self.local(pj), ty(pj), ty(pj));
-            doc = format!("/// The SDK's `{}`.\n", if kind == "Symbol" { "Symbol::new" } else { "String::from_str" });
+            if doc.is_empty() {
+                doc = format!("/// The SDK's `{}`.\n", if kind == "Symbol" { "Symbol::new" } else { "String::from_str" });
+            }
             params[i] = "s: &str".into();
             params.remove(j);
         }

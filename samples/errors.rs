@@ -111,14 +111,14 @@ pub fn hello(mut flag: Val) -> Val {
                     l0_0 = Val::error(0, 1) /* Error::AnError */;
                 }
                 2 /* Flag::C */ => {
-                    f3(Val::error(0, 1) /* Error::AnError */);
+                    Env_fail_with_error(Val::error(0, 1) /* Error::AnError */);
                     trap();
                 }
                 3 /* Flag::D */ => {
-                    f4();
+                    panic_fmt();
                 }
                 _ => {
-                    f3(Val::error(0, 9));
+                    Env_fail_with_error(Val::error(0, 9));
                     trap();
                 }
             }
@@ -130,14 +130,16 @@ pub fn hello(mut flag: Val) -> Val {
     }
 }
 
-fn f3(mut a0: Val) {
+/// <soroban_sdk::env::Env as soroban_env_common::env::Env>::fail_with_error
+fn Env_fail_with_error(mut a0: Val) {
     unsafe {
         fail_with_error(a0);
         return;
     }
 }
 
-fn f4() -> ! {
+/// core::panicking::panic_fmt
+fn panic_fmt() -> ! {
     unsafe {
         trap();
     }

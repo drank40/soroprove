@@ -6,3 +6,6 @@ samples/*/target/
 !samples/*.ll
 # rustc -Zdump-mir output, should ponytail-mir ever leave it behind.
 mir_dump/
+# fingerprints/gen.sh builds the reference contract here when
+# PONYTAIL_FINGERPRINTS points at the repo; the tables next to it are kept.
+fingerprints/build/

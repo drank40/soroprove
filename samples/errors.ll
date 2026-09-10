@@ -1,3 +1,4 @@
+; sdk 26.0.1 rustc 1.95.0; fingerprints 26.0.1+rustc1.95.0.txt: 2 of 2 helpers named, 0 by shape
 ; ModuleID = 'ponytail'
 source_filename = "ponytail"
 
@@ -114,22 +115,22 @@ c6:                                               ; preds = %fall4
   br label %c5
 
 c7:                                               ; preds = %fall4
-  call void @f3(i64 38654705667)
+  call void @Env_fail_with_error(i64 38654705667)
   call void @soroban.trap()
   unreachable
 
 c8:                                               ; preds = %fall4
-  call void @f4()
+  call void @panic_fmt()
   call void @soroban.trap()
   unreachable
 
 c9:                                               ; preds = %fall4
-  call void @f3(i64 4294967299)
+  call void @Env_fail_with_error(i64 4294967299)
   call void @soroban.trap()
   unreachable
 }
 
-define void @f3(i64 "wasm.type"="i64" %0) {
+define void @Env_fail_with_error(i64 "wasm.type"="i64" %0) #6 {
 entry:
   %l0 = alloca i64, align 8
   store i64 %0, ptr %l0, align 4
@@ -139,7 +140,7 @@ entry:
   ret void
 }
 
-define void @f4() {
+define void @panic_fmt() #7 {
 entry:
   call void @soroban.trap()
   unreachable
@@ -151,6 +152,8 @@ attributes #2 = { noreturn }
 attributes #3 = { memory(inaccessiblemem: readwrite) "soroban.import"="x.5" "soroban.sig"="(Error) -> Void" }
 attributes #4 = { memory(inaccessiblemem: readwrite) "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }
 attributes #5 = { "spec.sig"="fn hello(flag: Flag) -> Result<Symbol, Error>" }
+attributes #6 = { "sdk.name"="<soroban_sdk::env::Env as soroban_env_common::env::Env>::fail_with_error" }
+attributes #7 = { "sdk.name"="core::panicking::panic_fmt" }
 
 !soroban.spec = !{!0, !1, !2}
 !soroban.rodata = !{!3}

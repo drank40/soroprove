@@ -1,3 +1,4 @@
+; sdk 25.3.2 rustc 1.97.1; fingerprints 25.3.2.txt: 4 of 43 helpers named, 3 by shape
 ; ModuleID = 'ponytail'
 source_filename = "ponytail"
 
@@ -66,7 +67,7 @@ entry:
   %l0 = alloca i64, align 8
   %arg_payload = call i64 @soroban.val.payload(%Val %0)
   store i64 %arg_payload, ptr %l0, align 4
-  call void @f33()
+  call void @panic_fmt_33()
   %get = load i64, ptr %l0, align 4
   %lc = call i64 @f11(i64 %get)
   %to_val = call %Val @soroban.val.from_payload(i64 %lc)
@@ -81,7 +82,7 @@ entry:
   store i64 %arg_payload, ptr %l0, align 4
   %arg_payload1 = call i64 @soroban.val.payload(%Val %1)
   store i64 %arg_payload1, ptr %l1, align 4
-  call void @f33()
+  call void @panic_fmt_33()
   %get = load i64, ptr %l0, align 4
   %get2 = load i64, ptr %l1, align 4
   %lc = call i64 @f14(i64 %get, i64 %get2)
@@ -91,7 +92,7 @@ entry:
 
 define "wasm.type"="i64" %Val @set_flag() #11 {
 entry:
-  call void @f33()
+  call void @panic_fmt_33()
   call void @f17()
   %v_void = call %Val @soroban.val.from_payload(i64 2)
   ret %Val %v_void
@@ -152,7 +153,7 @@ c4:                                               ; preds = %entry
   %get24 = load i64, ptr %l0, align 4
   %slot3225 = getelementptr i8, ptr %frame, i64 32
   %fp26 = ptrtoint ptr %slot3225 to i64
-  call void @f29(i64 %fp26, i64 %get24, i64 1048656)
+  call void @Symbol_try_from_val(i64 %fp26, i64 %get24, i64 1048656)
   %slot3227 = getelementptr i8, ptr %frame, i64 32
   %ld28 = load i32, ptr %slot3227, align 1
   %zx29 = zext i32 %ld28 to i64
@@ -163,7 +164,7 @@ fall5:                                            ; preds = %entry
   %get1 = load i64, ptr %l0, align 4
   %slot32 = getelementptr i8, ptr %frame, i64 32
   %fp = ptrtoint ptr %slot32 to i64
-  call void @f29(i64 %fp, i64 %get1, i64 1048672)
+  call void @Symbol_try_from_val(i64 %fp, i64 %get1, i64 1048672)
   %slot322 = getelementptr i8, ptr %frame, i64 32
   %ld3 = load i32, ptr %slot322, align 1
   %zx = zext i32 %ld3 to i64
@@ -276,7 +277,7 @@ entry:
   %get = load i64, ptr %l0, align 4
   %get1 = load i64, ptr %l0, align 4
   %get2 = load i64, ptr %l1, align 4
-  %lc = call i64 @f10(i64 %get1, i64 %get2)
+  %lc = call i64 @Symbol_new(i64 %get1, i64 %get2)
   %get3 = load i64, ptr %l2, align 4
   %get4 = load i64, ptr %l0, align 4
   %lc5 = call i64 @f39(i64 %get3, i64 %get4)
@@ -285,7 +286,7 @@ entry:
   ret void
 }
 
-define "wasm.type"="i64" i64 @f10(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i32" %1) {
+define "wasm.type"="i64" i64 @Symbol_new(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i32" %1) #12 {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -694,7 +695,7 @@ fall4:                                            ; preds = %fall3
   br label %c2
 }
 
-define void @f23(i64 "wasm.type"="i32" %0) {
+define void @panic_fmt(i64 "wasm.type"="i32" %0) #13 {
 entry:
   %l0 = alloca i64, align 8
   store i64 %0, ptr %l0, align 4
@@ -775,7 +776,7 @@ entry:
   ret void
 }
 
-define void @f29(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i32" %1, i64 "wasm.type"="i32" %2) {
+define void @Symbol_try_from_val(i64 "wasm.type"="i32" %0, i64 "wasm.type"="i32" %1, i64 "wasm.type"="i32" %2) #14 {
 entry:
   %l0 = alloca i64, align 8
   %l1 = alloca i64, align 8
@@ -918,7 +919,7 @@ fall3:                                            ; preds = %entry
   br label %c1
 }
 
-define void @f33() {
+define void @panic_fmt_33() #13 {
 entry:
   ret void
 }
@@ -1412,7 +1413,7 @@ entry:
   store i32 %t6, ptr %slot20, align 1
   %slot207 = getelementptr i8, ptr %frame, i64 20
   %fp8 = ptrtoint ptr %slot207 to i64
-  call void @f23(i64 %fp8)
+  call void @panic_fmt(i64 %fp8)
   call void @soroban.trap()
   unreachable
 }
@@ -1429,6 +1430,9 @@ attributes #8 = { "soroban.import"="v.g" "soroban.sig"="(U32Val, U32Val) -> VecO
 attributes #9 = { "spec.sig"="fn pick(f: Flag) -> Result<Symbol, Error>" }
 attributes #10 = { "spec.sig"="fn read(a: Address, b: Address) -> bool" }
 attributes #11 = { "spec.sig"="fn set_flag()" }
+attributes #12 = { "sdk.name"="<soroban_sdk::symbol::Symbol>::new" }
+attributes #13 = { "sdk.name"="core::panicking::panic_fmt" }
+attributes #14 = { "sdk.name"="<soroban_sdk::symbol::Symbol as soroban_env_common::convert::TryFromVal<soroban_sdk::env::Env, &str>>::try_from_val" }
 
 !soroban.spec = !{!0, !1, !2, !3, !4, !5, !6}
 !soroban.rodata = !{!7}

@@ -1,0 +1,26 @@
+[package]
+name = "ponytail_ref"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+doctest = false
+
+[dependencies]
+# gen.sh pins this line to the version being fingerprinted.
+soroban-sdk = "25"
+
+# The profile contracts ship with (samples/three_bugs), except that symbol
+# names are kept: they are what the fingerprints are named after.
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "none"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
+
+[workspace]

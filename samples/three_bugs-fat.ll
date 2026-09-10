@@ -1,3 +1,4 @@
+; sdk 25.3.2 rustc 1.97.1; fingerprints 25.3.2.txt: 1 of 17 helpers named, 0 by shape
 ; ModuleID = 'ponytail'
 source_filename = "ponytail"
 
@@ -234,7 +235,7 @@ fall4:                                            ; preds = %fall3
   ret i64 %get31
 }
 
-define void @f10(i64 "wasm.type"="i32" %0) {
+define void @panic_fmt(i64 "wasm.type"="i32" %0) #12 {
 entry:
   %l0 = alloca i64, align 8
   store i64 %0, ptr %l0, align 4
@@ -711,7 +712,7 @@ entry:
   store i32 %t6, ptr %slot20, align 1
   %slot207 = getelementptr i8, ptr %frame, i64 20
   %fp8 = ptrtoint ptr %slot207 to i64
-  call void @f10(i64 %fp8)
+  call void @panic_fmt(i64 %fp8)
   call void @soroban.trap()
   unreachable
 }
@@ -728,6 +729,7 @@ attributes #8 = { "soroban.import"="v.g" "soroban.sig"="(U32Val, U32Val) -> VecO
 attributes #9 = { "spec.sig"="fn read(a: Address, b: Address) -> bool" }
 attributes #10 = { "spec.sig"="fn pick(f: Flag) -> Result<Symbol, Error>" }
 attributes #11 = { "spec.sig"="fn set_flag()" }
+attributes #12 = { "sdk.name"="core::panicking::panic_fmt" }
 
 !soroban.spec = !{!0, !1, !2, !3, !4, !5, !6}
 !soroban.rodata = !{!7}
