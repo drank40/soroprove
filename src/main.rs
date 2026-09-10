@@ -1822,6 +1822,12 @@ fn decode_lm(
             keys_out.push((u(1)?, keys.iter().map(|k| k.trim_matches('"').to_string()).collect()));
             return None;
         }
+        // A union's case names, for the derive's `Symbol::index_in_strs`.
+        "buf.symbol_index_in_linear_memory" => {
+            let names = slices(u(1)?, u(2)?)?;
+            keys_out.push((u(1)?, names.iter().map(|k| k.trim_matches('"').to_string()).collect()));
+            return None;
+        }
         "map.map_new_from_linear_memory" => {
             let keys = slices(u(0)?, u(2)?)?;
             let mut sorted: Vec<String> = keys.iter().map(|k| k.trim_matches('"').to_string()).collect();

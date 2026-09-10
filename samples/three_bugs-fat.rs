@@ -112,8 +112,8 @@ impl Val {
 }
 
 // storage, from every put/get/has/del/extend_ttl call: durability, key, uses.
+//   persistent  DataKey::Pair(PairKey { a, b })   [has: read]
 //   persistent  Val::sym("f")   [put(Val::TRUE): set_flag]
-//   persistent  Vec[Val(payload), PairKey { a, b }]   [has: read]
 
 /// spec: fn read(a: Address, b: Address) -> bool
 pub fn read(mut a: Val, mut b: Val) -> Val {
@@ -173,7 +173,7 @@ pub fn read(mut a: Val, mut b: Val) -> Val {
                     pair_key = map_new_from_linear_memory(Val::u32(1048624) /* "a", "b" */, to_val9, Val::u32(2)); // PairKey { a, b }
                     _31[2] = pair_key.0;
                     _31[1] = payload;
-                    vec_new_from_linear_memory_25 = vec_new_from_linear_memory(to_val9, Val::u32(2)); // Vec[Val(payload), PairKey { a, b }]
+                    vec_new_from_linear_memory_25 = vec_new_from_linear_memory(to_val9, Val::u32(2)); // DataKey::Pair(PairKey { a, b })
                     has_contract_data_27 = has_contract_data(vec_new_from_linear_memory_25, StorageType::Persistent);
                     to_val = Val((has_contract_data_27.0 == 1u64) as u64);
                     return to_val;

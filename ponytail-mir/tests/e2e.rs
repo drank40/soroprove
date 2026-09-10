@@ -59,6 +59,12 @@ fn rust_from_mir_is_structured_decoded_and_typechecks() {
     let (ok, errs, err) = run(&[concat!(env!("CARGO_MANIFEST_DIR"), "/../samples/errors.inline.ll"), "--rust"]);
     assert!(ok, "{err}");
     assert!(errs.contains("/// <soroban_sdk::env::Env as soroban_env_common::env::Env>::fail_with_error\nfn Env_fail_with_error(mut a0: Val)"), "{errs}");
+    // test_udt.wasm: the union's `try_from_val` derive is recognised from the
+    // case names it scans and named; the SDK's i64 conversion by fingerprint.
+    let (ok, udt, err) = run(&[concat!(env!("CARGO_MANIFEST_DIR"), "/../samples/test_udt.inline.ll"), "--rust"]);
+    assert!(ok, "{err}");
+    assert!(udt.contains("/// The `#[contracttype]` derive `<UdtEnum as TryFromVal<Env, Val>>::try_from_val`.\nfn UdtEnum_try_from_val("), "{udt}");
+    assert!(udt.contains("fn i64_try_from_val("), "{udt}");
     // stable rustc is the type checker for the output.
     let dir = std::env::temp_dir().join(format!("ponytail-mir-e2e-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

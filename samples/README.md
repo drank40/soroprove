@@ -258,15 +258,29 @@ has_contract_data_23 = has_contract_data(vec_new_from_linear_memory_21, StorageT
 
 Every `put/get/has/del/extend_ttl_contract_data` call site is then collected
 into the contract's storage schema, in the header: durability, the key in the
-contract's terms, and the operations and functions that use it. Two passes
-over the functions make it interprocedural: a helper's returned shape, with
-its parameters as placeholders, is substituted at each call (`lc = f42(..) //
-BackstopDataKey::UserBalance(PoolUserKey { pool, user })`); a helper that uses
-a parameter as a key reports the access at its callers (`has: deposit via
-f45`); a symbol whose text position is constant only in a caller is read from
-the data itself, which `ponytail-wasm` passes along as `soroban.rodata`. The
-spec gives the names, the uses give the roles and the keys the spec never
-had:
+contract's terms, and the operations and functions that use it. Summaries of
+every function, iterated to a fixpoint, make it interprocedural: a helper's
+returned shape, with its parameters as placeholders, is substituted at each
+call; a helper that uses a parameter as a key reports the access at its
+callers (`has: deposit via f45`); a symbol whose text position is constant
+only in a caller is read from the data itself, which `ponytail-wasm` passes
+along as `soroban.rodata`. The spec gives the names, the uses give the roles
+and the keys the spec never had.
+
+The `#[contracttype]` derives are recognised from their shapes and named: a
+helper whose every return is a case of one union or one struct's map is that
+type's `into_val`, one that unpacks a struct's fields or a union's cases is
+its `try_from_val` (`fn BackstopDataKey_into_val(a0: *mut u8)`, doc'd with the
+impl it is). A derive reads the value through its pointer parameter, so its
+summary keeps those words -- `a0@8`, the word 8 bytes past `a0` -- and the
+switch arm each return sits under, found on rustc's dominator tree. At a call,
+the words the caller wrote into that frame (along its own dominator chain,
+less what a callee that writes through the pointer may have overwritten, as
+far as its summary says it writes) select the arm and fill the payload: the
+six-case `BackstopDataKey::{..}` becomes `BackstopDataKey::UEmisData(PoolUserKey
+{ pool: a1, user: a2 })`, which is what the source wrote. A payload that
+becomes a field of a struct map is named after the key it lands under:
+`pool`, `user`, not `v187`. What the caller did not write here stays `_`:
 
 ```
 // storage, from every put/get/has/del/extend_ttl call: durability, key, uses.
@@ -336,6 +350,15 @@ the IR stays traceable to the binary:
 declare %Val @ledger.put_contract_data(%Val, %Val, i64) #1
 attributes #1 = { "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }
 ```
+
+## `test_udt.wasm` — vendored, 5584 bytes
+
+soroban-sdk's own `tests/udt` fixture (Apache-2.0), built by the SDK with sdk
+26.0.1 and rustc 1.95.0: a union of unit, struct and tuple cases, an integer
+enum, a recursive struct. Here because it is the smallest binary whose
+derives survive out of line: `UdtEnum_try_from_val` is recognised from the
+case names its `symbol_index_in_linear_memory` scans, `i64_try_from_val` from
+the SDK fingerprint table, and the trap stubs are `panic`.
 
 ## SDK fingerprints: `fingerprints/`
 

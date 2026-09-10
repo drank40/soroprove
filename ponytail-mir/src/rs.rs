@@ -33,14 +33,30 @@ type Access = (String, String, String, String);
 /// What one function's emission tells the others: what a helper returns, in
 /// terms of its parameters; which parameters a helper uses as storage keys;
 /// who is called at all. Filled by one pass, read by the next.
+/// A switch arm a value was made under: the word read through a pointer
+/// parameter (`a0@0`), the arm's values, and whether this is the arm for
+/// every other value.
+type Cond = (String, Vec<u64>, bool);
+
 #[derive(Default)]
 struct Inter {
-    /// fn -> (shape of a returned value, the fn's parameter names to substitute).
-    ret_shapes: HashMap<String, Vec<(String, Vec<String>)>>,
+    /// fn -> (shape of a returned value, the fn's parameter names to
+    /// substitute, the arms it was returned under).
+    ret_shapes: HashMap<String, Vec<(String, Vec<String>, Vec<Cond>)>>,
+    /// fn -> the spec types it unpacks from the host (a struct's fields, a
+    /// union's cases): what a `try_from_val` derive does.
+    unpacks: HashMap<String, Vec<String>>,
+    /// fn -> (identifier, doc) for helpers recognised as `#[contracttype]`
+    /// derives. Filled once the summaries are final.
+    renames: HashMap<String, (String, String)>,
     /// fn -> (parameter index used as key, operation, durability).
     param_accesses: HashMap<String, Vec<(usize, String, String)>>,
     called: HashSet<String>,
     schema: Vec<Access>,
+    /// fn -> (pointer parameter it writes through, itself or by a call; how
+    /// far past the pointer, when every write is at a constant offset).
+    /// Every emitted fn has an entry.
+    param_writes: HashMap<String, Vec<(usize, Option<u64>)>>,
     /// fn -> (text position param, length param, "Symbol" | "String"): a
     /// helper that is the SDK's `Symbol::new` / `String::from_str`. Read off
     /// the final summaries.
@@ -73,7 +89,7 @@ pub fn emit<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, header: &str, bodies: &[&B
             Fn_::new(tcx, env, body, spec, &prev, &cur, false).emit()?;
         }
         let cur = cur.into_inner();
-        let stable = cur.ret_shapes == prev.ret_shapes && cur.param_accesses == prev.param_accesses && cur.called == prev.called;
+        let stable = cur.ret_shapes == prev.ret_shapes && cur.param_accesses == prev.param_accesses && cur.called == prev.called && cur.unpacks == prev.unpacks && cur.param_writes == prev.param_writes;
         prev = cur;
         if stable {
             break;
@@ -83,11 +99,44 @@ pub fn emit<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, header: &str, bodies: &[&B
         .ret_shapes
         .iter()
         .filter_map(|(f, ts)| {
-            let mut ps = ts.iter().map(|(t, params)| text_params(t, params));
+            let mut ps = ts.iter().map(|(t, params, _)| text_params(t, params));
             let first = ps.next()??;
             ps.all(|p| p == Some(first)).then(|| (f.clone(), first))
         })
         .collect();
+    // Helpers that are `#[contracttype]` derives: every return one case of
+    // one union or one struct's map is its `into_val`; unpacking one type's
+    // fields or cases is its `try_from_val`.
+    let is_helper = |f: &str| {
+        f.strip_prefix('f').is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
+            && !prev.schema.iter().any(|(_, _, _, who)| who == f || who.starts_with(&format!("{f} via ")))
+    };
+    let owner = |s: &str| -> Option<String> {
+        let s = s.rsplit_once(" /* ").map(|(_, c)| c.trim_end_matches(" */")).unwrap_or(s);
+        if let Some((u, _)) = s.split_once("::") {
+            if spec.union_cases.iter().any(|(n, _)| n == u) {
+                return Some(u.to_string());
+            }
+        }
+        s.split_once(" {").map(|(st, _)| st).filter(|st| spec.struct_fields.contains_key(*st)).map(str::to_string)
+    };
+    let mut renames = HashMap::new();
+    for (f, shapes) in &prev.ret_shapes {
+        let owners: Vec<Option<String>> = shapes.iter().map(|(s, ..)| owner(s)).collect();
+        if let Some(Some(t)) = owners.first().filter(|_| is_helper(f)) {
+            if owners.iter().all(|o| o.as_deref() == Some(t.as_str())) {
+                renames.insert(f.clone(), (format!("{t}_into_val"), format!("/// The `#[contracttype]` derive `<{t} as IntoVal<Env, Val>>::into_val`.\n")));
+            }
+        }
+    }
+    for (f, types) in &prev.unpacks {
+        if let Some(t) = types.first().filter(|_| is_helper(f) && !renames.contains_key(f)) {
+            if types.iter().all(|x| x == t) {
+                renames.insert(f.clone(), (format!("{t}_try_from_val"), format!("/// The `#[contracttype]` derive `<{t} as TryFromVal<Env, Val>>::try_from_val`.\n")));
+            }
+        }
+    }
+    prev.renames = renames;
     let inter = RefCell::new(Inter::default());
     let mut fns = String::new();
     for body in bodies {
@@ -248,6 +297,23 @@ impl Spec {
     }
 
     /// The struct whose field set is exactly these keys, if there is one.
+    /// The union whose cases are exactly these names, if there is one.
+    fn union_for_cases(&self, names: &[String]) -> Option<&str> {
+        let mut want: Vec<&str> = names.iter().map(String::as_str).collect();
+        want.sort();
+        let mut unions: Vec<&str> = self.union_cases.iter().map(|(u, _)| u.as_str()).collect();
+        unions.dedup();
+        let mut it = unions.into_iter().filter(|u| {
+            let mut have: Vec<&str> = self.union_cases.iter().filter(|(n, _)| n == u).map(|(_, c)| c.as_str()).collect();
+            have.sort();
+            have == want
+        });
+        match (it.next(), it.next()) {
+            (Some(u), None) => Some(u),
+            _ => None,
+        }
+    }
+
     fn struct_for_keys(&self, keys: &[String]) -> Option<&str> {
         let mut want: Vec<&str> = keys.iter().map(String::as_str).collect();
         want.sort();
@@ -507,6 +573,30 @@ fn alternatives(shapes: Vec<String>) -> String {
     shapes.join(" | ")
 }
 
+/// `a0@8` left in a template -- a word the caller did not write here -- is
+/// unknown: `_`.
+fn blank_words(t: &str) -> String {
+    let b = t.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'@' && b.get(i + 1).is_some_and(u8::is_ascii_digit) && out.ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+            while out.ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+                out.pop();
+            }
+            out.push('_');
+            i += 1;
+            while i < b.len() && b[i].is_ascii_digit() {
+                i += 1;
+            }
+            continue;
+        }
+        out.push(b[i] as char);
+        i += 1;
+    }
+    out
+}
+
 /// A helper's returned shape with its parameter names replaced, whole word,
 /// by the shapes of the arguments at a call.
 fn substitute(template: &str, params: &[String], args: &[String]) -> String {
@@ -599,8 +689,11 @@ struct Fn_<'a, 'tcx> {
     /// Call results: callee and arguments, by destination local.
     call_def: HashMap<Local, (String, Vec<Operand<'tcx>>)>,
     /// What a vec or map built from linear memory is, once its call has been
-    /// written: `DataKey::Pair(pair_key)`, `PairKey { a: .., b: .. }`.
-    shapes: HashMap<Local, Vec<String>>,
+    /// written: `DataKey::Pair(pair_key)`, `PairKey { a: .., b: .. }`. Every
+    /// shape a local takes, each with the switch arms it was made under.
+    shapes: HashMap<Local, Vec<(Vec<Cond>, String)>>,
+    /// The block being emitted, for those arms.
+    cur_bb: BasicBlock,
     /// The previous pass's summaries, read; this pass's, written.
     prev: &'a Inter,
     inter: &'a RefCell<Inter>,
@@ -684,6 +777,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             array_lits: HashMap::new(),
             call_def,
             shapes: HashMap::new(),
+            cur_bb: START_BLOCK,
             prev,
             inter,
             final_pass,
@@ -694,6 +788,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             used: HashSet::new(),
         };
         me.val_arrays = me.find_val_arrays();
+        me.name_fields();
         let (literal, addr_locals) = me.find_literal_arrays();
         me.literal = literal;
         me.addr_locals = addr_locals;
@@ -747,7 +842,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     fn keys_position(callee: &str) -> Option<usize> {
         Some(match callee {
             "map_new_from_linear_memory" => 0,
-            "map_unpack_to_linear_memory" => 1,
+            "map_unpack_to_linear_memory" | "symbol_index_in_linear_memory" => 1,
             _ => return None,
         })
     }
@@ -925,6 +1020,196 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         }
     }
 
+    /// A payload with a made-up name (`v226`, `ld61`, `_13`) that is stored
+    /// into a map's value array is named after the key at that position:
+    /// `pool`, `user`. Before the literals are rendered.
+    fn name_fields(&mut self) {
+        let generic = |n: &str| n.strip_prefix('_').unwrap_or(n).trim_start_matches(|c: char| c.is_ascii_lowercase()).chars().all(|c| c.is_ascii_digit());
+        let mut used: HashSet<String> = self.names.values().cloned().collect();
+        let mut renames: Vec<(Local, String)> = Vec::new();
+        for b in self.body.basic_blocks.iter() {
+            let Some(Terminator { kind: TerminatorKind::Call { func, args, .. }, .. }) = &b.terminator else { continue };
+            let Operand::Constant(c) = func else { continue };
+            let ty::FnDef(d, _) = c.const_.ty().kind() else { continue };
+            if self.tcx.item_name(*d).as_str() != "map_new_from_linear_memory" {
+                continue;
+            }
+            let Some(keys) = args.first().and_then(|a| self.konst_u64(&a.node)).filter(|b| b & 0xff == 4).and_then(|b| self.spec.keys.get(&(b >> 32))) else { continue };
+            let Some((arr, 0)) = args.get(1).and_then(|a| self.array_behind_at(&a.node, 0)) else { continue };
+            for st in self.body.basic_blocks.iter().flat_map(|b| &b.statements) {
+                let StatementKind::Assign(a) = &st.kind else { continue };
+                let [PlaceElem::ConstantIndex { offset, .. }] = a.0.projection.as_slice() else { continue };
+                let (Some(key), true) = (keys.get(*offset as usize), a.0.local == arr) else { continue };
+                let op = match &a.1 {
+                    Rvalue::Use(o) => Some(o),
+                    Rvalue::Aggregate(_, fs) => fs.iter().next(),
+                    _ => None,
+                };
+                let Some(l) = op.and_then(|o| self.source_local(o)) else { continue };
+                if l.as_usize() <= self.body.arg_count || !self.names.get(&l).map_or(true, |n| generic(n)) || renames.iter().any(|(x, _)| *x == l) {
+                    continue;
+                }
+                let mut n = key.clone();
+                if !used.insert(n.clone()) {
+                    n = format!("{n}_{}", l.as_usize());
+                    used.insert(n.clone());
+                }
+                renames.push((l, n));
+            }
+        }
+        self.names.extend(renames);
+    }
+
+    /// `*(param + off)`: a word this function reads from what a caller built.
+    fn param_load(&self, o: &Operand<'tcx>) -> Option<(Local, u64)> {
+        let (Operand::Copy(p) | Operand::Move(p)) = o else { return None };
+        if let [PlaceElem::Deref] = p.projection.as_slice() {
+            return self.param_ptr(&Operand::Copy(Place::from(p.local)), 0);
+        }
+        match self.def_of(o)? {
+            Rvalue::Use(inner) => self.param_load(inner),
+            _ => None,
+        }
+    }
+
+    /// A pointer parameter plus a constant: the parameter and the byte offset.
+    fn param_ptr(&self, o: &Operand<'tcx>, off: u64) -> Option<(Local, u64)> {
+        if let Operand::Copy(p) | Operand::Move(p) = o {
+            if let Some(l) = p.as_local().filter(|l| (1..=self.body.arg_count).contains(&l.as_usize())) {
+                return Some((l, off));
+            }
+        }
+        match self.def_of(o)? {
+            Rvalue::Cast(_, inner, _) | Rvalue::Use(inner) => self.param_ptr(inner, off),
+            Rvalue::BinaryOp(BinOp::Offset | BinOp::Add, ab) => self.param_ptr(&ab.0, off + self.konst_u64(&ab.1)?),
+            _ => None,
+        }
+    }
+
+    /// The switch arms `bb` sits under, for switches on a word read through
+    /// a pointer parameter: what a caller decided by what it wrote there.
+    /// Walks rustc's dominator tree; an arm applies when the block on the
+    /// path is that arm's target.
+    fn conds_of(&self, bb: BasicBlock) -> Vec<Cond> {
+        let doms = self.body.basic_blocks.dominators();
+        let mut out = Vec::new();
+        let mut child = bb;
+        while let Some(d) = doms.immediate_dominator(child) {
+            if let TerminatorKind::SwitchInt { discr, targets } = &self.body.basic_blocks[d].terminator().kind {
+                if let Some((p, off)) = self.param_load(discr) {
+                    let word = format!("{}@{off}", self.local(p));
+                    match targets.iter().find(|(_, t)| *t == child) {
+                        Some((v, _)) => out.push((word, vec![v as u64], false)),
+                        None if targets.otherwise() == child => out.push((word, targets.iter().map(|(v, _)| v as u64).collect(), true)),
+                        None => {}
+                    }
+                }
+            }
+            child = d;
+        }
+        out
+    }
+
+    /// The words written into the frame an argument points to, as of a call
+    /// in `bb`: byte offset from the pointer -> (the value as the contract
+    /// knows it, its constant). Stores along the dominator chain, in order,
+    /// through a slot or a pointer into the frame; a store anywhere else, or
+    /// a call handed a pointer into the frame, forgets what it may have
+    /// overwritten -- from that pointer's offset on. ponytail: a callee
+    /// writing below the pointer it was given is not Rust; not considered.
+    fn frame_words(&self, bb: BasicBlock, o: &Operand<'tcx>) -> HashMap<u64, (String, Option<u64>)> {
+        let Some((arr, base)) = self.array_behind_at(o, 0) else { return HashMap::new() };
+        let derived = self.derived_from(arr);
+        let doms = self.body.basic_blocks.dominators();
+        let mut chain = vec![bb];
+        while let Some(d) = doms.immediate_dominator(*chain.last().unwrap()) {
+            chain.push(d);
+        }
+        chain.reverse();
+        // (offset, value) of a store, None for one at an unknown offset.
+        let store = |a: &(Place<'tcx>, Rvalue<'tcx>)| -> Option<Option<(u64, (String, Option<u64>))>> {
+            let off = if a.0.local == arr {
+                match a.0.projection.as_slice() {
+                    [PlaceElem::ConstantIndex { offset, .. }] => Some(offset * 8),
+                    _ => None,
+                }
+            } else if matches!(a.0.projection.as_slice(), [PlaceElem::Deref]) && derived.contains(&a.0.local) {
+                self.array_behind_at(&Operand::Copy(Place::from(a.0.local)), 0).map(|(_, k)| k)
+            } else {
+                return None; // not a store into this frame
+            };
+            let (val, k) = match &a.1 {
+                Rvalue::Use(op) => (self.key_shape(op).ok(), self.konst_u64(op)),
+                rv => (self.as_val_expr(rv).ok(), None),
+            };
+            Some(off.zip(val).map(|(off, v)| (off, (v, k))))
+        };
+        // The byte ranges a block's call may write into the frame: a pointer
+        // into it handed to a callee that writes through that parameter. The
+        // host's unpacks write exactly `len` Vals; a lifted callee, from the
+        // pointer on.
+        let call_writes = |data: &BasicBlockData<'tcx>| -> Vec<(u64, Option<u64>)> {
+            let Some(Terminator { kind: TerminatorKind::Call { func, args, .. }, .. }) = &data.terminator else { return vec![] };
+            let name = self.callee_name(func).unwrap_or_default();
+            let ops: Vec<Operand<'tcx>> = args.iter().map(|a| a.node.clone()).collect();
+            args.iter()
+                .enumerate()
+                .filter_map(|(j, a)| {
+                    let (x, k) = self.array_behind_at(&a.node, 0)?;
+                    if x != arr {
+                        return None;
+                    }
+                    let extent = self.write_extent(func, j)?;
+                    let exact = matches!((name.as_str(), j), ("vec_unpack_to_linear_memory", 1) | ("map_unpack_to_linear_memory", 2));
+                    let end = if exact { self.len_arg(&name, &ops).map(|n| k + 8 * n) } else { extent.map(|e| k + e) };
+                    Some((k, end))
+                })
+                .collect()
+        };
+        let clobber = |words: &mut HashMap<u64, (String, Option<u64>)>, (k, end): (u64, Option<u64>)| {
+            words.retain(|off, _| *off < k || end.is_some_and(|e| *off >= e));
+        };
+        let mut words: HashMap<u64, (String, Option<u64>)> = HashMap::new();
+        for b in &chain {
+            let data = &self.body.basic_blocks[*b];
+            for st in &data.statements {
+                let StatementKind::Assign(a) = &st.kind else { continue };
+                match store(a) {
+                    Some(Some((off, v))) => {
+                        words.insert(off, v);
+                    }
+                    Some(None) => words.clear(),
+                    None => {}
+                }
+            }
+            if *b != bb {
+                for r in call_writes(data) {
+                    clobber(&mut words, r);
+                }
+            }
+        }
+        // Anything off the chain that may have run: forget what it touches.
+        for (b, data) in self.body.basic_blocks.iter_enumerated() {
+            if chain.contains(&b) {
+                continue;
+            }
+            for st in &data.statements {
+                let StatementKind::Assign(a) = &st.kind else { continue };
+                match store(a) {
+                    Some(Some((off, _))) => {
+                        words.remove(&off);
+                    }
+                    Some(None) => words.clear(),
+                    None => {}
+                }
+            }
+            for r in call_writes(data) {
+                clobber(&mut words, r);
+            }
+        }
+        words.into_iter().filter_map(|(k, v)| k.checked_sub(base).map(|o| (o, v))).collect()
+    }
+
     /// The length a host call is told, as a constant.
     fn len_arg(&self, callee: &str, args: &[Operand<'tcx>]) -> Option<u64> {
         let i = match callee {
@@ -958,7 +1243,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 return None; // stored twice: not a plain initialiser
             }
             let src = match &a.1 {
-                Rvalue::Use(o) => self.val_source(o),
+                Rvalue::Use(o) => self.source_local(o),
                 _ => None,
             };
             out[k as usize] = Some((self.as_val_expr(&a.1).ok()?, src));
@@ -1002,6 +1287,14 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             Rvalue::Use(inner) => self.val_source(inner),
             _ => None,
         }
+    }
+
+    /// The local a stored value comes from: its Val local, else itself.
+    fn source_local(&self, o: &Operand<'tcx>) -> Option<Local> {
+        self.val_source(o).or_else(|| match o {
+            Operand::Copy(p) | Operand::Move(p) => p.as_local(),
+            _ => None,
+        })
     }
 
     fn line(&mut self, s: impl Into<String>) {
@@ -1327,6 +1620,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     /// into its use; a pure statement nothing reads is not written -- rustc
     /// kept it only for its debuginfo name.
     fn stmts(&mut self, bb: BasicBlock) -> R<()> {
+        self.cur_bb = bb;
         let data = &self.body.basic_blocks[bb];
         for (si, st) in data.statements.iter().enumerate() {
             if let StatementKind::Assign(a) = &st.kind {
@@ -1345,7 +1639,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                         let e = self.as_val_expr(rv)?;
                         // The Val local behind the element, for its shape.
                         let src = match rv {
-                            Rvalue::Use(o) => self.val_source(o),
+                            Rvalue::Use(o) => self.source_local(o),
                             _ => None,
                         };
                         let n = self.val_arrays[&pl.local] as usize;
@@ -1404,6 +1698,9 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 }
                 let s = format!("{} = {};", self.place(pl), self.assign_expr(pl, rv)?);
                 self.line(s);
+                if let [PlaceElem::Deref] = pl.projection.as_slice() {
+                    self.wrote_through(&Operand::Copy(Place::from(pl.local)), Some(8));
+                }
                 // A shape travels through a copy, a phi copy or a `Val(..)`
                 // of a payload local included; what reaches `_0` is what
                 // this function returns.
@@ -1413,15 +1710,21 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                     _ => None,
                 };
                 if let (Some(dst), Some(o)) = (pl.as_local(), carried) {
+                    let src = self.source_local(o);
                     let sh = match o {
                         Operand::Constant(c) => c.const_.try_to_scalar_int().filter(|_| c.const_.ty() == self.env.val).map(|i| self.val_str(i.to_bits(i.size()) as u64)),
-                        _ => self.val_source(o).and_then(|l| {
-                            self.shape_of(l).or_else(|| (l.as_usize() >= 1 && l.as_usize() <= self.body.arg_count).then(|| self.local(l)))
-                        }),
+                        _ => src
+                            .and_then(|l| self.shape_of(l).or_else(|| (l.as_usize() >= 1 && l.as_usize() <= self.body.arg_count).then(|| self.local(l))))
+                            // A word read from what a caller built: the caller knows it.
+                            .or_else(|| self.param_load(o).map(|(p, off)| format!("{}@{off}", self.local(p)))),
                     };
                     if let Some(sh) = sh {
                         if dst == Local::ZERO {
-                            self.returned(sh.clone());
+                            // Each alternative with the arms it was made under.
+                            let entries = src.and_then(|l| self.shapes.get(&l).cloned()).unwrap_or_else(|| vec![(self.conds_of(self.cur_bb), sh.clone())]);
+                            for (conds, s) in entries {
+                                self.returned(s, conds);
+                            }
                         }
                         self.push_shape(dst, sh);
                     }
@@ -1447,7 +1750,13 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     }
 
     fn call_line(&mut self, bb: BasicBlock, func: &Operand<'tcx>, args: &[Spanned<Operand<'tcx>>], destination: &Place<'tcx>) -> R<()> {
+        self.cur_bb = bb;
         let f = self.operand(func)?;
+        for (j, a) in args.iter().enumerate() {
+            if let Some(ext) = self.write_extent(func, j) {
+                self.wrote_through(&a.node, ext);
+            }
+        }
         let val_pos = Self::val_position(&f);
         let keys_pos = Self::keys_position(&f);
         self.inter.borrow_mut().called.insert(f.clone());
@@ -1512,10 +1821,18 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             }
             a.push(s);
         }
+        // Unpacking one spec type's fields or cases: a `try_from_val` derive.
+        if let Some(t) = keys.as_ref().and_then(|ks| match f.as_str() {
+            "map_unpack_to_linear_memory" => self.spec.struct_for_keys(ks),
+            "symbol_index_in_linear_memory" => self.spec.union_for_cases(ks),
+            _ => None,
+        }) {
+            self.inter.borrow_mut().unpacks.entry(self.fname.clone()).or_default().push(t.to_string());
+        }
         // The SDK constructor the call is, with its data as the literal the
         // source had: the host reads the same bytes. `show` is the callee as
         // written; `f` stays the callee as lifted.
-        let mut show = f.clone();
+        let mut show = self.display(&f);
         if let Some(&(i, j, _)) = self.prev.text_helpers.get(&f) {
             let is_param = |o: &Operand<'tcx>, idx: usize| matches!(o, Operand::Copy(p) | Operand::Move(p) if p.as_local() == Some(Local::from_usize(idx + 1)));
             let own = self.prev.text_helpers.get(&self.fname).is_some_and(|&(si, sj, _)| is_param(&arg_ops[i], si) && is_param(&arg_ops[j], sj));
@@ -1582,7 +1899,32 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                     None
                 } else {
                     let arg_shapes: Vec<String> = args.iter().map(|a| self.key_shape(&a.node)).collect::<R<_>>()?;
-                    let out: Vec<String> = templates.iter().map(|(t, params)| self.resolve_text(substitute(t, params, &arg_shapes))).collect();
+                    // What this block wrote into the frames it passes decides
+                    // the callee's arms and fills its loads; a word it did not
+                    // write keeps every alternative.
+                    let frames: Vec<HashMap<u64, (String, Option<u64>)>> = args.iter().map(|a| self.frame_words(bb, &a.node)).collect();
+                    let word = |w: &str, params: &[String]| -> Option<(String, Option<u64>)> {
+                        let (p, off) = w.split_once('@')?;
+                        frames.get(params.iter().position(|x| x == p)?)?.get(&off.parse::<u64>().ok()?).cloned()
+                    };
+                    let out: Vec<String> = templates
+                        .iter()
+                        .filter(|(_, params, conds)| {
+                            conds.iter().all(|(w, vals, neg)| match word(w, params).and_then(|(_, k)| k) {
+                                Some(c) => vals.contains(&c) != *neg,
+                                None => true,
+                            })
+                        })
+                        .map(|(t, params, _)| {
+                            let mut t = t.clone();
+                            for (i, p) in params.iter().enumerate() {
+                                for (off, (v, _)) in frames.get(i).into_iter().flatten() {
+                                    t = t.replace(&format!("{p}@{off}"), v);
+                                }
+                            }
+                            self.resolve_text(substitute(&blank_words(&t), params, &arg_shapes))
+                        })
+                        .collect();
                     Some(alternatives(out))
                 }
             }
@@ -1626,7 +1968,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             if let Some(l) = destination.as_local() {
                 self.push_shape(l, sh.clone());
                 if l == Local::ZERO {
-                    self.returned(sh.clone());
+                    self.returned(sh.clone(), self.conds_of(bb));
                 }
             }
         }
@@ -1637,7 +1979,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         for (i, op, dur) in param_accesses {
             if let Some(arg) = args.get(i) {
                 let key = self.key_shape(&arg.node)?;
-                self.inter.borrow_mut().schema.push((dur, key, op, format!("{} via {f}", self.fname)));
+                self.inter.borrow_mut().schema.push((dur, key, op, format!("{} via {}", self.display(&self.fname), self.display(&f))));
             }
         }
         // A storage access: durability, the key as the contract knows it.
@@ -1664,7 +2006,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 return Ok(()); // reported at the callers
             }
         }
-        self.inter.borrow_mut().schema.push((dur, key, op, self.fname.clone()));
+        self.inter.borrow_mut().schema.push((dur, key, op, self.display(&self.fname)));
         Ok(())
     }
 
@@ -1695,30 +2037,128 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         s
     }
 
-    /// Every shape a local may hold, as one string.
+    /// Every shape a local may hold, as one string. A local folded into its
+    /// use never passed through `stmt`: if it is a word read through a
+    /// pointer parameter, that is its shape.
     fn shape_of(&self, l: Local) -> Option<String> {
-        self.shapes.get(&l).map(|v| alternatives(v.clone()))
+        self.shapes.get(&l).map(|v| alternatives(v.iter().map(|(_, s)| s.clone()).collect())).or_else(|| {
+            let (p, off) = match self.def_of(&Operand::Copy(Place::from(l)))? {
+                Rvalue::Use(o) => self.param_load(o)?,
+                _ => return None,
+            };
+            Some(format!("{}@{off}", self.local(p)))
+        })
     }
 
-    /// A local takes on a shape on one more path.
+    /// A local takes on a shape on one more path: under the arms of the block being emitted.
     fn push_shape(&mut self, l: Local, shape: String) {
+        let conds = self.conds_of(self.cur_bb);
         let v = self.shapes.entry(l).or_default();
-        if !v.contains(&shape) {
-            v.push(shape);
+        if !v.iter().any(|(c, s)| *s == shape && *c == conds) {
+            v.push((conds, shape));
         }
     }
 
     /// Record what this function returns, for its callers: in terms of its
-    /// parameters; its own locals mean nothing there and become `_`.
-    fn returned(&self, shape: String) {
+    /// parameters and the words it read through them; its own locals mean
+    /// nothing there and become `_`.
+    fn returned(&self, shape: String, conds: Vec<Cond>) {
         let params = self.param_names();
-        let locals: Vec<String> = (self.body.arg_count + 1..self.body.local_decls.len()).map(|i| self.local(Local::from_usize(i))).collect();
+        // Not the locals named after map keys: in a shape that word is the key.
+        let locals: Vec<String> = (self.body.arg_count + 1..self.body.local_decls.len())
+            .map(|i| self.local(Local::from_usize(i)))
+            .filter(|n| !self.spec.keys.values().any(|ks| ks.contains(n)))
+            .collect();
         let shape = substitute(&shape, &locals, &vec!["_".to_string(); locals.len()]).replace("Val(_)", "_");
         let mut inter = self.inter.borrow_mut();
         let v = inter.ret_shapes.entry(self.fname.clone()).or_default();
-        if !v.iter().any(|(s, _)| *s == shape) {
-            v.push((shape, params));
+        if !v.iter().any(|(s, _, c)| *s == shape && *c == conds) {
+            v.push((shape, params, conds));
         }
+    }
+
+    /// The lifted or host function a call is to.
+    fn callee_name(&self, func: &Operand<'tcx>) -> Option<String> {
+        let Operand::Constant(c) = func else { return None };
+        let ty::FnDef(d, _) = c.const_.ty().kind() else { return None };
+        Some(self.tcx.item_name(*d).to_string())
+    }
+
+    /// Does a call's callee write through its `j`th argument, and how far
+    /// past it? None: it does not. Some(None): it does, unboundedly. A host
+    /// function writes when it copies to linear memory; a lifted one as its
+    /// summary says, or unboundedly before there is one.
+    fn write_extent(&self, func: &Operand<'tcx>, j: usize) -> Option<Option<u64>> {
+        let Operand::Constant(c) = func else { return Some(None) };
+        let ty::FnDef(d, _) = c.const_.ty().kind() else { return Some(None) };
+        let name = self.tcx.item_name(*d).to_string();
+        if self.tcx.is_foreign_item(*d) {
+            return name.contains("to_linear_memory").then_some(None);
+        }
+        match self.prev.param_writes.get(&name) {
+            Some(ps) => ps.iter().find(|(i, _)| *i == j).map(|(_, e)| *e),
+            None => Some(None),
+        }
+    }
+
+    /// This function writes `end` bytes past `ptr`, or unboundedly (None).
+    /// Through a parameter plus a constant, the extent is known; through
+    /// anything else that may come from a parameter, it is not.
+    fn wrote_through(&self, ptr: &Operand<'tcx>, end: Option<u64>) {
+        let hits: Vec<(usize, Option<u64>)> = match self.param_ptr(ptr, 0) {
+            Some((p, off)) => vec![(p.as_usize() - 1, end.map(|e| off + e))],
+            None => {
+                let Some(l) = (match ptr {
+                    Operand::Copy(p) | Operand::Move(p) => p.as_local(),
+                    _ => None,
+                }) else {
+                    return;
+                };
+                self.body.args_iter().filter(|p| self.may_derive(*p).contains(&l)).map(|p| (p.as_usize() - 1, None)).collect()
+            }
+        };
+        let mut inter = self.inter.borrow_mut();
+        let ps = inter.param_writes.entry(self.fname.clone()).or_default();
+        for (i, e) in hits {
+            match ps.iter_mut().find(|(x, _)| *x == i) {
+                Some((_, cur)) => *cur = cur.zip(e).map(|(a, b)| a.max(b)),
+                None => ps.push((i, e)),
+            }
+        }
+    }
+
+    /// Every local that may be computed from `root`, through any assignment:
+    /// the may-alias closure, for what is not single-definition.
+    fn may_derive(&self, root: Local) -> HashSet<Local> {
+        let mut set: HashSet<Local> = [root].into_iter().collect();
+        loop {
+            let before = set.len();
+            for st in self.body.basic_blocks.iter().flat_map(|b| &b.statements) {
+                let StatementKind::Assign(a) = &st.kind else { continue };
+                let Some(l) = a.0.as_local() else { continue };
+                let from = |o: &Operand<'tcx>| match o {
+                    Operand::Copy(p) | Operand::Move(p) => set.contains(&p.local),
+                    _ => false,
+                };
+                let derived = match &a.1 {
+                    Rvalue::Use(o) | Rvalue::Cast(_, o, _) | Rvalue::UnaryOp(_, o) => from(o),
+                    Rvalue::BinaryOp(_, ab) => from(&ab.0) || from(&ab.1),
+                    Rvalue::Aggregate(_, fs) => fs.iter().any(from),
+                    _ => false,
+                };
+                if derived {
+                    set.insert(l);
+                }
+            }
+            if set.len() == before {
+                return set;
+            }
+        }
+    }
+
+    /// A function as written: its derive name when it is one, else as lifted.
+    fn display(&self, f: &str) -> String {
+        self.prev.renames.get(f).map(|(id, _)| id.clone()).unwrap_or_else(|| f.to_string())
     }
 
     /// A value the host is handed, in the contract's terms: a built vec or
@@ -1741,7 +2181,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             }
             // An unresolved local is this function's; say whose.
             if !self.folded.contains_key(&l) {
-                return Ok(format!("{}::{}", self.fname, self.local(l)));
+                return Ok(format!("{}::{}", self.display(&self.fname), self.local(l)));
             }
         }
         self.operand(o)
@@ -2009,17 +2449,24 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     }
 
     fn emit(mut self) -> R<String> {
+        self.inter.borrow_mut().param_writes.entry(self.fname.clone()).or_default();
         let tcx = self.tcx;
         let def_id = self.body.source.def_id();
-        let name = tcx.item_name(def_id);
+        let name = self.display(&self.fname);
         let vis = if tcx.visibility(def_id).is_public() { "pub " } else { "" };
         // `mut`: rustc's copy propagation may reuse an argument local.
         let mut params: Vec<String> =
             self.body.args_iter().map(|l| format!("mut {}: {}", self.local(l), ty_str(tcx, self.body.local_decls[l].ty))).collect();
         // The SDK's text constructor: its position and length are one `&str`.
         let mut prologue = String::new();
-        // What the fingerprints say this is, else what its shape says.
-        let mut doc = self.spec.sdk.get(&self.fname).map(|n| format!("/// {n}\n")).unwrap_or_default();
+        // What the derive recognition or the fingerprints say this is, else what its shape says.
+        let mut doc = self
+            .prev
+            .renames
+            .get(&self.fname)
+            .map(|(_, d)| d.clone())
+            .or_else(|| self.spec.sdk.get(&self.fname).map(|n| format!("/// {n}\n")))
+            .unwrap_or_default();
         if let Some(&(i, j, kind)) = self.prev.text_helpers.get(&self.fname) {
             let ty = |l: Local| ty_str(tcx, self.body.local_decls[l].ty);
             let (pi, pj) = (Local::from_usize(i + 1), Local::from_usize(j + 1));
