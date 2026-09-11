@@ -199,6 +199,29 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 expr = Some("env.ledger().sequence()".into());
                 None
             }
+            "update_current_contract_wasm" => Some(format!("env.deployer().update_current_contract_wasm({});", self.sdk_arg(args, 0)?)),
+            // Vec/Map reads become methods on the collection. A length is a
+            // `U32Val`; wrap it so the `.0 >> 32` that extracts it folds away.
+            "vec_len" | "map_len" => {
+                expr = Some(format!("Val::u32({}.len())", self.sdk_arg(args, 0)?));
+                None
+            }
+            "vec_get" => {
+                expr = Some(format!("{}.get({}).unwrap()", self.sdk_arg(args, 0)?, self.sdk_arg(args, 1)?));
+                None
+            }
+            "map_has" => {
+                expr = Some(format!("{}.contains_key({})", self.sdk_arg(args, 0)?, self.sdk_arg(args, 1)?));
+                None
+            }
+            "map_get" => {
+                expr = Some(format!("{}.get({}).unwrap()", self.sdk_arg(args, 0)?, self.sdk_arg(args, 1)?));
+                None
+            }
+            "vec_first_index_of" => {
+                expr = Some(format!("Val::u32({}.first_index_of({}).unwrap())", self.sdk_arg(args, 0)?, self.sdk_arg(args, 1)?));
+                None
+            }
             _ if self.prev.fails.contains_key(f) => Some(format!("panic_with_error!(&env, {});", self.sdk_value(&self.prev.fails[f])?)),
             _ if self.prev.diverges.contains(f) => Some("panic!();".to_string()),
             _ => match shape.map(|sh| self.sdk_value(sh)) {
@@ -349,7 +372,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     /// The bool Val the host returned that this payload is: `has_contract_data`.
     pub(super) fn bool_val(&self, o: &Operand<'tcx>) -> Option<Local> {
         let l = self.val_source(o)?;
-        (self.call_def.get(&l)?.0 == "has_contract_data").then_some(l)
+        matches!(self.call_def.get(&l)?.0.as_str(), "has_contract_data" | "map_has").then_some(l)
     }
 
     /// `(param.0 >> 32) as uN` of a parameter declared as an integer enum:
@@ -407,6 +430,15 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     pub(super) fn sdk_rvalue(&self, rv: &Rvalue<'tcx>) -> R<String> {
         match rv {
             Rvalue::Use(o) => self.sdk_operand(o),
+            // `x.0 >> 32` where x is a `Val::u32(E)`: the u32 E.
+            Rvalue::BinaryOp(BinOp::Shr, xy) if self.konst_u64(&xy.1) == Some(32) => {
+                if let Some(sh) = self.val_source(&xy.0).and_then(|l| self.shape_of(l)) {
+                    if let Some(e) = sh.strip_prefix("Val::u32(").and_then(|r| r.strip_suffix(')')) {
+                        return Ok(e.to_string());
+                    }
+                }
+                Err(format!("not reconstructed: {}", self.rvalue(rv)?))
+            }
             Rvalue::Aggregate(k, fs) if matches!(**k, AggregateKind::Adt(d, ..) if d == self.env.val_def) => {
                 let o = fs.iter().next().ok_or("Val without a payload")?;
                 // `Val((b.0 == 1) as u64)`: a bool re-encoded is the bool.
