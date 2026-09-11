@@ -19,11 +19,11 @@
 set -eu
 cd "$(dirname "$0")"
 
-BIN=../target/release/ponytail-wasm
-[ -x "$BIN" ] || { echo "build ponytail-wasm first: nix-shell --run 'cargo build --release'" >&2; exit 2; }
+BIN=../target/release/stellar-diver
+[ -x "$BIN" ] || { echo "build stellar-diver first: nix-shell --run 'cargo build --release'" >&2; exit 2; }
 # The SDK fingerprint tables checked in next door, so the goldens name the
 # same helpers on every machine (see ../fingerprints/gen.sh).
-export PONYTAIL_FINGERPRINTS="$PWD/../fingerprints"
+export DIVER_FINGERPRINTS="$PWD/../fingerprints"
 
 # `release` is the profile real contracts ship with. `fat` inlines more, which
 # produces genuinely different codegen for the same source -- useful corpus
@@ -36,27 +36,27 @@ cp three_bugs/target/wasm32v1-none/fat/three_bugs.wasm     three_bugs-fat.wasm
 
 # Goldens, one pipeline: every function as lowered (--all); the exports with
 # the SDK plumbing inlined and folded by LLVM (--inline); then, from that IR,
-# the MIR ponytail-mir builds inside rustc (.mir) and the Rust it emits from
-# the MIR (.rs). The last two need ../ponytail-mir's nightly with rustc-dev.
+# the MIR stellar-diver-mir builds inside rustc (.mir) and the Rust it emits from
+# the MIR (.rs). The last two need ../mir's nightly with rustc-dev.
 for w in *.wasm; do
     "$BIN" "$w" --all    > "${w%.wasm}.ll"
     "$BIN" "$w" --inline > "${w%.wasm}.inline.ll"
     printf '%-22s %6s bytes wasm -> %5s lines IR, %4s inlined\n' "$w" "$(stat -c%s "$w")" \
         "$(wc -l < "${w%.wasm}.ll")" "$(wc -l < "${w%.wasm}.inline.ll")"
 done
-if (cd ../ponytail-mir && cargo build --release -q 2>/dev/null); then
+if (cd ../mir && cargo build --release -q 2>/dev/null); then
     for ll in *.inline.ll; do
         b=${ll%.inline.ll}
-        (cd ../ponytail-mir && cargo run --release -q -- "../samples/$ll")        > "$b.mir" 2>/dev/null
-        (cd ../ponytail-mir && cargo run --release -q -- "../samples/$ll" --rust) > "$b.rs"  2>/dev/null
+        (cd ../mir && cargo run --release -q -- "../samples/$ll")        > "$b.mir" 2>/dev/null
+        (cd ../mir && cargo run --release -q -- "../samples/$ll" --rust) > "$b.rs"  2>/dev/null
         printf '%-22s -> %5s lines MIR, %4s lines Rust\n' "$ll" "$(wc -l < "$b.mir")" "$(wc -l < "$b.rs")"
     done
 else
-    echo "ponytail-mir did not build (nightly with rustc-dev missing?); .mir/.rs goldens left as they were" >&2
+    echo "stellar-diver-mir did not build (nightly with rustc-dev missing?); .mir/.rs goldens left as they were" >&2
 fi
 
 # The contract as soroban-sdk source, and the proof that it is one: it builds
 # against soroban-sdk for the contract target (offline; the sample's SDK is cached).
-(cd ../ponytail-mir && cargo run --release -q -- ../samples/three_bugs.inline.ll --contract) > three_bugs.contract.rs
+(cd ../mir && cargo run --release -q -- ../samples/three_bugs.inline.ll --contract) > three_bugs.contract.rs
 mkdir -p contract/src && cp three_bugs.contract.rs contract/src/lib.rs
 (cd contract && rustup run stable cargo build --release --target wasm32v1-none --offline -q) && echo "three_bugs.contract.rs -> builds as a contract"

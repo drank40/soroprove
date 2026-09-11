@@ -1,6 +1,6 @@
 ; sdk 25.3.2 rustc 1.97.1; fingerprints 25.3.2.txt: 1 of 17 helpers named, 0 by shape
-; ModuleID = 'ponytail'
-source_filename = "ponytail"
+; ModuleID = 'diver'
+source_filename = "diver"
 
 %Val = type { i64 }
 
@@ -17,10 +17,10 @@ declare i64 @soroban.val.payload(%Val) #0
 declare i64 @soroban.storage_type(i64) #0
 
 ; Function Attrs: memory(inaccessiblemem: readwrite)
-declare %Val @ponytail.unknown() #1
+declare %Val @diver.unknown() #1
 
 ; Function Attrs: memory(inaccessiblemem: readwrite)
-declare i64 @ponytail.unknown.i64() #1
+declare i64 @diver.unknown.i64() #1
 
 ; Function Attrs: noreturn
 declare void @soroban.trap() #2

@@ -1,5 +1,5 @@
 #![no_std]
-//! Reconstructed by ponytail-mir --contract: the contract as soroban-sdk source.
+//! Reconstructed by stellar-diver-mir --contract: the contract as soroban-sdk source.
 //! An export that could not be said at this level is a `todo!()` naming why.
 #![allow(unused_imports, unused_mut, unused_variables, unreachable_code, unused_parens, non_snake_case, clippy::all)]
 use soroban_sdk::{

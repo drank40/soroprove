@@ -14,7 +14,7 @@
 //!    `switch` names a real block for every case plus the default, so no
 //!    `br_table` arm can be dropped.
 //! 3. `Unknown` is bottom: it materialises only as a call to
-//!    `@ponytail.unknown`. There is no literal for a pass to substitute.
+//!    `@diver.unknown`. There is no literal for a pass to substitute.
 //!
 //! `--inline` then hands the module to LLVM: helpers become internal, O1's
 //! inliner folds the SDK's plumbing into the export, and reads of the data
@@ -45,7 +45,7 @@ pub(crate) use val::*;
 fn main() {
     let mut args = std::env::args().skip(1);
     let Some(path) = args.next() else {
-        eprintln!("usage: ponytail-wasm <contract.wasm> [export|--all|--inline|--sdk|--fingerprints]");
+        eprintln!("usage: stellar-diver <contract.wasm> [export|--all|--inline|--sdk|--fingerprints]");
         std::process::exit(2);
     };
     let only = args.next();
@@ -53,7 +53,7 @@ fn main() {
     match lower_module(&wasm, only.as_deref()) {
         Ok(ir) => print!("{ir}"),
         Err(e) => {
-            eprintln!("ponytail-wasm: module does not verify:\n{e}");
+            eprintln!("stellar-diver: module does not verify:\n{e}");
             std::process::exit(1);
         }
     }

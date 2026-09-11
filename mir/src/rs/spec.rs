@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 
 
-/// What `contractspecv0` declares, recovered from the lines ponytail-wasm
+/// What `contractspecv0` declares, recovered from the lines stellar-diver
 /// rendered: enough to name error codes, enum discriminants, union cases and
 /// export signatures. The shapes are ScVal shapes, not memory layout.
 #[derive(Default)]

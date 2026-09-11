@@ -232,8 +232,8 @@ impl<'ctx> Rt<'ctx> {
             from_payload: m.add_function("soroban.val.from_payload", val.fn_type(&[im], false), None),
             payload: m.add_function("soroban.val.payload", i64t.fn_type(&[vm], false), None),
             storage_type: m.add_function("soroban.storage_type", i64t.fn_type(&[im], false), None),
-            unknown_val: m.add_function("ponytail.unknown", val.fn_type(&[], false), None),
-            unknown_i64: m.add_function("ponytail.unknown.i64", i64t.fn_type(&[], false), None),
+            unknown_val: m.add_function("diver.unknown", val.fn_type(&[], false), None),
+            unknown_i64: m.add_function("diver.unknown.i64", i64t.fn_type(&[], false), None),
             trap: m.add_function("soroban.trap", ctx.void_type().fn_type(&[], false), None),
         };
         rt.trap.add_attribute(AttributeLoc::Function, attr(ctx, "noreturn", 0));
@@ -521,7 +521,7 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
             x = self.narrow(x);
             y = self.narrow(y);
         }
-        // ponytail: wasm traps on division by zero; LLVM's udiv/sdiv leave it undefined.
+        // diver: wasm traps on division by zero; LLVM's udiv/sdiv leave it undefined.
         let r = match op {
             "add" => self.b.build_int_add(x, y, "add"),
             "sub" => self.b.build_int_sub(x, y, "sub"),
@@ -622,10 +622,10 @@ pub(crate) fn table_global<'ctx>(ctx: &'ctx Context, m: &Module<'ctx>, md: &Mod,
     Some(g)
 }
 
-/// Why a bottom was made, when asked (`PONYTAIL_WHY_UNKNOWN`): the lowering's
+/// Why a bottom was made, when asked (`DIVER_WHY_UNKNOWN`): the lowering's
 /// own gaps, counted over a corpus.
 pub(crate) fn why(what: &str) {
-    if std::env::var_os("PONYTAIL_WHY_UNKNOWN").is_some() {
+    if std::env::var_os("DIVER_WHY_UNKNOWN").is_some() {
         eprintln!("unknown: {what}");
     }
 }
@@ -1256,7 +1256,7 @@ pub(crate) fn lower<'ctx>(
     // Every surviving block must end in a terminator. The body's own `end`
     // returns its value above, so the one candidate left is `exit`, reached by
     // a `br_if`/`br_table` aimed at the function's own label.
-    // ponytail: that value is not threaded to `exit`, so a conditional return
+    // diver: that value is not threaded to `exit`, so a conditional return
     // is bottom -- honest; thread it through an alloca if a corpus shows one.
     let blocks = f.get_basic_blocks();
     for bb in blocks {

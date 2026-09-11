@@ -1,4 +1,4 @@
-// MIR for `read` 0 ponytail
+// MIR for `read` 0 diver
 
 fn read(_1: Val, _2: Val) -> Val {
     debug a => _1;
@@ -117,7 +117,7 @@ fn read(_1: Val, _2: Val) -> Val {
     }
 }
 
-// MIR for `pick` 0 ponytail
+// MIR for `pick` 0 diver
 
 fn pick(_1: Val) -> Val {
     debug f => _1;
@@ -196,7 +196,7 @@ fn pick(_1: Val) -> Val {
     }
 }
 
-// MIR for `set_flag` 0 ponytail
+// MIR for `set_flag` 0 diver
 
 fn set_flag() -> Val {
     debug v_Symbol__f__ => const Val(11022_u64);
@@ -217,7 +217,7 @@ fn set_flag() -> Val {
     }
 }
 
-// MIR for `f15` 0 ponytail
+// MIR for `f15` 0 diver
 
 fn f15() -> () {
     debug v_Error_type_0__code_1_ => const Val(4294967299_u64);
@@ -234,7 +234,7 @@ fn f15() -> () {
     }
 }
 
-// MIR for `f24` 0 ponytail
+// MIR for `f24` 0 diver
 
 fn f24() -> ! {
     let mut _0: !;
@@ -245,7 +245,7 @@ fn f24() -> ! {
     }
 }
 
-// MIR for `f25` 0 ponytail
+// MIR for `f25` 0 diver
 
 fn f25() -> ! {
     debug frame => _1;

@@ -9,7 +9,7 @@ use crate::*;
 /// segment at a constant address. A load from an unwritten segment at a
 /// constant address IS a constant -- that is where `&true` and the static keys
 /// behind every outlined `storage().set` live.
-/// ponytail: a store through a pointer into a segment is invisible here. Rust
+/// diver: a store through a pointer into a segment is invisible here. Rust
 /// keeps mutable statics out of rodata, so this is the decompiler's usual bet;
 /// `written` catches the direct `static mut` case.
 #[derive(Default)]

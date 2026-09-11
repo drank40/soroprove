@@ -1,9 +1,9 @@
 [package]
-name = "ponytail-mir"
+name = "stellar-diver-mir"
 version = "0.1.0"
 edition = "2021"
 
 # rustc itself comes in through rustc_private; inkwell reads the .ll that
-# ponytail-wasm --inline wrote, with the same LLVM.
+# stellar-diver --inline wrote, with the same LLVM.
 [dependencies]
 inkwell = { version = "0.10", features = ["llvm18-1-prefer-dynamic"] }

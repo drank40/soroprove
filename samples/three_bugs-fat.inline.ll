@@ -1,6 +1,6 @@
 ; sdk 25.3.2 rustc 1.97.1; fingerprints 25.3.2.txt: 1 of 17 helpers named, 0 by shape
-; ModuleID = 'ponytail'
-source_filename = "ponytail"
+; ModuleID = 'diver'
+source_filename = "diver"
 target datalayout = "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20"
 
 %Val = type { i64 }

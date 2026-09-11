@@ -3,12 +3,12 @@
 Each `.wasm` here has four checked-in goldens next to it, one pipeline: `.ll`
 is `--all`, every function as lowered; `.inline.ll` is `--inline`, the exports
 after LLVM has folded the SDK plumbing into them; `.mir` is the MIR
-`../ponytail-mir` builds from that IR inside rustc; `.rs` is the Rust it emits
+`../mir` builds from that IR inside rustc; `.rs` is the Rust it emits
 from that MIR. `./build.sh` regenerates all of it; `git diff samples/` is then
 the regression gate.
 
 `cargo test` here lowers every `.wasm` in all three IR modes and asserts the
-module passes `module.verify()`; `cargo test` in `../ponytail-mir` runs
+module passes `module.verify()`; `cargo test` in `../mir` runs
 `three_bugs.inline.ll` through MIR and Rust and compiles the Rust with stable
 rustc. A sample that stops verifying or type-checking fails one of them.
 
@@ -90,9 +90,9 @@ vanished. Helpers the cost model leaves outlined stay in the file as `define
 internal`. Forcing `alwaysinline` on all of them was tried first: 5.7 GB and
 no result on a 187-function contract.
 
-## `ponytail-mir`: wasm -> LLVM -> MIR -> Rust
+## `stellar-diver-mir`: wasm -> LLVM -> MIR -> Rust
 
-From the `--inline` IR, `../ponytail-mir` (a nightly crate on `rustc_private`)
+From the `--inline` IR, `../mir` (a nightly crate on `rustc_private`)
 makes the MIR rustc's own. It generates a stub crate from the `.ll`'s
 declarations -- `Val` and `StorageType`, one `extern "C"` per host function
 and intrinsic, one static per wasm global, one empty `fn` per defined function
@@ -105,7 +105,7 @@ GVN, copy propagation and dead-code passes (`-Zmir-opt-level=3`).
 `optimized_mir` is what gets printed and what the Rust is emitted from.
 
 **Types.** wasm has two scalar types, and on wasm32 a pointer is always `i32`
-and a Val always `i64`; `ponytail-wasm` records that on every parameter and
+and a Val always `i64`; `stellar-diver` records that on every parameter and
 return as a `wasm.type` attribute. `infer.rs` narrows it from the uses, each an
 exact constraint: a value turned into an address is a pointer; one wrapped as
 a Val is a Val; one at a host-call position takes that position's ABI type
@@ -123,7 +123,7 @@ a silent one.
 **The spec.** `contractspecv0` is the one section that names things: the
 exported functions' parameters and declared types, and the user-defined
 types -- structs with field names, unions with cases, integer and error enums
-with values. `ponytail-wasm` decodes it (`stellar-xdr`, protocol 25) and
+with values. `stellar-diver` decodes it (`stellar-xdr`, protocol 25) and
 carries it into the IR: per export, `spec.name`/`spec.type` on each parameter
 and a `spec.sig`; module-wide, one named-metadata line per entry. The MIR
 stage then names the parameters (`pick(mut f: Val)`, `read(mut a: Val, mut b:
@@ -222,9 +222,9 @@ fn f3(mut a0: Val) { unsafe { fail_with_error(a0); return; } }
 fn f4() -> ! { unsafe { trap(); } }
 ```
 
-    ponytail-wasm contract.wasm --inline > contract.inline.ll
-    cd ponytail-mir && cargo run --release -- ../contract.inline.ll          # MIR
-    cd ponytail-mir && cargo run --release -- ../contract.inline.ll --rust   # Rust, from the MIR
+    stellar-diver contract.wasm --inline > contract.inline.ll
+    cd mir && cargo run --release -- ../contract.inline.ll          # MIR
+    cd mir && cargo run --release -- ../contract.inline.ll --rust   # Rust, from the MIR
 
 Across the corpus below: 67 of 67 binaries, 1568 functions, build MIR that
 rustc accepts without a diagnostic and emit Rust that stable rustc accepts,
@@ -263,7 +263,7 @@ every function, iterated to a fixpoint, make it interprocedural: a helper's
 returned shape, with its parameters as placeholders, is substituted at each
 call; a helper that uses a parameter as a key reports the access at its
 callers (`has: deposit via f45`); a symbol whose text position is constant
-only in a caller is read from the data itself, which `ponytail-wasm` passes
+only in a caller is read from the data itself, which `stellar-diver` passes
 along as `soroban.rodata`. The spec gives the names, the uses give the roles
 and the keys the spec never had.
 
@@ -311,7 +311,7 @@ that is a helper's result the shape pass could not follow -- a value loaded
 from memory, a symbol computed at run time, a multi-value block -- which the
 schema lists as `f66::lc`, the function's own local, rather than as a shape.
 
-## `ponytail-mir --contract`: back to soroban-sdk source
+## `stellar-diver-mir --contract`: back to soroban-sdk source
 
 The other output of the same analysis: the contract as the source it was
 compiled from, as far as the shapes carry. The spec's types become their
@@ -395,13 +395,13 @@ the SDK fingerprint table, and the trap stubs are `panic`.
 
 A contract is mostly the SDK: conversions, storage internals, panics,
 compiler-builtins. The binary says which SDK and rustc built it
-(`contractmetav0`: `rssdkver`, `rsver`; `ponytail-wasm x.wasm --sdk` prints
+(`contractmetav0`: `rssdkver`, `rsver`; `stellar-diver x.wasm --sdk` prints
 them), and for a given version the SDK's functions are known exactly, so
 `fingerprints/gen.sh <sdk-version> [rust-toolchain]` builds the reference
 contract in `fingerprints/ref/` against that version with symbol names kept,
 lifts it, and writes `<version>.txt` (or `<version>+rustc<ver>.txt`): one line
 per SDK/core function -- two fingerprints and the demangled path. The table
-lands in `$PONYTAIL_FINGERPRINTS`, else `~/.cache/ponytail-wasm/fingerprints`;
+lands in `$DIVER_FINGERPRINTS`, else `~/.cache/stellar-diver/fingerprints`;
 the tables the samples and tests need are checked in here, and are searched
 too. Every lift picks the table nearest the binary's version (toolchain match
 preferred), names each helper whose fingerprint it knows, stamps the path as
@@ -434,7 +434,7 @@ Those are not copied here — clone that repo and point the binary at them:
 
 ```sh
 for f in <soroban-ret>/benchmark-data/mainnet/*.wasm; do
-    ./target/release/ponytail-wasm "$f" --all >/dev/null || echo "FAILED $f"
+    ./target/release/stellar-diver "$f" --all >/dev/null || echo "FAILED $f"
 done
 ```
 

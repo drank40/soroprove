@@ -13,9 +13,9 @@ set -u
 root=${1:?usage: corpus.sh <soroban-ret checkout> [out dir]}
 out=${2:-$(mktemp -d)}
 cd "$(dirname "$0")/.."
-WASM=./target/release/ponytail-wasm
-MIR=./ponytail-mir/target/release/ponytail-mir
-[ -x "$WASM" ] && [ -x "$MIR" ] || { echo "build both crates first (cargo build --release; cd ponytail-mir && cargo build --release)" >&2; exit 2; }
+WASM=./target/release/stellar-diver
+MIR=./mir/target/release/stellar-diver-mir
+[ -x "$WASM" ] && [ -x "$MIR" ] || { echo "build both crates first (cargo build --release; cd mir && cargo build --release)" >&2; exit 2; }
 
 lifted=0; lift_fail=0
 # samples/errors.wasm and samples/test_udt.wasm are fixtures of that corpus already.
@@ -23,18 +23,18 @@ for w in "$root"/benchmark-data/mainnet/*.wasm "$root"/tests/fixtures/*.wasm sam
     b=$(basename "$w" .wasm)
     if $WASM "$w" --inline > "$out/$b--inline.ll" 2> "$out/$b.lift.err"; then lifted=$((lifted + 1)); else lift_fail=$((lift_fail + 1)); echo "LIFT-FAIL $b: $(head -1 "$out/$b.lift.err")"; fi
 done
-echo "lifted $lifted, failed $lift_fail; bottoms (calls to ponytail.unknown): $(cat "$out"/*.ll | grep -c 'call .*@ponytail.unknown')"
+echo "lifted $lifted, failed $lift_fail; bottoms (calls to diver.unknown): $(cat "$out"/*.ll | grep -c 'call .*@diver.unknown')"
 echo "helpers named by SDK fingerprints: $(grep -h '^; sdk' "$out"/*.ll | sed -E 's/.*: ([0-9]+) of ([0-9]+) helpers named.*/\1 \2/' | awk '{n+=$1; t+=$2} END {print n" of "t}')"
 
 ok=0; fail=0
 for ll in "$out"/*--inline.ll; do
     b=$(basename "$ll" --inline.ll)
     # cargo run, not the binary: librustc_driver is found through the toolchain.
-    if ! (cd ponytail-mir && timeout 300 cargo run --release -q -- "$ll" --rust) > "$out/$b.rs" 2> "$out/$b.err"; then fail=$((fail + 1)); echo "RS-FAIL $b: $(grep -m1 -E 'ponytail-mir:|^error|panicked' "$out/$b.err" | cut -c1-160)"; continue; fi
+    if ! (cd mir && timeout 300 cargo run --release -q -- "$ll" --rust) > "$out/$b.rs" 2> "$out/$b.err"; then fail=$((fail + 1)); echo "RS-FAIL $b: $(grep -m1 -E 'stellar-diver-mir:|^error|panicked' "$out/$b.err" | cut -c1-160)"; continue; fi
     if timeout 120 rustc --crate-type lib --edition 2021 --emit metadata -o "$out/$b.rmeta" "$out/$b.rs" 2> "$out/$b.tc.err"; then ok=$((ok + 1)); else fail=$((fail + 1)); echo "TYPECHECK-FAIL $b: $(grep -m1 '^error' "$out/$b.tc.err" | cut -c1-160)"; fi
-    (cd ponytail-mir && timeout 300 cargo run --release -q -- "$ll" --contract) > "$out/$b.contract.rs" 2>/dev/null || echo "CONTRACT-FAIL $b"
+    (cd mir && timeout 300 cargo run --release -q -- "$ll" --contract) > "$out/$b.contract.rs" 2>/dev/null || echo "CONTRACT-FAIL $b"
 done
-echo "rust: $ok type-check, $fail failed; functions ponytail-mir dropped: $(cat "$out"/*.err | grep -c 'ponytail-mir:')"
+echo "rust: $ok type-check, $fail failed; functions stellar-diver-mir dropped: $(cat "$out"/*.err | grep -c 'stellar-diver-mir:')"
 rows=$(cat "$out"/*.rs | grep -cE '^//   (persistent|instance|temporary|\?)')
 alts=$(cat "$out"/*.rs | grep -cE '^//   (persistent|instance|temporary|\?) +.*(::\{| \| )')
 locals=$(cat "$out"/*.rs | grep -cE '^//   (persistent|instance|temporary|\?) +[A-Za-z_0-9]+::[a-z_][a-z_0-9]* ')

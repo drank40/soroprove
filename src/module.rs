@@ -211,7 +211,7 @@ pub(crate) fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, St
     md.mem.written = writes_data(&bodies, &md, &imports, &local_sigs);
 
     let ctx = Context::create();
-    let m = ctx.create_module("ponytail");
+    let m = ctx.create_module("diver");
     let rt = Rt::new(&ctx, &m);
     // The declared ABI rides along as named metadata, one line per entry.
     for l in &spec.lines {

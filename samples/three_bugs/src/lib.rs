@@ -1,5 +1,5 @@
 #![no_std]
-//! One contract that exercises all three bug classes ponytail-wasm exists to
+//! One contract that exercises all three bug classes stellar-diver exists to
 //! prevent, so a single build is the whole regression corpus.
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,

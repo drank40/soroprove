@@ -1,4 +1,4 @@
-// MIR for `hello` 0 ponytail
+// MIR for `hello` 0 diver
 
 fn hello(_1: Val) -> Val {
     debug flag => _1;
@@ -91,7 +91,7 @@ fn hello(_1: Val) -> Val {
     }
 }
 
-// MIR for `Env_fail_with_error` 0 ponytail
+// MIR for `Env_fail_with_error` 0 diver
 
 fn Env_fail_with_error(_1: Val) -> () {
     debug a0 => _1;
@@ -109,7 +109,7 @@ fn Env_fail_with_error(_1: Val) -> () {
     }
 }
 
-// MIR for `panic_fmt` 0 ponytail
+// MIR for `panic_fmt` 0 diver
 
 fn panic_fmt() -> ! {
     let mut _0: !;

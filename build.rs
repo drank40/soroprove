@@ -47,7 +47,7 @@ fn main() {
         }
     }
     out.push_str("];\n");
-    out.push_str(&format!("pub const HOST_FN_COUNT: usize = {n};\n"));
+    out.push_str(&format!("#[allow(dead_code)]\npub const HOST_FN_COUNT: usize = {n};\n"));
 
     let dst = PathBuf::from(env::var("OUT_DIR").unwrap()).join("hostfns.rs");
     fs::write(dst, out).unwrap();

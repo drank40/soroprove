@@ -49,7 +49,7 @@ fn val_payload_1_is_true_not_one() {
 #[test]
 fn unknown_never_becomes_a_literal() {
     let ir = build(vec![Operator::Return], 1).unwrap();
-    assert!(ir.contains("@ponytail.unknown()"), "{ir}");
+    assert!(ir.contains("@diver.unknown()"), "{ir}");
     assert!(!ir.contains("ret %Val zeroinitializer"));
 }
 
@@ -183,7 +183,7 @@ fn fingerprints_name_the_sdk_helpers() {
     // The table for the sample's own SDK version is checked in; exact
     // fingerprints name what the reference built the same way, shapes
     // name what register allocation laid out differently.
-    std::env::set_var("PONYTAIL_FINGERPRINTS", concat!(env!("CARGO_MANIFEST_DIR"), "/fingerprints"));
+    std::env::set_var("DIVER_FINGERPRINTS", concat!(env!("CARGO_MANIFEST_DIR"), "/fingerprints"));
     let wasm = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/three_bugs.wasm")).unwrap();
     let ir = lower_module(&wasm, Some("--all")).unwrap();
     assert!(ir.starts_with("; sdk 25.3.2 rustc 1.97.1; fingerprints 25.3.2.txt: 4 of 43 helpers named, 3 by shape\n"), "{}", ir.lines().next().unwrap_or(""));

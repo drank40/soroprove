@@ -1,4 +1,4 @@
-//! wasm -> (ponytail-wasm --inline) LLVM IR -> MIR -> Rust.
+//! wasm -> (stellar-diver --inline) LLVM IR -> MIR -> Rust.
 //!
 //! The MIR is rustc's, not a by-product. A stub crate generated from the
 //! `.ll`'s own declarations -- the two ABI types, one `extern "C"` per host
@@ -131,27 +131,27 @@ impl Callbacks for Lift {
             std::io::Write::write_all(&mut out, text.as_bytes()).expect("write");
         } else {
             for body in &bodies {
-                let d = MirDumper::new(tcx, "ponytail", body).expect("-Zdump-mir=ponytail is passed");
+                let d = MirDumper::new(tcx, "diver", body).expect("-Zdump-mir=diver is passed");
                 d.dump_mir_to_writer(body, &mut out).expect("write MIR");
                 std::io::Write::write_all(&mut out, b"\n").expect("write");
             }
         }
         for (n, e) in FAILED.lock().unwrap().iter() {
-            eprintln!("ponytail-mir: {n}: {e}");
+            eprintln!("stellar-diver-mir: {n}: {e}");
         }
         Compilation::Stop
     }
 }
 
 fn fatal(msg: &str) -> ! {
-    eprintln!("ponytail-mir: {msg}");
+    eprintln!("stellar-diver-mir: {msg}");
     std::process::exit(1)
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let ll = args.get(1).filter(|a| !a.starts_with("--")).cloned().unwrap_or_else(|| {
-        eprintln!("usage: ponytail-mir <contract.inline.ll> [--rust|--contract] [--no-validate]");
+        eprintln!("usage: stellar-diver-mir <contract.inline.ll> [--rust|--contract] [--no-validate]");
         std::process::exit(2)
     });
     let rust = args.iter().any(|a| a == "--rust");
@@ -171,7 +171,7 @@ fn main() {
     LLVM.set(Llvm { m, fns, sigs }).ok().expect("set once");
 
     // The dump filter below also matches item paths, and a derived impl's
-    // path carries its file name: keep "ponytail" out of the stub's, and send
+    // path carries its file name: keep "diver" out of the stub's, and send
     // whatever rustc dumps on its own account to a directory that goes away.
     let scratch = std::env::temp_dir().join(format!("lift-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).unwrap_or_else(|e| fatal(&e.to_string()));
@@ -187,7 +187,7 @@ fn main() {
         // rustc's full MIR pipeline, inliner included.
         "-Zmir-opt-level=3".into(),
         // Gates MirDumper; the printer behind -Zdump-mir.
-        "-Zdump-mir=ponytail".into(),
+        "-Zdump-mir=diver".into(),
         format!("-Zdump-mir-dir={}", scratch.join("mir_dump").to_string_lossy()),
         format!("--sysroot={}", sysroot()),
     ];

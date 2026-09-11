@@ -326,7 +326,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     /// knows it, its constant). Stores along the dominator chain, in order,
     /// through a slot or a pointer into the frame; a store anywhere else, or
     /// a call handed a pointer into the frame, forgets what it may have
-    /// overwritten -- from that pointer's offset on. ponytail: a callee
+    /// overwritten -- from that pointer's offset on. diver: a callee
     /// writing below the pointer it was given is not Rust; not considered.
     pub(super) fn frame_words(&self, bb: BasicBlock, o: &Operand<'tcx>) -> HashMap<u64, (String, Option<u64>)> {
         let Some((arr, base)) = self.array_behind_at(o, 0) else { return HashMap::new() };

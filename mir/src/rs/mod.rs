@@ -96,7 +96,7 @@ fn summaries<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'tcx>], s
     // last pass emits with the complete set.
     let mut prev = Inter::default();
     for _ in 0..8 {
-        // ponytail: a summary chain deeper than 8 calls stays partly unresolved (shown as `_`).
+        // diver: a summary chain deeper than 8 calls stays partly unresolved (shown as `_`).
         let cur = RefCell::new(Inter::default());
         for body in bodies {
             Fn_::new(tcx, env, body, spec, &prev, &cur, false).emit()?;

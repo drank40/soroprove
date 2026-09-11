@@ -149,7 +149,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             let e = self.wrap_ret(e);
             self.sdk_bind(l, e);
         } else if uses == 1 && defs <= 1 {
-            // ponytail: a storage read inlined at its one use; a write in between would reorder it. Not seen.
+            // diver: a storage read inlined at its one use; a write in between would reorder it. Not seen.
             self.inlined.insert(l, e);
         } else if uses > 0 {
             let n = self.sdk_name(l);

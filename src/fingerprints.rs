@@ -84,7 +84,7 @@ pub(crate) fn fingerprint_table(fps: &[(u64, u64)], names: &HashMap<u32, String>
         let fi = n_imports + i as u32;
         let Some(n) = names.get(&fi) else { continue };
         let full = format!("{:#}", rustc_demangle::demangle(n));
-        if exported.contains(&fi) || full.contains("ponytail_ref") {
+        if exported.contains(&fi) || full.contains("diver_ref") {
             continue;
         }
         let _ = writeln!(out, "{exact:016x} {shape:016x} {full}");
@@ -116,14 +116,14 @@ impl Table {
 /// The cached table nearest the binary's SDK version: `<dir>/<sdk>.txt`, or
 /// `<sdk>+rustc<ver>.txt` when the reference was built with a chosen
 /// toolchain (preferred when it is the binary's). The dir is
-/// `PONYTAIL_FINGERPRINTS`; else both ~/.cache/ponytail-wasm/fingerprints,
+/// `DIVER_FINGERPRINTS`; else both ~/.cache/stellar-diver/fingerprints,
 /// which gen.sh fills, and the tables checked in with this source. Returns
 /// the table and a note for the IR header.
 pub(crate) fn load_fingerprints(sdk: Option<&str>, rustc: Option<&str>) -> (Table, String) {
-    let dirs: Vec<String> = match std::env::var("PONYTAIL_FINGERPRINTS") {
+    let dirs: Vec<String> = match std::env::var("DIVER_FINGERPRINTS") {
         Ok(d) => vec![d],
         Err(_) => vec![
-            format!("{}/.cache/ponytail-wasm/fingerprints", std::env::var("HOME").unwrap_or_default()),
+            format!("{}/.cache/stellar-diver/fingerprints", std::env::var("HOME").unwrap_or_default()),
             concat!(env!("CARGO_MANIFEST_DIR"), "/fingerprints").to_string(),
         ],
     };

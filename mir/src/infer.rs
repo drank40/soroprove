@@ -359,7 +359,7 @@ pub fn infer(m: &Module) -> Sigs {
         let t = if evs.contains(&Ev::TagCheck) && c.contains(&PTy::Val) {
             PTy::Val
         } else if evs.contains(&Ev::MaybePtr) && !int_op && c.contains(&PTy::Ptr) {
-            // ponytail: `p + i` marks both as pointer-or-index; without other
+            // diver: `p + i` marks both as pointer-or-index; without other
             // evidence the pointer wins for both. A mislabelled index still
             // type-checks (it is added as an integer either way).
             PTy::Ptr
