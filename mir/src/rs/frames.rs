@@ -1,9 +1,13 @@
 //! Frames: Val arrays, literal arrays, words read through pointer parameters and the arms they decide.
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use rustc_middle::mir::*;
 use rustc_middle::ty::{self};
 
 use super::*;
+
+/// Byte offset in a frame -> the values it may hold, each under switch arms.
+pub(super) type Words = HashMap<u64, Vec<(Vec<Cond>, String, Option<u64>)>>;
 
 impl<'a, 'tcx> Fn_<'a, 'tcx> {
     /// Everything computed from `&raw mut arr`: casts, the exposed address,
@@ -302,18 +306,37 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     /// Walks rustc's dominator tree; an arm applies when the block on the
     /// path is that arm's target.
     pub(super) fn conds_of(&self, bb: BasicBlock) -> Vec<Cond> {
+        if let Some(c) = self.conds_memo.borrow().get(&bb) {
+            return c.clone();
+        }
+        let out = self.conds_walk(bb);
+        self.conds_memo.borrow_mut().insert(bb, out.clone());
+        out
+    }
+
+    fn conds_walk(&self, bb: BasicBlock) -> Vec<Cond> {
         let doms = self.body.basic_blocks.dominators();
         let mut out = Vec::new();
         let mut child = bb;
         while let Some(d) = doms.immediate_dominator(child) {
             if let TerminatorKind::SwitchInt { discr, targets } = &self.body.basic_blocks[d].terminator().kind {
-                if let Some((p, off)) = self.param_load(discr) {
-                    let word = format!("{}@{off}", self.local(p));
-                    match targets.iter().find(|(_, t)| *t == child) {
-                        Some((v, _)) => out.push((word, vec![v as u64], false)),
-                        None if targets.otherwise() == child => out.push((word, targets.iter().map(|(v, _)| v as u64).collect(), true)),
-                        None => {}
-                    }
+                // A word read through a pointer parameter, `a0@8`; or the
+                // parameter itself, `a0`, an integer the caller passed (an
+                // enum's discriminant split off its payload). diver: a
+                // narrowing cast of the parameter compares the caller's
+                // whole constant; enum discriminants are small.
+                let word = if let Some((p, off)) = self.param_load(discr) {
+                    format!("{}@{off}", self.local(p))
+                } else if let Some((p, 0)) = self.param_ptr(discr, 0) {
+                    self.local(p)
+                } else {
+                    child = d;
+                    continue;
+                };
+                match targets.iter().find(|(_, t)| *t == child) {
+                    Some((v, _)) => out.push((word, vec![v as u64], false)),
+                    None if targets.otherwise() == child => out.push((word, targets.iter().map(|(v, _)| v as u64).collect(), true)),
+                    None => {}
                 }
             }
             child = d;
@@ -323,102 +346,246 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
 
     /// The words written into the frame an argument points to, as of a call
     /// in `bb`: byte offset from the pointer -> (the value as the contract
-    /// knows it, its constant). Stores along the dominator chain, in order,
-    /// through a slot or a pointer into the frame; a store anywhere else, or
-    /// a call handed a pointer into the frame, forgets what it may have
-    /// overwritten -- from that pointer's offset on. diver: a callee
-    /// writing below the pointer it was given is not Rust; not considered.
+    /// knows it, its constant). One value where every path agrees; the
+    /// alternatives otherwise.
     pub(super) fn frame_words(&self, bb: BasicBlock, o: &Operand<'tcx>) -> HashMap<u64, (String, Option<u64>)> {
         let Some((arr, base)) = self.array_behind_at(o, 0) else { return HashMap::new() };
-        let derived = self.derived_from(arr);
+        self.words_at(bb, self.body.basic_blocks[bb].statements.len(), arr)
+            .into_iter()
+            .filter_map(|(k, vs)| {
+                let o = k.checked_sub(base)?;
+                let (s, konst) = match vs.as_slice() {
+                    [(_, s, k)] => (s.clone(), *k),
+                    _ => (alternatives(vs.iter().map(|v| v.1.clone()).collect()), None),
+                };
+                Some((o, (s, konst)))
+            })
+            .collect()
+    }
+
+    /// The Val words of frame array `arr` as of statement `upto` of `bb`
+    /// (past the end: its terminator too): byte offset -> the values it may
+    /// hold, each with the switch arms it was stored under. Stores flow
+    /// along every path into the block, merging where paths join: one value
+    /// where they agree, else one per path, under that path's arms. A store
+    /// at an unknown offset, or a call handed a pointer into the frame,
+    /// forgets what it may have overwritten -- from that pointer's offset
+    /// on -- except the SDK's small-symbol encoder, whose result is known. A
+    /// loop forgets the offsets its body touches. diver: a callee writing
+    /// below the pointer it was given is not Rust; not considered.
+    pub(super) fn words_at(&self, bb: BasicBlock, upto: usize, arr: Local) -> Words {
+        let mut words = self.words_start(bb, arr, &mut HashSet::new());
+        self.run_block(bb, upto, arr, &mut words);
+        words
+    }
+
+    /// The words at the entry of `bb`: what every predecessor leaves, merged.
+    fn words_start(&self, bb: BasicBlock, arr: Local, active: &mut HashSet<BasicBlock>) -> Words {
+        if bb == START_BLOCK {
+            return Words::new();
+        }
+        if let Some(w) = self.words_memo.borrow().get(&(arr, bb, false)) {
+            return w.clone();
+        }
         let doms = self.body.basic_blocks.dominators();
-        let mut chain = vec![bb];
-        while let Some(d) = doms.immediate_dominator(*chain.last().unwrap()) {
-            chain.push(d);
-        }
-        chain.reverse();
-        // (offset, value) of a store, None for one at an unknown offset.
-        let store = |a: &(Place<'tcx>, Rvalue<'tcx>)| -> Option<Option<(u64, (String, Option<u64>))>> {
-            let off = if a.0.local == arr {
-                match a.0.projection.as_slice() {
-                    [PlaceElem::ConstantIndex { offset, .. }] => Some(offset * 8),
-                    _ => None,
-                }
-            } else if matches!(a.0.projection.as_slice(), [PlaceElem::Deref]) && derived.contains(&a.0.local) {
-                self.array_behind_at(&Operand::Copy(Place::from(a.0.local)), 0).map(|(_, k)| k)
-            } else {
-                return None; // not a store into this frame
-            };
-            let (val, k) = match &a.1 {
-                Rvalue::Use(op) => (self.key_shape(op).ok(), self.konst_u64(op)),
-                rv => (self.as_val_expr(rv).ok(), None),
-            };
-            Some(off.zip(val).map(|(off, v)| (off, (v, k))))
-        };
-        // The byte ranges a block's call may write into the frame: a pointer
-        // into it handed to a callee that writes through that parameter. The
-        // host's unpacks write exactly `len` Vals; a lifted callee, from the
-        // pointer on.
-        let call_writes = |data: &BasicBlockData<'tcx>| -> Vec<(u64, Option<u64>)> {
-            let Some(Terminator { kind: TerminatorKind::Call { func, args, .. }, .. }) = &data.terminator else { return vec![] };
-            let name = self.callee_name(func).unwrap_or_default();
-            let ops: Vec<Operand<'tcx>> = args.iter().map(|a| a.node.clone()).collect();
-            args.iter()
-                .enumerate()
-                .filter_map(|(j, a)| {
-                    let (x, k) = self.array_behind_at(&a.node, 0)?;
-                    if x != arr {
-                        return None;
-                    }
-                    let extent = self.write_extent(func, j)?;
-                    let exact = matches!((name.as_str(), j), ("vec_unpack_to_linear_memory", 1) | ("map_unpack_to_linear_memory", 2));
-                    let end = if exact { self.len_arg(&name, &ops).map(|n| k + 8 * n) } else { extent.map(|e| k + e) };
-                    Some((k, end))
-                })
-                .collect()
-        };
-        let clobber = |words: &mut HashMap<u64, (String, Option<u64>)>, (k, end): (u64, Option<u64>)| {
-            words.retain(|off, _| *off < k || end.is_some_and(|e| *off >= e));
-        };
-        let mut words: HashMap<u64, (String, Option<u64>)> = HashMap::new();
-        for b in &chain {
-            let data = &self.body.basic_blocks[*b];
-            for st in &data.statements {
-                let StatementKind::Assign(a) = &st.kind else { continue };
-                match store(a) {
-                    Some(Some((off, v))) => {
-                        words.insert(off, v);
-                    }
-                    Some(None) => words.clear(),
-                    None => {}
-                }
-            }
-            if *b != bb {
-                for r in call_writes(data) {
-                    clobber(&mut words, r);
-                }
-            }
-        }
-        // Anything off the chain that may have run: forget what it touches.
-        for (b, data) in self.body.basic_blocks.iter_enumerated() {
-            if chain.contains(&b) {
+        active.insert(bb);
+        let mut ends: Vec<(BasicBlock, Words)> = Vec::new();
+        let mut looped = false;
+        for &p in &self.body.basic_blocks.predecessors()[bb] {
+            // diver: an irreducible cycle is cut where the walk first meets it.
+            if active.contains(&p) || doms.dominates(bb, p) {
+                looped = true;
                 continue;
             }
-            for st in &data.statements {
-                let StatementKind::Assign(a) = &st.kind else { continue };
-                match store(a) {
-                    Some(Some((off, _))) => {
-                        words.remove(&off);
-                    }
-                    Some(None) => words.clear(),
-                    None => {}
+            ends.push((p, self.words_end(p, arr, active)));
+        }
+        active.remove(&bb);
+        let mut merged = Words::new();
+        if let Some((_, first)) = ends.first() {
+            for off in first.keys() {
+                let Some(vals) = ends.iter().map(|(p, w)| w.get(off).map(|v| (*p, v))).collect::<Option<Vec<_>>>() else { continue };
+                let same = |v: &Vec<(Vec<Cond>, String, Option<u64>)>| v.len() == 1 && v[0].1 == vals[0].1[0].1 && v[0].2 == vals[0].1[0].2;
+                if vals.iter().all(|(_, v)| same(v)) {
+                    merged.insert(*off, vec![(vec![], vals[0].1[0].1.clone(), vals[0].1[0].2)]);
+                    continue;
                 }
-            }
-            for r in call_writes(data) {
-                clobber(&mut words, r);
+                // One entry per value: a value reached under several sets of
+                // arms keeps the arms they share -- the outer ones, which
+                // `conds_of` lists last.
+                let mut entry: Vec<(Vec<Cond>, String, Option<u64>)> = Vec::new();
+                for (p, v) in &vals {
+                    let cp = self.conds_of(*p);
+                    for (c, s, k) in v.iter() {
+                        let c = if c.is_empty() { cp.clone() } else { c.clone() };
+                        match entry.iter_mut().find(|(_, s2, k2)| s2 == s && k2 == k) {
+                            Some((c2, ..)) => {
+                                let n = c.iter().rev().zip(c2.iter().rev()).take_while(|(a, b)| a == b).count();
+                                *c2 = c2[c2.len() - n..].to_vec();
+                            }
+                            None => entry.push((c, s.clone(), *k)),
+                        }
+                    }
+                }
+                merged.insert(*off, entry);
             }
         }
-        words.into_iter().filter_map(|(k, v)| k.checked_sub(base).map(|o| (o, v))).collect()
+        if looped {
+            // diver: a loop body's stores are forgotten, not read.
+            let derived = self.derived_rc(arr);
+            for (b, data) in self.body.basic_blocks.iter_enumerated() {
+                if doms.dominates(bb, b) {
+                    for st in &data.statements {
+                        if let StatementKind::Assign(a) = &st.kind {
+                            match self.frame_store_off(arr, &derived, &a.0) {
+                                Some(Some(off)) => {
+                                    merged.remove(&off);
+                                }
+                                Some(None) => merged.clear(),
+                                None => {}
+                            }
+                        }
+                    }
+                    for r in self.call_writes(data, arr) {
+                        Self::clobber(&mut merged, r);
+                    }
+                }
+            }
+        }
+        self.words_memo.borrow_mut().insert((arr, bb, false), merged.clone());
+        merged
+    }
+
+    /// The words at the end of `bb`, its terminator applied.
+    fn words_end(&self, bb: BasicBlock, arr: Local, active: &mut HashSet<BasicBlock>) -> Words {
+        if let Some(w) = self.words_memo.borrow().get(&(arr, bb, true)) {
+            return w.clone();
+        }
+        let mut w = self.words_start(bb, arr, active);
+        self.run_block(bb, usize::MAX, arr, &mut w);
+        self.words_memo.borrow_mut().insert((arr, bb, true), w.clone());
+        w
+    }
+
+    /// The locals that hold a pointer into `arr`, computed once.
+    fn derived_rc(&self, arr: Local) -> Rc<HashSet<Local>> {
+        if let Some(d) = self.derived_memo.borrow().get(&arr) {
+            return d.clone();
+        }
+        let d = Rc::new(self.derived_from(arr));
+        self.derived_memo.borrow_mut().insert(arr, d.clone());
+        d
+    }
+
+    /// The offset a store into the frame writes (None when unknown); None
+    /// when the store is elsewhere.
+    fn frame_store_off(&self, arr: Local, derived: &HashSet<Local>, pl: &Place<'tcx>) -> Option<Option<u64>> {
+        if pl.local == arr {
+            return Some(match pl.projection.as_slice() {
+                [PlaceElem::ConstantIndex { offset, .. }] => Some(offset * 8),
+                _ => None,
+            });
+        }
+        if matches!(pl.projection.as_slice(), [PlaceElem::Deref]) && derived.contains(&pl.local) {
+            return Some(self.array_behind_at(&Operand::Copy(Place::from(pl.local)), 0).map(|(_, k)| k));
+        }
+        None
+    }
+
+    /// Apply the statements of `b` before `upto`, and its terminator when
+    /// `upto` is past them all, to `words`.
+    fn run_block(&self, b: BasicBlock, upto: usize, arr: Local, words: &mut Words) {
+        let data = &self.body.basic_blocks[b];
+        let derived = self.derived_rc(arr);
+        for st in data.statements.iter().take(upto) {
+            let StatementKind::Assign(a) = &st.kind else { continue };
+            match self.frame_store(arr, &derived, a) {
+                Some(Some((off, vs))) => {
+                    words.insert(off, vs);
+                }
+                Some(None) => words.clear(),
+                None => {}
+            }
+        }
+        if upto <= data.statements.len() {
+            return;
+        }
+        if let Some(enc) = self.encoder_words(data, arr) {
+            for (off, v) in enc {
+                words.insert(off, vec![(vec![], v.0, v.1)]);
+            }
+            return;
+        }
+        for r in self.call_writes(data, arr) {
+            Self::clobber(words, r);
+        }
+    }
+
+    /// A store into the frame: its offset and values (None at an unknown
+    /// offset); None when the store is elsewhere.
+    fn frame_store(&self, arr: Local, derived: &HashSet<Local>, a: &(Place<'tcx>, Rvalue<'tcx>)) -> Option<Option<(u64, Vec<(Vec<Cond>, String, Option<u64>)>)>> {
+        let off = self.frame_store_off(arr, derived, &a.0)?;
+        let vals = match &a.1 {
+            // A local with a value per arm stores one per arm.
+            Rvalue::Use(op) => match self.source_local(op).and_then(|l| self.shapes.get(&l)).filter(|v| v.len() > 1) {
+                Some(v) => Some(v.iter().map(|(c, s)| (c.clone(), s.clone(), None)).collect()),
+                None => self.key_shape(op).ok().map(|s| vec![(vec![], s, self.konst_u64(op))]),
+            },
+            rv => self.as_val_expr(rv).ok().map(|s| vec![(vec![], s, None)]),
+        };
+        Some(off.zip(vals))
+    }
+
+    /// The byte ranges a block's call may write into the frame: a pointer
+    /// into it handed to a callee that writes through that parameter. The
+    /// host's unpacks write exactly `len` Vals; a lifted callee, from the
+    /// pointer on.
+    fn call_writes(&self, data: &BasicBlockData<'tcx>, arr: Local) -> Vec<(u64, Option<u64>)> {
+        let Some(Terminator { kind: TerminatorKind::Call { func, args, .. }, .. }) = &data.terminator else { return vec![] };
+        let name = self.callee_name(func).unwrap_or_default();
+        let ops: Vec<Operand<'tcx>> = args.iter().map(|a| a.node.clone()).collect();
+        args.iter()
+            .enumerate()
+            .filter_map(|(j, a)| {
+                let (x, k) = self.array_behind_at(&a.node, 0)?;
+                if x != arr {
+                    return None;
+                }
+                let extent = self.write_extent(func, j)?;
+                let exact = matches!((name.as_str(), j), ("vec_unpack_to_linear_memory", 1) | ("map_unpack_to_linear_memory", 2));
+                let end = if exact { self.len_arg(&name, &ops).map(|n| k + 8 * n) } else { extent.map(|e| k + e) };
+                Some((k, end))
+            })
+            .collect()
+    }
+
+    fn clobber(words: &mut Words, (k, end): (u64, Option<u64>)) {
+        words.retain(|off, _| *off < k || end.is_some_and(|e| *off >= e));
+    }
+
+    /// What the SDK's small-symbol encoder writes into the frame it is
+    /// handed, when its text is a literal: `Ok` at the pointer, the symbol
+    /// a word on.
+    fn encoder_words(&self, data: &BasicBlockData<'tcx>, arr: Local) -> Option<Vec<(u64, (String, Option<u64>))>> {
+        let Some(Terminator { kind: TerminatorKind::Call { func, args, .. }, .. }) = &data.terminator else { return None };
+        if !self.prev.encoders.contains(&self.callee_name(func)?) {
+            return None;
+        }
+        let [out, pos, len] = &args[..] else { return None };
+        let (x, k) = self.array_behind_at(&out.node, 0)?;
+        if x != arr {
+            return None;
+        }
+        let text = self.spec.text_at(self.konst_u64(&pos.node)?, self.konst_u64(&len.node)?)?;
+        let sym = match self.spec.union_case(&text) {
+            Some(case) => format!("Symbol({text:?}) /* {case} */"),
+            None => format!("Symbol({text:?})"),
+        };
+        Some(vec![(k, ("0".into(), Some(0))), (k + 8, (sym, None))])
+    }
+
+    /// A frame: an array of words, Vals or integers.
+    pub(super) fn is_frame(&self, l: Local) -> bool {
+        matches!(self.body.local_decls[l].ty.kind(), ty::Array(e, _) if *e == self.env.val || e.is_integral())
     }
 
     /// The length a host call is told, as a constant.
@@ -457,7 +624,12 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 Rvalue::Use(o) => self.source_local(o),
                 _ => None,
             };
-            out[k as usize] = Some((self.as_val_expr(&a.1).ok()?, src));
+            // A parameter stored as a word is that parameter, not `Val(a1)`.
+            let e = match src.filter(|l| (1..=self.body.arg_count).contains(&l.as_usize())) {
+                Some(p) => self.local(p),
+                None => self.as_val_expr(&a.1).ok()?,
+            };
+            out[k as usize] = Some((e, src));
         }
         out.into_iter().collect()
     }

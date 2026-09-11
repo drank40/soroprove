@@ -72,6 +72,8 @@ struct Inter {
     /// helper that is the SDK's `Symbol::new` / `String::from_str`. Read off
     /// the final summaries.
     text_helpers: HashMap<String, (usize, usize, &'static str)>,
+    /// The SDK's `SymbolSmall::try_from_bytes`, by what it computes.
+    encoders: HashSet<String>,
 }
 
 /// `Symbol(@Val::u32(a0 as u32), Val::u32(a1 as u32))`, every return of the
@@ -94,10 +96,28 @@ fn summaries<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'tcx>], s
     // sharpens once its callees' are known: each pass reads the previous
     // pass's summaries and writes fresh ones, until they stop changing; the
     // last pass emits with the complete set.
-    let mut prev = Inter::default();
+    // The small-symbol encoder: six bits a character under tag 14. Those are
+    // the Val encoding, not the compiler's, so no fingerprint is needed.
+    // diver: three parameters and the two constants; not checked to write
+    // its result through the first.
+    let has_const = |b: &Body<'tcx>, op: BinOp, k: u128| {
+        b.basic_blocks.iter().flat_map(|d| &d.statements).any(|st| match &st.kind {
+            StatementKind::Assign(a) => match &a.1 {
+                Rvalue::BinaryOp(o, ab) if *o == op => matches!(&ab.1, Operand::Constant(c) if c.const_.try_to_scalar_int().map(|i| i.to_bits(i.size())) == Some(k)),
+                _ => false,
+            },
+            _ => false,
+        })
+    };
+    let encoders: HashSet<String> = bodies
+        .iter()
+        .filter(|b| b.arg_count == 3 && has_const(b, BinOp::Shl, 6) && has_const(b, BinOp::BitOr, 14))
+        .map(|b| tcx.item_name(b.source.def_id()).to_string())
+        .collect();
+    let mut prev = Inter { encoders: encoders.clone(), ..Default::default() };
     for _ in 0..8 {
         // diver: a summary chain deeper than 8 calls stays partly unresolved (shown as `_`).
-        let cur = RefCell::new(Inter::default());
+        let cur = RefCell::new(Inter { encoders: encoders.clone(), ..Default::default() });
         for body in bodies {
             Fn_::new(tcx, env, body, spec, &prev, &cur, false).emit()?;
         }
@@ -135,6 +155,8 @@ fn summaries<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'tcx>], s
     };
     let mut renames: HashMap<String, (String, String)> = HashMap::new();
     let mut used: HashSet<String> = HashSet::new();
+    let mut encs: Vec<&String> = prev.encoders.iter().collect();
+    encs.sort();
     // Two helpers for one derive (a monomorphisation, a wrapper): numbered.
     let name = |used: &mut HashSet<String>, base: String| -> String {
         let mut n = base.clone();
@@ -145,6 +167,11 @@ fn summaries<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'tcx>], s
         }
         n
     };
+    for f in encs {
+        let id = name(&mut used, "SymbolSmall_try_from_bytes".into());
+        renames.insert(f.clone(), (id, "/// The SDK's `SymbolSmall::try_from_bytes`: a short symbol packed from its text.\n".into()));
+        prev.text_helpers.insert(f.clone(), (1, 2, "Symbol"));
+    }
     let mut fs: Vec<&String> = prev.ret_shapes.keys().collect();
     fs.sort();
     for f in fs {
@@ -297,6 +324,10 @@ struct Fn_<'a, 'tcx> {
     /// line of their own: the expression, and the rvalue it came from so a
     /// consumer can still see its shape.
     folded: HashMap<Local, (String, Rvalue<'tcx>)>,
+    /// The frame words at each block's entry, once computed.
+    words_memo: RefCell<HashMap<(Local, BasicBlock, bool), frames::Words>>,
+    derived_memo: RefCell<HashMap<Local, std::rc::Rc<HashSet<Local>>>>,
+    conds_memo: RefCell<HashMap<BasicBlock, Vec<Cond>>>,
     /// Output lines with their nesting depth; indentation is applied at the end.
     out: Vec<(usize, String)>,
     depth: usize,
@@ -382,6 +413,9 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             inter,
             final_pass,
             folded: HashMap::new(),
+            words_memo: RefCell::new(HashMap::new()),
+            derived_memo: RefCell::new(HashMap::new()),
+            conds_memo: RefCell::new(HashMap::new()),
             out: Vec::new(),
             depth: 0,
             open: Vec::new(),

@@ -281,6 +281,12 @@ pub(crate) struct Fun<'ctx, 'a> {
     /// backend does.
     frame: Option<(PointerValue<'ctx>, u64)>,
     frame_local: Option<u32>,
+    /// Bytes of the frame below the prologue's stack pointer: what the body
+    /// pushes part-way (`global.get 0; i32.const k; i32.sub; global.set 0`
+    /// around one call); and where the stack pointer is now, as a frame
+    /// offset, while it is known.
+    bias: i64,
+    sp: Option<i64>,
     /// Locals assigned once, with an address in the frame: reading one is
     /// that address, not an integer that lost its provenance.
     frame_alias: HashMap<u32, i64>,
@@ -413,7 +419,7 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
     /// `frame + off` as a pointer, when the whole access lies inside the frame.
     fn frame_slot(&mut self, a: SV<'ctx>, off: u64, bits: u32) -> Option<PointerValue<'ctx>> {
         let (SV::Frame(fo), Some((fr, size))) = (a, self.frame) else { return None };
-        let o = fo.checked_add(off as i64)?;
+        let o = fo.checked_add(off as i64)?.checked_add(self.bias)?;
         let end = (o as u64).checked_add((bits / 8) as u64)?;
         (o >= 0 && end <= size).then(|| self.frame_ptr(fr, o))
     }
@@ -467,7 +473,7 @@ impl<'ctx, 'a> Fun<'ctx, 'a> {
             SV::Frame(o) => {
                 let v = match self.frame {
                     Some((fr, _)) => {
-                        let p = self.frame_ptr(fr, o);
+                        let p = self.frame_ptr(fr, o + self.bias);
                         SV::Reg(self.b.build_ptr_to_int(p, self.rt.i64t, "fp").expect("ptrtoint").into())
                     }
                     None => {
@@ -682,6 +688,8 @@ pub(crate) fn lower<'ctx>(
         n: 0,
         frame: None,
         frame_local: None,
+        bias: 0,
+        sp: Some(0),
         frame_alias: HashMap::new(),
     };
 
@@ -729,14 +737,37 @@ pub(crate) fn lower<'ctx>(
         }
         _ => None,
     };
-    if let Some((n, l)) = prologue {
-        let sets = ops
-            .iter()
-            .filter(|o| matches!(o, Operator::LocalSet { local_index } | Operator::LocalTee { local_index } if *local_index == l))
-            .count();
-        if sets == 1 {
-            let fr = b.build_alloca(ctx.i8_type().array_type(n as u32), "frame").expect("alloca");
-            fun.frame = Some((fr, n));
+    let adopt = prologue.is_some_and(|(_, l)| set_counts.get(&l).copied() == Some(1));
+    // What the body pushes on the shadow stack part-way, below that frame:
+    // the deepest push. diver: pushes are taken as sequential, not nested.
+    let mut extra = 0u64;
+    for (i, w) in ops.windows(4).enumerate() {
+        if adopt && i == 0 {
+            continue;
+        }
+        let k = match w {
+            [Operator::GlobalGet { global_index: 0 }, Operator::I32Const { value: n }, Operator::I32Sub, _]
+            | [Operator::GlobalGet { global_index: 0 }, Operator::LocalTee { .. }, Operator::I32Const { value: n }, Operator::I32Sub]
+                if *n > 0 =>
+            {
+                *n as u64
+            }
+            [Operator::GlobalGet { global_index: 0 }, Operator::I32Const { value: n }, Operator::I32Add, _]
+            | [Operator::GlobalGet { global_index: 0 }, Operator::LocalTee { .. }, Operator::I32Const { value: n }, Operator::I32Add]
+                if *n < 0 =>
+            {
+                n.unsigned_abs() as u64
+            }
+            _ => continue,
+        };
+        extra = extra.max(k);
+    }
+    let n = if adopt { prologue.map_or(0, |(n, _)| n) } else { 0 };
+    if n + extra > 0 {
+        let fr = b.build_alloca(ctx.i8_type().array_type((n + extra) as u32), "frame").expect("alloca");
+        fun.frame = Some((fr, n + extra));
+        fun.bias = extra as i64;
+        if let Some((_, l)) = prologue.filter(|_| adopt) {
             fun.frame_local = Some(l);
             skip = 5;
         }
@@ -780,6 +811,10 @@ pub(crate) fn lower<'ctx>(
             continue;
         }
         match op {
+            // The stack pointer, while it points into the frame, is that offset.
+            Operator::GlobalGet { global_index: 0 } if fun.frame.is_some() && fun.sp.is_some() => {
+                fun.stack.push(SV::Frame(fun.sp.unwrap_or(0)));
+            }
             Operator::GlobalGet { global_index } => match m.get_global(&format!("g{global_index}")) {
                 Some(g) => {
                     let v = fun.b.build_load(rt.i64t, g.as_pointer_value(), &format!("g{global_index}")).expect("load");
@@ -792,10 +827,16 @@ pub(crate) fn lower<'ctx>(
             },
             Operator::GlobalSet { global_index } => {
                 let v = fun.pop();
-                // Restoring the stack pointer from a frame address: the frame
-                // is an alloca now, so there is nothing to restore.
-                if matches!(v, SV::Frame(_)) {
+                // Moving the stack pointer within the frame: the frame is an
+                // alloca now, so there is nothing to store, only where it is.
+                if let SV::Frame(o) = v {
+                    if *global_index == 0 {
+                        fun.sp = Some(o);
+                    }
                     continue;
+                }
+                if *global_index == 0 {
+                    fun.sp = None;
                 }
                 let iv = fun.use_int(v);
                 if let Some(g) = m.get_global(&format!("g{global_index}")) {

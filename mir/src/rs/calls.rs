@@ -39,6 +39,16 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                         continue;
                     }
                 }
+                // A Val read from a frame slot is what the paths to here stored there.
+                if let (Some(l), Rvalue::Use(Operand::Copy(p) | Operand::Move(p))) = (pl.as_local(), rv) {
+                    if let [PlaceElem::ConstantIndex { offset, .. }, rest @ ..] = p.projection.as_slice() {
+                        if (rest.is_empty() || matches!(rest, [PlaceElem::Field(..)])) && self.is_frame(p.local) {
+                            for (conds, s, _) in self.words_at(bb, si, p.local).remove(&(offset * 8)).unwrap_or_default() {
+                                self.push_shape_under(l, s, conds);
+                            }
+                        }
+                    }
+                }
                 if let Some(l) = pl.as_local().filter(|l| *l != Local::ZERO && l.as_usize() > self.body.arg_count) {
                     let uses = self.uses.get(&l).copied().unwrap_or(0);
                     if pure(rv) && uses == 0 {
@@ -63,6 +73,18 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     /// reassigning an operand of its definition?
     pub(super) fn use_follows(&self, bb: BasicBlock, si: usize, l: Local) -> bool {
         let def_mentions: Vec<Local> = mentions(self.body, bb, si).into_iter().filter(|m| *m != l).collect();
+        // A definition that reads memory does not cross a write to memory.
+        let mem = |p: &Place<'tcx>| p.projection.iter().any(|e| matches!(e, PlaceElem::Deref | PlaceElem::Index(_) | PlaceElem::ConstantIndex { .. }));
+        let proj = |o: &Operand<'tcx>| matches!(o, Operand::Copy(p) | Operand::Move(p) if mem(p));
+        let reads_mem = match self.body.basic_blocks[bb].statements.get(si).map(|s| &s.kind) {
+            Some(StatementKind::Assign(a)) => match &a.1 {
+                Rvalue::Use(o) | Rvalue::UnaryOp(_, o) | Rvalue::Cast(_, o, _) => proj(o),
+                Rvalue::BinaryOp(_, ab) => proj(&ab.0) || proj(&ab.1),
+                Rvalue::Aggregate(_, fs) => fs.iter().any(proj),
+                _ => false,
+            },
+            _ => false,
+        };
         let n = self.body.basic_blocks[bb].statements.len();
         for sj in si + 1..=n {
             let m = mentions(self.body, bb, sj);
@@ -70,6 +92,9 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 return true;
             }
             if let Some(StatementKind::Assign(a)) = self.body.basic_blocks[bb].statements.get(sj).map(|s| &s.kind) {
+                if reads_mem && mem(&a.0) {
+                    return false;
+                }
                 if let Some(d) = a.0.as_local() {
                     if def_mentions.contains(&d) {
                         return false;
@@ -114,14 +139,14 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                             .or_else(|| self.param_load(o).map(|(p, off)| format!("{}@{off}", self.local(p)))),
                     };
                     if let Some(sh) = sh {
-                        if dst == Local::ZERO {
-                            // Each alternative with the arms it was made under.
-                            let entries = src.and_then(|l| self.shapes.get(&l).cloned()).unwrap_or_else(|| vec![(self.conds_of(self.cur_bb), sh.clone())]);
-                            for (conds, s) in entries {
-                                self.returned(s, conds);
+                        // Each alternative with the arms it was made under.
+                        let entries = src.and_then(|l| self.shapes.get(&l).cloned()).unwrap_or_else(|| vec![(self.conds_of(self.cur_bb), sh.clone())]);
+                        for (conds, s) in entries {
+                            if dst == Local::ZERO {
+                                self.returned(s.clone(), conds.clone());
                             }
+                            self.push_shape_under(dst, s, conds);
                         }
-                        self.push_shape(dst, sh);
                     }
                 }
             }
@@ -270,12 +295,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         let shape = match (f.as_str(), &elems, &keys) {
             ("vec_new_from_linear_memory", Some(es), _) => {
                 let parts: Vec<String> = es.iter().map(|(e, src)| src.and_then(|l| self.shape_of(l)).unwrap_or_else(|| e.clone())).collect();
-                let sym = parts.first().and_then(|p| p.strip_prefix("Val::sym(\"").or_else(|| p.strip_prefix("Symbol(\""))).and_then(|r| r.split('"').next());
-                match sym.and_then(|s| self.spec.union_case(s)) {
-                    Some(case) if parts.len() == 1 => Some(case),
-                    Some(case) => Some(format!("{case}({})", parts[1..].join(", "))),
-                    None => Some(format!("Vec[{}]", parts.join(", "))),
-                }
+                Some(self.vec_case(parts))
             }
             ("symbol_new_from_linear_memory", _, _) if text.is_some() => {
                 let t = text.clone().unwrap_or_default();
@@ -305,14 +325,16 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                     // the callee's arms and fills its loads; a word it did not
                     // write keeps every alternative.
                     let frames: Vec<HashMap<u64, (String, Option<u64>)>> = args.iter().map(|a| self.frame_words(bb, &a.node)).collect();
-                    let word = |w: &str, params: &[String]| -> Option<(String, Option<u64>)> {
-                        let (p, off) = w.split_once('@')?;
-                        frames.get(params.iter().position(|x| x == p)?)?.get(&off.parse::<u64>().ok()?).cloned()
+                    let konst = |w: &str, params: &[String]| -> Option<u64> {
+                        match w.split_once('@') {
+                            Some((p, off)) => frames.get(params.iter().position(|x| x == p)?)?.get(&off.parse::<u64>().ok()?)?.1,
+                            None => self.konst_u64(&args[params.iter().position(|x| x == w)?].node),
+                        }
                     };
                     let out: Vec<String> = templates
                         .iter()
                         .filter(|(_, params, conds)| {
-                            conds.iter().all(|(w, vals, neg)| match word(w, params).and_then(|(_, k)| k) {
+                            conds.iter().all(|(w, vals, neg)| match konst(w, params) {
                                 Some(c) => vals.contains(&c) != *neg,
                                 None => true,
                             })
@@ -368,9 +390,19 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 s = format!("{s} // {n}");
             }
             if let Some(l) = destination.as_local() {
-                self.push_shape(l, sh.clone());
-                if l == Local::ZERO {
-                    self.returned(sh.clone(), self.conds_of(bb));
+                // One element with a value per arm: the vec has one per arm too.
+                let per_arm = elems.as_ref().filter(|_| f == "vec_new_from_linear_memory").and_then(|es| {
+                    let multi: Vec<usize> = (0..es.len()).filter(|&i| es[i].1.and_then(|l| self.shapes.get(&l)).is_some_and(|v| v.len() > 1)).collect();
+                    let [i] = multi[..] else { return None };
+                    let parts: Vec<String> = es.iter().map(|(e, src)| src.and_then(|l| self.shape_of(l)).unwrap_or_else(|| e.clone())).collect();
+                    let entries = self.shapes[&es[i].1?].clone();
+                    Some(entries.into_iter().map(|(c, s)| (c, self.vec_case(parts.iter().enumerate().map(|(j, p)| if j == i { s.clone() } else { p.clone() }).collect()))).collect::<Vec<_>>())
+                });
+                for (c, s) in per_arm.unwrap_or_else(|| vec![(self.conds_of(bb), sh.clone())]) {
+                    if l == Local::ZERO {
+                        self.returned(s.clone(), c.clone());
+                    }
+                    self.push_shape_under(l, s, c);
                 }
             }
         }
@@ -443,6 +475,17 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         s
     }
 
+    /// A vec of these elements, as the contract knows it: a union case when
+    /// the first is that case's symbol.
+    pub(super) fn vec_case(&self, parts: Vec<String>) -> String {
+        let sym = parts.first().and_then(|p| p.strip_prefix("Val::sym(\"").or_else(|| p.strip_prefix("Symbol(\""))).and_then(|r| r.split('"').next());
+        match sym.and_then(|s| self.spec.union_case(s)) {
+            Some(case) if parts.len() == 1 => case,
+            Some(case) => format!("{case}({})", parts[1..].join(", ")),
+            None => format!("Vec[{}]", parts.join(", ")),
+        }
+    }
+
     /// Every shape a local may hold, as one string. A local folded into its
     /// use never passed through `stmt`: if it is a word read through a
     /// pointer parameter, that is its shape.
@@ -456,9 +499,10 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         })
     }
 
-    /// A local takes on a shape on one more path: under the arms of the block being emitted.
-    pub(super) fn push_shape(&mut self, l: Local, shape: String) {
-        let conds = self.conds_of(self.cur_bb);
+    /// A local takes on a shape on one more path: under the arms given, or
+    /// those of the block being emitted.
+    pub(super) fn push_shape_under(&mut self, l: Local, shape: String, conds: Vec<Cond>) {
+        let conds = if conds.is_empty() { self.conds_of(self.cur_bb) } else { conds };
         let v = self.shapes.entry(l).or_default();
         if !v.iter().any(|(c, s)| *s == shape && *c == conds) {
             v.push((conds, shape));

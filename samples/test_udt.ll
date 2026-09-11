@@ -1910,16 +1910,14 @@ define void @f23() {
 entry:
   %l0 = alloca i64, align 8
   store i64 0, ptr %l0, align 4
-  %g0 = load i64, ptr @g0, align 4
-  %t = trunc i64 %g0 to i32
-  %sub = sub i32 %t, 16
-  %z = zext i32 %sub to i64
-  store i64 %z, ptr %l0, align 4
-  %ea = add i64 %z, 12
-  call void @soroban.store32(i64 %ea, i64 2)
-  %get = load i64, ptr %l0, align 4
-  %ea1 = add i64 %get, 12
-  %ld = call i64 @soroban.load32u(i64 %ea1)
+  %frame = alloca [16 x i8], align 1
+  %fp = ptrtoint ptr %frame to i64
+  store i64 %fp, ptr %l0, align 4
+  %slot12 = getelementptr i8, ptr %frame, i64 12
+  store i32 2, ptr %slot12, align 1
+  %slot121 = getelementptr i8, ptr %frame, i64 12
+  %ld = load i32, ptr %slot121, align 1
+  %zx = zext i32 %ld to i64
   ret void
 }
 
@@ -1927,22 +1925,19 @@ define void @f24() {
 entry:
   %l0 = alloca i64, align 8
   store i64 0, ptr %l0, align 4
-  %g0 = load i64, ptr @g0, align 4
-  %t = trunc i64 %g0 to i32
-  %sub = sub i32 %t, 16
-  %z = zext i32 %sub to i64
-  store i64 %z, ptr %l0, align 4
-  %ea = add i64 %z, 12
-  call void @soroban.store32(i64 %ea, i64 1)
-  %get = load i64, ptr %l0, align 4
-  %ea1 = add i64 %get, 12
-  %ld = call i64 @soroban.load32u(i64 %ea1)
-  %get2 = load i64, ptr %l0, align 4
-  %ea3 = add i64 %get2, 8
-  call void @soroban.store32(i64 %ea3, i64 3)
-  %get4 = load i64, ptr %l0, align 4
-  %ea5 = add i64 %get4, 8
-  %ld6 = call i64 @soroban.load32u(i64 %ea5)
+  %frame = alloca [16 x i8], align 1
+  %fp = ptrtoint ptr %frame to i64
+  store i64 %fp, ptr %l0, align 4
+  %slot12 = getelementptr i8, ptr %frame, i64 12
+  store i32 1, ptr %slot12, align 1
+  %slot121 = getelementptr i8, ptr %frame, i64 12
+  %ld = load i32, ptr %slot121, align 1
+  %zx = zext i32 %ld to i64
+  %slot8 = getelementptr i8, ptr %frame, i64 8
+  store i32 3, ptr %slot8, align 1
+  %slot82 = getelementptr i8, ptr %frame, i64 8
+  %ld3 = load i32, ptr %slot82, align 1
+  %zx4 = zext i32 %ld3 to i64
   ret void
 }
 

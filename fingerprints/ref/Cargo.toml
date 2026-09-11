@@ -2,6 +2,8 @@
 name = "diver_ref"
 version = "0.0.0"
 edition = "2021"
+# MSRV-aware resolution: an old toolchain gets dependency versions it can build.
+resolver = "3"
 
 [lib]
 crate-type = ["cdylib"]

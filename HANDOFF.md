@@ -126,7 +126,10 @@ i64-wide; i32 operations narrow their operands and widen their result
 Things it recovers: the shadow-stack frame (`global.get 0; i32.const N;
 i32.sub|add -N; local.tee; global.set 0`) as an `alloca`, with `SV::Frame`
 addresses that stay symbolic through `add`/`sub` by a constant and through
-once-assigned locals (`frame_alias`); linear memory (`Mem`: data segments,
+once-assigned locals (`frame_alias`); pushes the body makes part-way
+(`global.get 0; i32.const k; i32.sub; global.set 0` around one call, rustc
+1.86's derives do this) as `bias` bytes below that frame, the stack pointer
+tracked as a frame offset (`sp`) so `global.get 0` is an address; linear memory (`Mem`: data segments,
 zero past a segment's end, `written` if any store hits a segment at a
 constant address); the function table for `call_indirect` (`table_global`).
 
@@ -203,11 +206,24 @@ Then the layers that make it read like the contract:
   a parameter reports at its callers, `via fN`), `unpacks` (types a fn unpacks
   from the host), `param_writes` (which pointer params a fn writes through and
   how far), `fails` (panic wrappers by their error), `diverges`, `renames`
-  (derive names), `text_helpers` (`Symbol::new`-like helpers take `&str`).
+  (derive names), `text_helpers` (`Symbol::new`-like helpers take `&str`),
+  `encoders` (the SDK's `SymbolSmall::try_from_bytes`, recognised by its
+  constants: six bits a character under tag 14).
+- **Frame words** (`words_at`): what a frame slot holds at a statement, from
+  the stores on every path into its block, merged where paths join -- one
+  value where they agree, else one per path under that path's arms (a
+  `Vec<(Vec<Cond>, shape, const)>`); a writing callee clobbers, the encoder
+  writes its symbol, a loop forgets what its body touches. A local loaded
+  from a slot takes those values, so a derive's shared tail (`(sym,).into_val`
+  after a `match`) returns one shape per arm.
 - **Call sites**: `frame_words` reads what the caller wrote into a frame it
-  passes, along the dominator chain, less what a writing callee may have
-  clobbered, to select the callee's arm and fill its payload:
+  passes, less what a writing callee may have clobbered, to select the
+  callee's arm and fill its payload:
   `lc = BackstopDataKey_into_val(_59); // BackstopDataKey::PoolBalance(a1)`.
+  A `Cond` is on a word read through a pointer parameter (`a0@8`) or on an
+  integer parameter itself (`a0`: an enum's discriminant passed split from
+  its payload), which a constant argument selects:
+  `DataKey_into_val(3u64, arg_payload); // DataKey::Escrow(account)`.
 - **Derive recognition**: every return a case of one union / one struct's
   map -> `T_into_val`; unpacking one type's fields or cases -> `T_try_from_val`;
   functions that touch storage are getters/setters, not derives.
@@ -254,11 +270,11 @@ to widen it.
 | bottoms in lifted output | 4 (memory.size, memory.grow) |
 | binaries through MIR + stable rustc type-check | 68 / 68 |
 | functions stellar-diver-mir drops (indirect calls) | 7 |
-| helpers named by fingerprints | 298 of 2039 |
-| derives named | 78 |
-| derive `into_val` calls resolved to one case / left as alternatives | 188 / 67 |
-| storage rows / with alternatives / keyed by an unresolved local | 314 / 44 / 37 |
-| contract exports reconstructed whole | 55 of 712 |
+| helpers named by fingerprints | 296 of 2037 |
+| derives named | 81 |
+| derive `into_val` calls resolved to one case / left as alternatives | 203 / 73 |
+| storage rows / with alternatives / keyed by an unresolved local | 321 / 34 / 8 |
+| contract exports reconstructed whole | 57 of 711 |
 
 Blockers for the contract level, in order: calls into the contract's own
 helpers (`f16_`, `f23`: storage getters/setters), the `obj_to_i128/u128`
@@ -286,10 +302,12 @@ level did not reconstruct.
 4. **Indirect calls in MIR** (`mir.rs`): represent `__table` as a static of fn
    pointers and the call as a call through an element, or at least keep the
    function with the call as an opaque extern.
-5. **Frame words across clobbers**: 67 derive calls still see all cases
-   because a loop copies through a moving pointer into the same frame
-   (`param_writes` extent unknown). Bound the copy by its length argument when
-   it is a known memcpy.
+5. **Frame words across clobbers**: 73 derive calls still see all cases,
+   mostly a getter passing its own integer parameter on (`f56(fp, 75, .., 2)`
+   -> `DataKey_into_val(a3, 0)`: the getter's callers know the case, the
+   getter does not -- item 1 or 3 resolves it), some a loop copying through
+   a moving pointer into the same frame (`param_writes` extent unknown; bound
+   the copy by its length argument when it is a known memcpy).
 6. **Fingerprint coverage**: widen `fingerprints/ref` (Vec/Map/Bytes/String
    ops, more conversions, several call sites each) and generate tables for
    the corpus's toolchains (sdk 20.x/rustc 1.75-1.78, 22.0.7/1.81).
@@ -306,6 +324,14 @@ level did not reconstruct.
   on (the host's unpacks: exactly `len` Vals); writing below a pointer it was
   given is not Rust. A lifted callee's own writes are summarised, unbounded
   when a write goes through a moving pointer.
+- Frame words at a join: a value reached under several sets of arms keeps
+  the arms they share; an irreducible cycle is cut where the walk meets it;
+  a loop's body forgets, never reads. Shadow-stack pushes inside a body are
+  taken as sequential, not nested.
+- The small-symbol encoder is recognised by three parameters and the
+  constants 6 and 14 in its body, not checked to write through the first. A
+  switch on a narrowing cast of an integer parameter compares the caller's
+  whole constant.
 - `writes_data` distrusts *all* rodata if any store hits a data segment at a
   constant address (one corpus binary, `contract`).
 - A storage read with one use is inlined at its use in the contract output; a

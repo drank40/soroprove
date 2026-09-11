@@ -325,6 +325,7 @@ pub fn recursive(mut a: Val) -> Val {
         let mut vec_len_11: Val;
         let mut vec_front_14: Val;
         let mut ld19: u64;
+        let mut ld23: u64;
         let mut Map__a____b__: Val;
         let mut l0_0: Val;
         let mut _25: [u64; 4];
@@ -352,9 +353,10 @@ pub fn recursive(mut a: Val) -> Val {
                                 break 'b1;
                             }
                             _ => {
+                                ld23 = _25[2];
                                 _25[2] = _25[3];
-                                _25[1] = _25[2];
-                                Map__a____b__ = map_new_from_linear_memory(Val::u32(1048752) /* "a", "b" */, Val::u32(fp as u32), Val::u32(2)); // Map{ a: Val(_25[2]), b: Val(_25[3]) }
+                                _25[1] = ld23;
+                                Map__a____b__ = map_new_from_linear_memory(Val::u32(1048752) /* "a", "b" */, Val::u32(fp as u32), Val::u32(2)); // Map{ a: Val(ld23), b: Val(_25[3]) }
                                 l0_0 = Map__a____b__;
                             }
                         }
@@ -584,7 +586,7 @@ pub fn recursive_enum(mut a: Val, mut key: Val) -> Val {
                                                                                                                     ld179 = _103[5];
                                                                                                                     ld181 = _103[4];
                                                                                                                     (*_105) = 3u32;
-                                                                                                                    f30(fp, 1048780u64, 9u64);
+                                                                                                                    SymbolSmall_try_from_bytes(fp, "Recursive");
                                                                                                                     ld193 = (*_105);
                                                                                                                     match ld193 {
                                                                                                                         0 => {
@@ -1192,8 +1194,11 @@ fn f25(mut a0: u64, mut a1: u64) {
     }
 }
 
-fn f30(mut a0: u64, mut a1: u64, mut a2: u64) {
+/// The SDK's `SymbolSmall::try_from_bytes`: a short symbol packed from its text.
+fn SymbolSmall_try_from_bytes(mut a0: u64, s: &str) {
     unsafe {
+        let mut a1: u64 = s.as_ptr() as usize as u64;
+        let mut a2: u64 = s.len() as u64;
         let mut t9: u32;
         let mut v: u8;
         let mut zx: u64;
