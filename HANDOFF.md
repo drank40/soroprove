@@ -227,6 +227,12 @@ Then the layers that make it read like the contract:
 - **Derive recognition**: every return a case of one union / one struct's
   map -> `T_into_val`; unpacking one type's fields or cases -> `T_try_from_val`;
   functions that touch storage are getters/setters, not derives.
+- **Host ops -> SDK**: storage put/get/has/del/extend_ttl; `require_auth`;
+  `token::Client::transfer` (arguments read from the frame); `env.crypto()`
+  sha256/keccak256/secp256k1_recover; `to_xdr`; events; Vec/Map reads
+  (`len`, `get`, `contains_key`, `first_index_of`); numbers decoded from
+  Vals (`decode.rs`: a tag switch that reads a u128/u64/i128 out of a Val is
+  that number; encodings fold back). `update_current_contract_wasm`.
 - **The storage schema** in the header: every put/get/has/del/extend_ttl
   call, by durability, key, and uses.
 - **Field names**: a payload local landing under map key `pool` is named
@@ -301,11 +307,13 @@ level did not reconstruct.
    that flows to an export's `-> u128` is a `u128`), bodies through the same
    SDK mode. Storage getters/setters are the bulk. Without this most mainnet
    exports stay `todo!()`.
-2. **Numeric decodes as the parameter they decode.** In an export,
-   `obj_to_i128_lo64(a)`/`hi64(a)` plus the `I128Small` arm is the parameter
-   `a: i128`; `__multi3` on two known pairs is `a * b` (with overflow-checks
-   semantics), likewise `__udivti3` etc. Track a "wide value" as a (lo, hi)
-   pair of locals with a symbolic source. This unlocks every DeFi contract.
+2. **Wide arithmetic on decoded numbers** (the decode of a u128/u64/i128
+   parameter is DONE, `decode.rs`; the words are `lo(x)`/`hi(x)` and
+   encodings fold to `x`). Still to do: `__multi3` on two known (lo, hi)
+   pairs is `a * b` (overflow-checked), likewise `__udivti3`; and the
+   mutating Vec/Map ops (`vec_new`/`map_new` + `push_back`/`set`/`remove`),
+   which need a contract-compile gate to verify -- the corpus gate only
+   type-checks the `--rust` output, not the generated contract.
 3. **Typed storage reads.** `get_contract_data` followed by
    `T_try_from_val(out, val)` is `let x: T = env.storage()...get(&key).unwrap()`,
    and later frame reads are `x.field` (the derive's field order is the spec's,
