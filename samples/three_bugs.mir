@@ -238,6 +238,17 @@ fn set_flag() -> Val {
     }
 }
 
+// MIR for `panic_fmt` 0 diver
+
+fn panic_fmt() -> ! {
+    let mut _0: !;
+    let mut _1: !;
+
+    bb0: {
+        _1 = trap() -> unwind unreachable;
+    }
+}
+
 // MIR for `f37` 0 diver
 
 fn f37() -> () {
@@ -312,7 +323,7 @@ fn f51() -> ! {
         _7 = Offset(copy _1, const 20_isize);
         _14 = copy _7 as *mut u32 (PtrToPtr);
         (*_14) = copy _6;
-        _15 = trap() -> unwind unreachable;
+        _15 = panic_fmt() -> unwind unreachable;
     }
 }
 

@@ -931,7 +931,7 @@ c4:                                               ; preds = %entry
   br label %c1
 }
 
-; Function Attrs: noreturn
+; Function Attrs: noinline noreturn
 define internal fastcc void @panic() unnamed_addr #19 {
 entry:
   tail call fastcc void @panic_fmt_32()
@@ -1545,7 +1545,7 @@ fall14:                                           ; preds = %fall13
   br label %c8
 }
 
-; Function Attrs: noreturn
+; Function Attrs: noinline noreturn
 define internal fastcc void @panic_fmt_32() unnamed_addr #20 {
 entry:
   tail call void @soroban.trap()
@@ -1573,8 +1573,8 @@ attributes #15 = { "spec.sig"="fn add(a: UdtEnum, b: UdtEnum) -> i64" }
 attributes #16 = { "spec.sig"="fn recursive(a: UdtRecursive) -> Option<UdtRecursive>" }
 attributes #17 = { "spec.sig"="fn recursive_enum(a: RecursiveEnum, key: u32) -> Result<Option<RecursiveEnum>, Error>" }
 attributes #18 = { memory(write, inaccessiblemem: readwrite) "sdk.name"="<i64 as soroban_env_common::convert::TryFromVal<E,soroban_env_common::val::Val>>::try_from_val" }
-attributes #19 = { noreturn "sdk.name"="core::slice::index::slice_index_fail | core::result::unwrap_failed | core::panicking::panic" }
-attributes #20 = { noreturn "sdk.name"="core::panicking::panic_fmt" }
+attributes #19 = { noinline noreturn "sdk.name"="core::slice::index::slice_index_fail | core::result::unwrap_failed | core::panicking::panic" }
+attributes #20 = { noinline noreturn "sdk.name"="core::panicking::panic_fmt" }
 
 !soroban.spec = !{!0, !1, !2, !3, !4, !5, !6, !7, !8, !9}
 !soroban.keys = !{!10, !11, !12}

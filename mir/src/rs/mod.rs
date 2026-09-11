@@ -21,6 +21,7 @@ use rustc_middle::ty::{self, TyCtxt};
 use crate::mir::Env;
 
 mod calls;
+mod decode;
 mod frames;
 mod sdk;
 mod spec;
@@ -256,6 +257,32 @@ pub fn emit_contract<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'
     let prev = summaries(tcx, env, bodies, spec)?;
     let inter = RefCell::new(Inter::default());
     let mut out = String::from(CONTRACT_HEAD);
+    // The third-party crates the binary linked, inferred from the demangled
+    // names it kept: everything that is not the SDK, the Rust runtime, or the
+    // contract's own code. These are `Cargo.toml` dependencies to add.
+    let runtime = ["core", "alloc", "std", "compiler_builtins", "soroban_sdk", "soroban_env_common", "soroban_env_guest", "soroban_env_host"];
+    let prim = ["str", "bool", "char", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64"];
+    // The crate root of a demangled path: the first segment, only when the
+    // path is `crate::...` and the root is a plain crate identifier -- not a
+    // primitive (`<str as ...>`), a bare lang item (`rust_begin_unwind`), or
+    // the runtime.
+    let mut deps: Vec<String> = spec
+        .sdk
+        .values()
+        .filter(|p| p.contains("::"))
+        .filter_map(|p| p.trim_start_matches(['<', '&', ' ']).split("::").next())
+        .filter(|c| !c.is_empty() && c.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_') && !c.starts_with("__") && !runtime.contains(c) && !prim.contains(c))
+        .map(str::to_string)
+        .collect();
+    deps.sort();
+    deps.dedup();
+    if !deps.is_empty() {
+        out.push_str(&format!("// Inferred dependencies (add to Cargo.toml): {}.
+", deps.join(", ")));
+        out.push_str("// These crates ran in the binary; the exports below call into them.
+
+");
+    }
     for l in lines {
         out.push_str(&type_item(l));
     }
@@ -337,6 +364,11 @@ struct Fn_<'a, 'tcx> {
     words_memo: RefCell<HashMap<(Local, BasicBlock, bool), frames::Words>>,
     derived_memo: RefCell<HashMap<Local, std::rc::Rc<HashSet<Local>>>>,
     conds_memo: RefCell<HashMap<BasicBlock, Vec<Cond>>>,
+    phi_memo: RefCell<HashMap<Local, Option<(Local, u64)>>>,
+    dead_mentions: RefCell<Option<HashMap<Local, usize>>>,
+    may_derive_memo: RefCell<HashMap<Local, HashSet<Local>>>,
+    merges_memo: RefCell<HashMap<BasicBlock, Vec<BasicBlock>>>,
+    decodes: HashMap<BasicBlock, decode::Decode>,
     /// Output lines with their nesting depth; indentation is applied at the end.
     out: Vec<(usize, String)>,
     depth: usize,
@@ -425,6 +457,11 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             words_memo: RefCell::new(HashMap::new()),
             derived_memo: RefCell::new(HashMap::new()),
             conds_memo: RefCell::new(HashMap::new()),
+            phi_memo: RefCell::new(HashMap::new()),
+            dead_mentions: RefCell::new(None),
+            may_derive_memo: RefCell::new(HashMap::new()),
+            merges_memo: RefCell::new(HashMap::new()),
+            decodes: HashMap::new(),
             out: Vec::new(),
             depth: 0,
             open: Vec::new(),
@@ -432,6 +469,22 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         };
         me.val_arrays = me.find_val_arrays();
         me.name_fields();
+        // A decoded number's words are `lo(x)` and `hi(x)` of the Val it came from.
+        me.decodes = me.find_decodes();
+        for d in me.decodes.clone().values() {
+            let x = match me.call_def.get(&d.val) {
+                Some((callee, args)) if args.is_empty() => format!("{callee}()"),
+                _ => me.local(d.val),
+            };
+            for (l, part) in &d.parts {
+                let sh = match part {
+                    decode::Part::Lo => format!("lo({x})"),
+                    decode::Part::Hi => format!("hi({x})"),
+                    decode::Part::Whole => x.clone(),
+                };
+                me.push_shape_under(*l, sh, vec![]);
+            }
+        }
         let (literal, addr_locals) = me.find_literal_arrays();
         me.literal = literal;
         me.addr_locals = addr_locals;

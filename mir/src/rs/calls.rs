@@ -113,7 +113,12 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                     return Ok(()); // `_x = const ()`, or the destination of a void call
                 }
                 if self.sdk {
-                    self.sdk_stmt(pl, rv)?;
+                    // What the source level cannot say is shown as it is, marked.
+                    if let Err(e) = self.sdk_stmt(pl, rv) {
+                        let s = format!("{} = {}; // not reconstructed: {e}", self.place(pl), self.assign_expr(pl, rv)?);
+                        self.line(s);
+                        self.declared.insert(pl.local);
+                    }
                 } else {
                     let s = format!("{} = {};", self.place(pl), self.assign_expr(pl, rv)?);
                     self.line(s);
@@ -134,6 +139,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                     let val_agg = matches!(rv, Rvalue::Aggregate(..));
                     let sh = match o {
                         Operand::Constant(c) => c.const_.try_to_scalar_int().filter(|_| val_agg || c.const_.ty() == self.env.val).map(|i| self.val_str(i.to_bits(i.size()) as u64)),
+                        _ if val_agg && self.small_encode(o).is_some() => self.small_encode(o),
                         _ => src
                             .and_then(|l| self.shape_of(l).or_else(|| (l.as_usize() >= 1 && l.as_usize() <= self.body.arg_count).then(|| self.local(l))))
                             // A word read from what a caller built: the caller knows it.
@@ -301,6 +307,16 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 let parts: Vec<String> = es.iter().map(|(e, src)| src.and_then(|l| self.shape_of(l)).unwrap_or_else(|| e.clone())).collect();
                 Some(self.vec_case(parts))
             }
+            // A number re-encoded from its words: the number, once folded.
+            ("obj_from_u128_pieces" | "obj_from_i128_pieces", _, _) => Some(format!(
+                "{}({}, {})",
+                if f == "obj_from_u128_pieces" { "u128" } else { "i128" },
+                self.key_shape(&arg_ops[0]).unwrap_or_default(),
+                self.key_shape(&arg_ops[1]).unwrap_or_default()
+            )),
+            ("obj_from_u64" | "obj_from_i64" | "obj_from_timepoint" | "obj_from_duration", _, _) => {
+                Some(format!("{}({})", if f == "obj_from_i64" { "i64" } else { "u64" }, self.key_shape(&arg_ops[0]).unwrap_or_default()))
+            }
             ("symbol_new_from_linear_memory", _, _) if text.is_some() => {
                 let t = text.clone().unwrap_or_default();
                 Some(match self.spec.union_case(&t) {
@@ -355,7 +371,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                                     t = t.replace(&format!("{p}@{off}"), v);
                                 }
                             }
-                            self.resolve_text(substitute(&blank_words(&t), params, &arg_shapes))
+                            fold_wide(&self.resolve_text(substitute(&blank_words(&t), params, &arg_shapes)))
                         })
                         .collect();
                     Some(alternatives(out))
@@ -417,7 +433,12 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             }
         }
         if self.sdk {
-            self.sdk_call(&f, args, destination, shape.as_deref())?;
+            if let Err(e) = self.sdk_call(&f, args, destination, shape.as_deref()) {
+                self.line(format!("{s} // not reconstructed: {e}"));
+                if let Some(l) = destination.as_local().filter(|l| !self.body.local_decls[*l].ty.is_unit()) {
+                    self.declared.insert(l);
+                }
+            }
         } else {
             self.line(s);
         }
@@ -485,6 +506,26 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         s
     }
 
+    /// `(x << 8) | tag`: a number small enough to sit in the Val itself, as
+    /// the encoding it is (`u64(x)`, `u128(0, x)`), so it folds like the
+    /// object form.
+    pub(super) fn small_encode(&self, o: &Operand<'tcx>) -> Option<String> {
+        let Rvalue::BinaryOp(BinOp::BitOr, ab) = self.def_of(o)? else { return None };
+        let tag = self.konst_u64(&ab.1)?;
+        let Rvalue::BinaryOp(BinOp::Shl, xy) = self.def_of(&ab.0)? else { return None };
+        let shift = self.konst_u64(&xy.1)?;
+        let x = self.key_shape(&xy.0).ok()?;
+        Some(match (tag, shift) {
+            (10, 8) => format!("u128(0, {x})"),
+            (11, 8) => format!("i128(_, {x})"),
+            (6, 8) | (8, 8) | (9, 8) => format!("u64({x})"),
+            (7, 8) => format!("i64({x})"),
+            (4, 32) => format!("u32({x})"),
+            (5, 32) => format!("i32({x})"),
+            _ => return None,
+        })
+    }
+
     /// A vec of these elements, as the contract knows it: a union case when
     /// the first is that case's symbol.
     pub(super) fn vec_case(&self, parts: Vec<String>) -> String {
@@ -512,6 +553,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     /// A local takes on a shape on one more path: under the arms given, or
     /// those of the block being emitted.
     pub(super) fn push_shape_under(&mut self, l: Local, shape: String, conds: Vec<Cond>) {
+        let shape = fold_wide(&shape);
         let conds = if conds.is_empty() { self.conds_of(self.cur_bb) } else { conds };
         let v = self.shapes.entry(l).or_default();
         if !v.iter().any(|(c, s)| *s == shape && *c == conds) {
@@ -590,6 +632,9 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     /// Every local that may be computed from `root`, through any assignment:
     /// the may-alias closure, for what is not single-definition.
     pub(super) fn may_derive(&self, root: Local) -> HashSet<Local> {
+        if let Some(s) = self.may_derive_memo.borrow().get(&root) {
+            return s.clone();
+        }
         let mut set: HashSet<Local> = [root].into_iter().collect();
         loop {
             let before = set.len();
@@ -611,6 +656,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 }
             }
             if set.len() == before {
+                self.may_derive_memo.borrow_mut().insert(root, set.clone());
                 return set;
             }
         }

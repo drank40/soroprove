@@ -391,12 +391,26 @@ pub(crate) fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, St
         // does) and small shared ones, and drop what it inlined. Forcing
         // `alwaysinline` instead duplicates each shared helper into every call
         // site up the tree: 5.7 GB and no result on a 187-function contract.
+        // Library code -- compiler-builtins, alloc, core, rlp, anything
+        // named that is not the SDK -- stays a call: a u128 division or an
+        // RLP append inlined is a hundred lines nobody can name; as a call
+        // it is one line with its name on it.
+        const CRATES: [&str; 12] = ["core::", "alloc::", "std::", "compiler_builtins::", "rlp::", "bytes::", "hex::", "sha2::", "sha3::", "tiny_keccak::", "k256::", "ethabi::"];
+        let library: std::collections::HashSet<&str> = md
+            .fnames
+            .values()
+            .filter(|(_, full)| !full.contains("soroban") && CRATES.iter().any(|c| full.contains(c)))
+            .map(|(id, _)| id.as_str())
+            .collect();
         for f in m.get_functions() {
             let n = f.get_name().to_string_lossy().into_owned();
             if f.count_basic_blocks() == 0 || ex.contains(n.as_str()) || n.starts_with("soroban.") {
                 continue;
             }
             f.set_linkage(Linkage::Internal);
+            if library.contains(n.as_str()) {
+                f.add_attribute(AttributeLoc::Function, ctx.create_enum_attribute(inkwell::attributes::Attribute::get_named_enum_kind_id("noinline"), 0));
+            }
         }
         optimize(&m, &md.mem)?;
         strip_inline_suffixes(&m);

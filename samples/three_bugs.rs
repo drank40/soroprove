@@ -188,6 +188,13 @@ pub fn set_flag() -> Val {
     }
 }
 
+/// core::panicking::panic_fmt
+fn panic_fmt() -> ! {
+    unsafe {
+        trap();
+    }
+}
+
 fn f37() {
     unsafe {
         fail_with_error(Val::error(0, 1) /* Error::AnError */);
@@ -214,6 +221,6 @@ fn f51() -> ! {
         (*((frame.wrapping_offset(28isize) as *mut u16))) = 1u16;
         (*((frame.wrapping_offset(24isize) as *mut u32))) = 1048604u32;
         (*((frame.wrapping_offset(20isize) as *mut u32))) = (slot12 as u32);
-        trap();
+        panic_fmt();
     }
 }

@@ -16,6 +16,9 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
 
     /// Dominator-tree children of `bb` that are merge nodes, in RPO.
     pub(super) fn merges_under(&self, bb: BasicBlock) -> Vec<BasicBlock> {
+        if let Some(v) = self.merges_memo.borrow().get(&bb) {
+            return v.clone();
+        }
         let doms = self.body.basic_blocks.dominators();
         let mut v: Vec<BasicBlock> = self
             .body
@@ -24,6 +27,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             .filter(|c| *c != bb && self.rpo.contains_key(c) && doms.immediate_dominator(*c) == Some(bb) && self.is_merge(*c))
             .collect();
         v.sort_by_key(|c| self.rpo[c]);
+        self.merges_memo.borrow_mut().insert(bb, v.clone());
         v
     }
 
@@ -170,56 +174,66 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                     self.branch(bb, *t, tail)?;
                 }
             }
-            TerminatorKind::SwitchInt { discr, targets } if self.sdk => self.sdk_switch(bb, discr, targets, tail)?,
-            TerminatorKind::SwitchInt { discr, targets } => {
-                let d = strip_parens(self.operand(discr)?);
-                if discr.ty(&self.body.local_decls, self.tcx).is_bool() {
-                    let mut then = targets.otherwise();
-                    let mut els = targets.otherwise();
-                    for (v, t) in targets.iter() {
-                        if v == 0 { els = t } else { then = t }
-                    }
-                    let then_lines = self.capture(|s| s.branch(bb, then, tail))?;
-                    let else_lines = self.capture(|s| s.branch(bb, els, tail))?;
-                    match (then_lines.is_empty(), else_lines.is_empty()) {
-                        (true, true) => {}
-                        (false, true) => self.arm(format!("if {d}"), then_lines),
-                        (true, false) => self.arm(format!("if !{d}"), else_lines),
-                        (false, false) => {
-                            self.arm(format!("if {d}"), then_lines);
-                            let n = self.out.len();
-                            self.out[n - 1].1 = "} else {".into();
-                            self.out.extend(else_lines);
-                            self.line("}");
-                        }
-                    }
-                } else {
-                    let tag = self.is_tag(discr);
-                    // The tag consts are u64; an i32-wide tag is matched as u64.
-                    let d = if tag && discr.ty(&self.body.local_decls, self.tcx) == self.tcx.types.u32 { format!("{d} as u64") } else { d };
-                    self.line(format!("match {d} {{"));
-                    self.depth += 1;
-                    let en = self.enum_of(discr).map(str::to_string);
-                    for (v, t) in targets.iter() {
-                        let lines = self.capture(|s| s.branch(bb, t, tail))?;
-                        let pat = match (tag_name(v as u64), &en) {
-                            (Some(n), _) if tag => format!("Tag::{n}"),
-                            (_, Some(e)) => match self.spec.enum_case(e, v as u64) {
-                                Some(c) => format!("{v} /* {e}::{c} */"),
-                                None => v.to_string(),
-                            },
-                            _ => v.to_string(),
-                        };
-                        self.arm(format!("{pat} =>"), lines);
-                    }
-                    let lines = self.capture(|s| s.branch(bb, targets.otherwise(), tail))?;
-                    self.arm("_ =>".into(), lines);
-                    self.depth -= 1;
-                    self.line("}");
+            // SDK mode says what it can; a branch it cannot name is shown as it is.
+            TerminatorKind::SwitchInt { discr, targets } if self.sdk => {
+                if let Err(e) = self.sdk_switch(bb, discr, targets, tail) {
+                    self.line(format!("// not reconstructed: {e}"));
+                    self.raw_switch(bb, discr, targets, tail)?;
                 }
             }
+            TerminatorKind::SwitchInt { discr, targets } => self.raw_switch(bb, discr, targets, tail)?,
             other => return Err(format!("terminator {other:?}")),
         }
+        Ok(())
+    }
+
+    /// A switch as Rust: `if` on a bool, `match` otherwise, tags named.
+    pub(super) fn raw_switch(&mut self, bb: BasicBlock, discr: &Operand<'tcx>, targets: &SwitchTargets, tail: Option<BasicBlock>) -> R<()> {
+            let d = strip_parens(self.operand(discr)?);
+            if discr.ty(&self.body.local_decls, self.tcx).is_bool() {
+                let mut then = targets.otherwise();
+                let mut els = targets.otherwise();
+                for (v, t) in targets.iter() {
+                    if v == 0 { els = t } else { then = t }
+                }
+                let then_lines = self.capture(|s| s.branch(bb, then, tail))?;
+                let else_lines = self.capture(|s| s.branch(bb, els, tail))?;
+                match (then_lines.is_empty(), else_lines.is_empty()) {
+                    (true, true) => {}
+                    (false, true) => self.arm(format!("if {d}"), then_lines),
+                    (true, false) => self.arm(format!("if !{d}"), else_lines),
+                    (false, false) => {
+                        self.arm(format!("if {d}"), then_lines);
+                        let n = self.out.len();
+                        self.out[n - 1].1 = "} else {".into();
+                        self.out.extend(else_lines);
+                        self.line("}");
+                    }
+                }
+            } else {
+                let tag = self.is_tag(discr);
+                // The tag consts are u64; an i32-wide tag is matched as u64.
+                let d = if tag && discr.ty(&self.body.local_decls, self.tcx) == self.tcx.types.u32 { format!("{d} as u64") } else { d };
+                self.line(format!("match {d} {{"));
+                self.depth += 1;
+                let en = self.enum_of(discr).map(str::to_string);
+                for (v, t) in targets.iter() {
+                    let lines = self.capture(|s| s.branch(bb, t, tail))?;
+                    let pat = match (tag_name(v as u64), &en) {
+                        (Some(n), _) if tag => format!("Tag::{n}"),
+                        (_, Some(e)) => match self.spec.enum_case(e, v as u64) {
+                            Some(c) => format!("{v} /* {e}::{c} */"),
+                            None => v.to_string(),
+                        },
+                        _ => v.to_string(),
+                    };
+                    self.arm(format!("{pat} =>"), lines);
+                }
+                let lines = self.capture(|s| s.branch(bb, targets.otherwise(), tail))?;
+                self.arm("_ =>".into(), lines);
+                self.depth -= 1;
+                self.line("}");
+            }
         Ok(())
     }
 

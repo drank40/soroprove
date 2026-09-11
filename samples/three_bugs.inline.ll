@@ -140,8 +140,15 @@ entry:
   ret %Val %v_void
 }
 
+; Function Attrs: noinline noreturn
+define internal fastcc void @panic_fmt() unnamed_addr #11 {
+entry:
+  tail call void @soroban.trap()
+  unreachable
+}
+
 ; Function Attrs: memory(inaccessiblemem: readwrite)
-define internal fastcc "wasm.type"="i64" void @f37() unnamed_addr #11 {
+define internal fastcc "wasm.type"="i64" void @f37() unnamed_addr #12 {
 entry:
   %v_Error_type_0__code_1_ = tail call %Val @soroban.val.from_payload(i64 4294967299)
   %fail_with_error = tail call %Val @context.fail_with_error(%Val %v_Error_type_0__code_1_)
@@ -170,15 +177,15 @@ entry:
   %0 = ptrtoint ptr %slot12 to i32
   %slot20 = getelementptr inbounds i8, ptr %frame, i32 20
   store i32 %0, ptr %slot20, align 1
-  call void @soroban.trap()
+  call fastcc void @panic_fmt()
   unreachable
 }
 
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
-declare void @llvm.lifetime.start.p0(i64 immarg, ptr nocapture) #12
+declare void @llvm.lifetime.start.p0(i64 immarg, ptr nocapture) #13
 
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
-declare void @llvm.lifetime.end.p0(i64 immarg, ptr nocapture) #12
+declare void @llvm.lifetime.end.p0(i64 immarg, ptr nocapture) #13
 
 declare i64 @soroban.storage_type(i64)
 
@@ -193,8 +200,9 @@ attributes #7 = { "soroban.import"="v.g" "soroban.sig"="(U32Val, U32Val) -> VecO
 attributes #8 = { "spec.sig"="fn pick(f: Flag) -> Result<Symbol, Error>" }
 attributes #9 = { "spec.sig"="fn read(a: Address, b: Address) -> bool" }
 attributes #10 = { "spec.sig"="fn set_flag()" }
-attributes #11 = { memory(inaccessiblemem: readwrite) }
-attributes #12 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
+attributes #11 = { noinline noreturn "sdk.name"="core::panicking::panic_fmt" }
+attributes #12 = { memory(inaccessiblemem: readwrite) }
+attributes #13 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
 
 !soroban.spec = !{!0, !1, !2, !3, !4, !5, !6}
 !soroban.keys = !{!7}

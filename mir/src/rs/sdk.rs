@@ -31,7 +31,11 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         let is_val = self.body.local_decls[dst].ty == self.env.val || self.payloads.contains(&dst);
         let (defs, uses) = (self.defs.get(&dst).copied().unwrap_or(0), self.live_uses(dst));
         if is_val && uses > 0 && (defs > 1 || uses > 1) {
-            let e = value(self)?;
+            // What the shapes know the value to be beats how it was computed.
+            let e = match self.shape_of(dst).map(|sh| self.sdk_value(&sh)) {
+                Some(Ok(e)) => e,
+                _ => value(self)?,
+            };
             let n = self.sdk_name(dst);
             self.line(format!("{n} = {e};"));
             self.declared.insert(dst);
@@ -54,17 +58,26 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     /// Uses of `l` by statements that matter: a pure statement nothing reads
     /// is rustc's debuginfo, not a use.
     pub(super) fn live_uses(&self, l: Local) -> usize {
-        let mut n = self.uses.get(&l).copied().unwrap_or(0);
-        for (bb, data) in self.body.basic_blocks.iter_enumerated() {
-            for (si, st) in data.statements.iter().enumerate() {
-                if let StatementKind::Assign(a) = &st.kind {
-                    if pure(&a.1) && a.0.as_local().is_some_and(|d| self.uses.get(&d).copied().unwrap_or(0) == 0) && mentions(self.body, bb, si).contains(&l) {
-                        n = n.saturating_sub(1);
+        // Uses minus the mentions inside pure statements nothing reads (rustc
+        // debuginfo). Computed once for every local in a single pass, not
+        // rescanned per call -- the per-statement path asks for this a lot.
+        if self.dead_mentions.borrow().is_none() {
+            let mut dead: HashMap<Local, usize> = HashMap::new();
+            for (bb, data) in self.body.basic_blocks.iter_enumerated() {
+                for (si, st) in data.statements.iter().enumerate() {
+                    if let StatementKind::Assign(a) = &st.kind {
+                        if pure(&a.1) && a.0.as_local().is_some_and(|d| self.uses.get(&d).copied().unwrap_or(0) == 0) {
+                            for m in mentions(self.body, bb, si) {
+                                *dead.entry(m).or_default() += 1;
+                            }
+                        }
                     }
                 }
             }
+            *self.dead_mentions.borrow_mut() = Some(dead);
         }
-        n
+        let dead = self.dead_mentions.borrow().as_ref().and_then(|d| d.get(&l).copied()).unwrap_or(0);
+        self.uses.get(&l).copied().unwrap_or(0).saturating_sub(dead)
     }
 
     /// The type a use gives an otherwise untyped local (a storage read
@@ -115,6 +128,50 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             )),
             "extend_current_contract_instance_and_code_ttl" => Some(format!("env.storage().instance().extend_ttl({}, {});", self.sdk_arg(args, 0)?, self.sdk_arg(args, 1)?)),
             "require_auth" => Some(format!("{}.require_auth();", self.sdk_arg(args, 0)?)),
+            "bytes_len" => {
+                expr = Some(format!("{}.len()", self.sdk_arg(args, 0)?));
+                None
+            }
+            "compute_hash_sha256" | "compute_hash_keccak256" => {
+                expr = Some(format!("env.crypto().{}(&{})", &f[13..], self.sdk_arg(args, 0)?));
+                None
+            }
+            "recover_key_ecdsa_secp256k1" => {
+                expr = Some(format!("env.crypto().secp256k1_recover(&{}, &{}, {})", self.sdk_arg(args, 0)?, self.sdk_arg(args, 1)?, self.sdk_arg(args, 2)?));
+                None
+            }
+            "serialize_to_bytes" => {
+                expr = Some(format!("{}.to_xdr(&env)", self.sdk_arg(args, 0)?));
+                None
+            }
+            "obj_cmp" => {
+                expr = Some(format!("({}.cmp(&{}) as i64)", self.sdk_arg(args, 0)?, self.sdk_arg(args, 1)?));
+                None
+            }
+            "llvm_bswap_i64" => {
+                expr = Some(format!("{}.swap_bytes()", self.sdk_arg(args, 0)?));
+                None
+            }
+            // The SDK's token client, every argument by pointer into a frame.
+            _ if self.spec.sdk.get(f).is_some_and(|p| p.ends_with("TokenClient::transfer")) => {
+                let a = |me: &Self, i: usize, off: u64| -> R<String> {
+                    let l = me.frame_arg(me.cur_bb, &args[i].node, off).ok_or_else(|| format!("argument {i} of transfer"))?;
+                    me.sdk_operand(&Operand::Copy(Place::from(l)))
+                };
+                // The amount is an i128 in two words at the fourth pointer.
+                let lo = self.frame_arg(self.cur_bb, &args[3].node, 0);
+                let hi = self.frame_arg(self.cur_bb, &args[3].node, 8);
+                let amount = match (lo, hi) {
+                    (Some(lo), Some(hi)) => fold_wide(&format!("i128({}, {})", self.key_shape(&Operand::Copy(Place::from(hi)))?, self.key_shape(&Operand::Copy(Place::from(lo)))?)),
+                    _ => return Err("transfer amount".into()),
+                };
+                Some(format!("token::Client::new(&env, &{}).transfer(&{}, &{}, &({} as i128));", a(self, 0, 0)?, a(self, 1, 0)?, a(self, 2, 0)?, self.sdk_value(&amount)?))
+            }
+            _ if self.spec.sdk.get(f).is_some_and(|p| p.ends_with("Env>::contract_event")) => {
+                let topics = self.sdk_value(&self.key_shape(&args[0].node)?)?;
+                let topics = topics.strip_prefix("vec![&env, ").and_then(|t| t.strip_suffix(']')).map(|t| format!("({t},)")).ok_or("event topics")?;
+                Some(format!("env.events().publish({topics}, {});", self.sdk_arg(args, 1)?))
+            }
             "fail_with_error" => Some(format!("panic_with_error!(&env, {});", self.sdk_arg(args, 0)?)),
             "trap" => Some("panic!();".to_string()),
             "contract_event" => {
@@ -176,6 +233,20 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     /// source never saw -- a tag check, a payload bound -- a guard: the one
     /// arm that goes on is the code, the arms that trap are the SDK's.
     pub(super) fn sdk_switch(&mut self, bb: BasicBlock, discr: &Operand<'tcx>, targets: &SwitchTargets, tail: Option<BasicBlock>) -> R<()> {
+        // A number read out of a Val: the parameter (or host value) itself,
+        // its words `x as u64` and `(x >> 64) as u64`; nothing to write.
+        if let Some(d) = self.decodes.get(&bb).cloned() {
+            let e = self.sdk_operand(&Operand::Copy(Place::from(d.val)))?;
+            for (l, part) in d.parts {
+                let v = match part {
+                    decode::Part::Lo => format!("({e} as u64)"),
+                    decode::Part::Hi => format!("(({e} >> 64) as u64)"),
+                    decode::Part::Whole => e.clone(),
+                };
+                self.inlined.insert(l, v);
+            }
+            return Ok(());
+        }
         let is_bool = discr.ty(&self.body.local_decls, self.tcx).is_bool();
         let cond = if is_bool {
             self.sdk_operand(discr).ok()
@@ -194,6 +265,11 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             let then_lines = self.capture(|s| s.branch(bb, then, tail))?;
             let else_lines = self.capture(|s| s.branch(bb, els, tail))?;
             let c = strip_parens(c);
+            // Both arms the same (a number re-encoded either way): no branch.
+            if then_lines == else_lines {
+                self.out.extend(then_lines);
+                return Ok(());
+            }
             match (then_lines.is_empty(), else_lines.is_empty()) {
                 (true, true) => {}
                 (false, true) => self.arm(format!("if {c}"), then_lines),
@@ -343,6 +419,10 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                         }
                     }
                 }
+                // A number re-encoded from its parts is that number.
+                if let Some(enc) = self.small_encode(o) {
+                    return self.sdk_value(&fold_wide(&enc));
+                }
                 self.sdk_operand(o)
             }
             _ => Err(format!("not reconstructed: {}", self.rvalue(rv)?)),
@@ -384,9 +464,21 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     /// `Symbol::new`, the error and union cases by name, struct literals with
     /// their fields, parameters cloned. Anything not fully known is an error.
     pub(super) fn sdk_value(&self, s: &str) -> R<String> {
+        // `fname::x` is a local of this function that had no shape -- often
+        // one the source bound (a storage read, a require_auth receiver).
+        // If it is declared, inlined or a parameter, say it by name.
         let own = format!("{}::", self.display(&self.fname));
+        if let Some(rest) = s.strip_prefix(&own) {
+            if rest.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                if let Some(l) = self.body.local_decls.indices().find(|l| self.raw_name(*l) == rest) {
+                    if self.declared.contains(&l) || self.inlined.contains_key(&l) || (1..=self.body.arg_count).contains(&l.as_usize()) {
+                        return self.sdk_operand(&Operand::Copy(Place::from(l)));
+                    }
+                }
+            }
+        }
         let hole = s.split(|c: char| !c.is_alphanumeric() && c != '_').any(|w| w == "_");
-        if hole || s.contains("Val(") || s.contains("::{") || s.contains(" | ") || s.contains('@') || s.contains("(at ") || s.contains("Map{") || s.contains(&own) {
+        if hole || s.contains("Val(") || s.contains("::{") || s.contains(" | ") || s.contains('@') || s.contains("(at ") || s.contains("Map{") || s.contains(&own) || s.contains("u128(") || s.contains("i128(") {
             return Err(format!("value not reconstructed: {s}"));
         }
         // `X /* Path */` is Path -- an error case, a unit union case; other comments go.
@@ -413,6 +505,9 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         let t = rewrite_calls(&t, "Val::string(", &|a| format!("String::from_str(&env, {a})"));
         let t = rewrite_calls(&t, "String(", &|a| format!("String::from_str(&env, {a})"));
         let t = rewrite_calls(&t, "Val::u32(", &|a| a.to_string());
+        let t = rewrite_calls(&t, "lo(", &|a| format!("({a} as u64)"));
+        let t = t.replace("get_ledger_timestamp()", "env.ledger().timestamp()").replace("get_ledger_sequence()", "env.ledger().sequence()").replace("get_current_contract_address()", "env.current_contract_address()");
+        let t = rewrite_calls(&t, "hi(", &|a| format!("(({a} >> 64) as u64)"));
         let t = rewrite_calls(&t, "Val::i32(", &|a| a.to_string());
         let t = t.replace("Val::TRUE", "true").replace("Val::FALSE", "false").replace("Val::VOID", "()");
         let t = rewrite_calls(&t.replace("Vec[", "Vec("), "Vec(", &|a| format!("vec![&env, {a}]"));

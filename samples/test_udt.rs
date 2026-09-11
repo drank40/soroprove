@@ -297,7 +297,7 @@ pub fn add(mut a: Val, mut b: Val) -> Val {
                             add167 = zx26.wrapping_add(l1_1);
                             if !((zx26 as i64) < 0i64) ^ ((add167 as i64) < (l1_1 as i64)) {
                                 if add167.wrapping_add(18410715276690587648u64) < 18374686479671623680u64 {
-                                    obj_from_i64_14 = obj_from_i64(add167);
+                                    obj_from_i64_14 = obj_from_i64(add167); // i64(add::add167)
                                     l1_0 = obj_from_i64_14;
                                 } else {
                                     l1_0 = Val((add167.wrapping_shl(8u64 as u32)) | 7u64);

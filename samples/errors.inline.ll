@@ -86,7 +86,7 @@ entry:
   ret void
 }
 
-; Function Attrs: noreturn
+; Function Attrs: noinline noreturn
 define internal fastcc void @panic_fmt() unnamed_addr #6 {
 entry:
   tail call void @soroban.trap()
@@ -99,7 +99,7 @@ attributes #2 = { memory(inaccessiblemem: readwrite) "soroban.import"="x.5" "sor
 attributes #3 = { memory(inaccessiblemem: readwrite) "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }
 attributes #4 = { "spec.sig"="fn hello(flag: Flag) -> Result<Symbol, Error>" }
 attributes #5 = { memory(inaccessiblemem: readwrite) "sdk.name"="<soroban_sdk::env::Env as soroban_env_common::env::Env>::fail_with_error" }
-attributes #6 = { noreturn "sdk.name"="core::panicking::panic_fmt" }
+attributes #6 = { noinline noreturn "sdk.name"="core::panicking::panic_fmt" }
 
 !soroban.spec = !{!0, !1, !2}
 !soroban.rodata = !{!3}

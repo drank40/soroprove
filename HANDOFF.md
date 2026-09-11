@@ -283,9 +283,9 @@ down (the objects were still fetchable by SHA through a fork). A plain
 | functions stellar-diver-mir drops (indirect calls) | 7 |
 | helpers named by fingerprints | 300 of 2037 |
 | derives named | 105 |
-| derive `into_val` calls resolved to one case / left as alternatives | 203 / 75 |
-| storage rows / with alternatives / keyed by an unresolved local | 321 / 34 / 8 |
-| contract exports reconstructed whole | 57 of 711 |
+| derive `into_val` calls resolved to one case / left as alternatives | 250 / 122 |
+| storage rows / with alternatives / keyed by an unresolved local | 323 / 34 / 2 |
+| contract exports reconstructed whole | 62 of 711 |
 
 Blockers for the contract level, in order: calls into the contract's own
 helpers (`f16_`, `f23`: storage getters/setters), the `obj_to_i128/u128`

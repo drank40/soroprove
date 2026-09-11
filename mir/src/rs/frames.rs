@@ -116,8 +116,8 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             // Every derived pointer's uses: other derived locals' definitions,
             // or the consuming call's arguments. Anything else could write
             // the array behind our back.
-            let derived = self.derived_from(arr);
-            for &d in &derived {
+            let derived = self.derived_rc(arr);
+            for &d in derived.iter() {
                 let in_defs = self
                     .single_def
                     .iter()
@@ -205,7 +205,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                     }
                 }
             }
-            plumbing.extend(derived);
+            plumbing.extend(derived.iter().copied());
             out.insert(arr);
         }
         out
@@ -226,23 +226,34 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             return self.array_behind_rv(rv, depth);
         }
         // A phi of the same address on every path (LLVM keeps the arms'
-        // separate geps apart): that address.
+        // separate geps apart): that address. Memoised -- the scan is over
+        // every statement, and this is called all over.
         let l = match o {
             Operand::Copy(p) | Operand::Move(p) => p.as_local().filter(|l| self.defs.get(l).copied().unwrap_or(0) > 1)?,
             _ => return None,
         };
-        let mut found: Option<(Local, u64)> = None;
-        for st in self.body.basic_blocks.iter().flat_map(|b| &b.statements) {
-            let StatementKind::Assign(a) = &st.kind else { continue };
-            if a.0.as_local() != Some(l) {
-                continue;
-            }
-            let here = self.array_behind_rv(&a.1, depth + 1)?;
-            if found.is_some_and(|f| f != here) {
-                return None;
-            }
-            found = Some(here);
+        if let Some(m) = self.phi_memo.borrow().get(&l) {
+            return *m;
         }
+        // Guard re-entry on a cycle: assume none until this local resolves.
+        self.phi_memo.borrow_mut().insert(l, None);
+        let mut found: Option<(Local, u64)> = None;
+        for b in self.body.basic_blocks.iter() {
+            for st in &b.statements {
+                let StatementKind::Assign(a) = &st.kind else { continue };
+                if a.0.as_local() != Some(l) {
+                    continue;
+                }
+                match self.array_behind_rv(&a.1, depth + 1) {
+                    Some(here) if found.is_none_or(|f| f == here) => found = Some(here),
+                    _ => {
+                        found = None;
+                        break;
+                    }
+                }
+            }
+        }
+        self.phi_memo.borrow_mut().insert(l, found);
         found
     }
 
@@ -441,34 +452,35 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             ends.push((p, self.words_end(p, arr, active)));
         }
         active.remove(&bb);
+        // Every offset any predecessor leaves, with its value under that
+        // predecessor's arms. An offset all predecessors agree on collapses
+        // to one unconditional value; a store on only some paths keeps the
+        // arms of the paths that made it.
         let mut merged = Words::new();
-        if let Some((_, first)) = ends.first() {
-            for off in first.keys() {
-                let Some(vals) = ends.iter().map(|(p, w)| w.get(off).map(|v| (*p, v))).collect::<Option<Vec<_>>>() else { continue };
-                let same = |v: &Vec<(Vec<Cond>, String, Option<u64>)>| v.len() == 1 && v[0].1 == vals[0].1[0].1 && v[0].2 == vals[0].1[0].2;
-                if vals.iter().all(|(_, v)| same(v)) {
-                    merged.insert(*off, vec![(vec![], vals[0].1[0].1.clone(), vals[0].1[0].2)]);
-                    continue;
-                }
-                // One entry per value: a value reached under several sets of
-                // arms keeps the arms they share -- the outer ones, which
-                // `conds_of` lists last.
-                let mut entry: Vec<(Vec<Cond>, String, Option<u64>)> = Vec::new();
-                for (p, v) in &vals {
-                    let cp = self.conds_of(*p);
-                    for (c, s, k) in v.iter() {
-                        let c = if c.is_empty() { cp.clone() } else { c.clone() };
-                        match entry.iter_mut().find(|(_, s2, k2)| s2 == s && k2 == k) {
-                            Some((c2, ..)) => {
-                                let n = c.iter().rev().zip(c2.iter().rev()).take_while(|(a, b)| a == b).count();
-                                *c2 = c2[c2.len() - n..].to_vec();
-                            }
-                            None => entry.push((c, s.clone(), *k)),
+        let offs: std::collections::BTreeSet<u64> = ends.iter().flat_map(|(_, w)| w.keys().copied()).collect();
+        for off in offs {
+            let vals: Vec<(BasicBlock, &Vec<(Vec<Cond>, String, Option<u64>)>)> = ends.iter().filter_map(|(p, w)| w.get(&off).map(|v| (*p, v))).collect();
+            let first = &vals[0].1;
+            let same = |v: &Vec<(Vec<Cond>, String, Option<u64>)>| v.len() == 1 && v[0].1 == first[0].1 && v[0].2 == first[0].2;
+            if vals.len() == ends.len() && vals.iter().all(|(_, v)| same(v)) {
+                merged.insert(off, vec![(vec![], first[0].1.clone(), first[0].2)]);
+                continue;
+            }
+            let mut entry: Vec<(Vec<Cond>, String, Option<u64>)> = Vec::new();
+            for (p, v) in &vals {
+                let cp = self.conds_of(*p);
+                for (c, sh, k) in v.iter() {
+                    let c = if c.is_empty() { cp.clone() } else { c.clone() };
+                    match entry.iter_mut().find(|(_, s2, k2)| s2 == sh && k2 == k) {
+                        Some((c2, ..)) => {
+                            let n = c.iter().rev().zip(c2.iter().rev()).take_while(|(a, b)| a == b).count();
+                            *c2 = c2[c2.len() - n..].to_vec();
                         }
+                        None => entry.push((c, sh.clone(), *k)),
                     }
                 }
-                merged.insert(*off, entry);
             }
+            merged.insert(off, entry);
         }
         if looped {
             // diver: a loop body's stores are forgotten, not read.
@@ -649,10 +661,13 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         for (c, k) in lens {
             let parts: Vec<String> = (0..k)
                 .map(|j| {
-                    let vs: Vec<String> = words
-                        .get(&(base + 8 * j))
-                        .map(|v| v.iter().filter(|(ec, ..)| ec.is_empty() || ec.ends_with(&c)).map(|(_, s, _)| s.clone()).collect())
-                        .unwrap_or_default();
+                    let all = words.get(&(base + 8 * j)).cloned().unwrap_or_default();
+                    // Values stored under this arm; if the arm did not pin any
+                    // (an inner branch set the word), every value it may hold.
+                    let mut vs: Vec<String> = all.iter().filter(|(ec, ..)| ec.is_empty() || ec.ends_with(&c)).map(|(_, s, _)| s.clone()).collect();
+                    if vs.is_empty() {
+                        vs = all.iter().map(|(_, s, _)| s.clone()).collect();
+                    }
                     match vs.len() {
                         0 => "_".to_string(),
                         1 => vs[0].clone(),
@@ -697,6 +712,32 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         Some(())
     }
 
+    /// The local whose value was last stored at byte offset `off` of the
+    /// frame `o` points into, along the dominator chain up to `bb`. For a
+    /// call argument: the value the source passed there.
+    pub(super) fn frame_arg(&self, bb: BasicBlock, o: &Operand<'tcx>, off: u64) -> Option<Local> {
+        let (arr, base) = self.array_behind_at(o, 0)?;
+        let want = base + off;
+        let derived = self.derived_rc(arr);
+        let doms = self.body.basic_blocks.dominators();
+        let mut chain = vec![bb];
+        while let Some(d) = doms.immediate_dominator(*chain.last().unwrap()) {
+            chain.push(d);
+        }
+        let mut found = None;
+        for b in chain.iter().rev() {
+            for st in &self.body.basic_blocks[*b].statements {
+                let StatementKind::Assign(a) = &st.kind else { continue };
+                if self.frame_store_off(arr, &derived, &a.0) == Some(Some(want)) {
+                    if let Rvalue::Use(op) = &a.1 {
+                        found = self.source_local(op);
+                    }
+                }
+            }
+        }
+        found
+    }
+
     pub(super) fn is_frame(&self, l: Local) -> bool {
         matches!(self.body.local_decls[l].ty.kind(), ty::Array(e, _) if *e == self.env.val || e.is_integral())
     }
@@ -718,7 +759,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     /// pointer into the frame. Exact, or None.
     pub(super) fn range_shape(&self, bb: BasicBlock, arr: Local, first: u64, len: u64) -> Option<Vec<(String, Option<Local>)>> {
         let stmts = &self.body.basic_blocks[bb].statements;
-        let derived = self.derived_from(arr);
+        let derived = self.derived_rc(arr);
         let mut out: Vec<Option<(String, Option<Local>)>> = vec![None; len as usize];
         for st in stmts {
             let StatementKind::Assign(a) = &st.kind else { continue };

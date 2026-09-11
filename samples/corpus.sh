@@ -43,7 +43,7 @@ one=$(cat "$out"/*.rs | grep -oE '= [A-Za-z0-9_]+_into_val[_0-9]*\([^)]*\); // [
 many=$(cat "$out"/*.rs | grep -oE '= [A-Za-z0-9_]+_into_val[_0-9]*\([^)]*\); // [^ ]+' | grep -c '::{')
 echo "derives named: $(cat "$out"/*.rs | grep -cE '^fn [A-Za-z0-9]+_(into_val|try_from_val)'); into_val calls resolved to one case: $one, left as alternatives: $many"
 exports=$(cat "$out"/*.contract.rs | grep -cE '^    pub fn ')
-todo=$(cat "$out"/*.contract.rs | grep -c 'not reconstructed:')
-echo "contract exports $exports, reconstructed whole $((exports - todo)); blockers:"
+partial=$(cat "$out"/*.contract.rs | awk '/^    pub fn /{bad=0} /not reconstructed:/{if(!bad){b++; bad=1}} END{print b+0}')
+echo "contract exports $exports, reconstructed whole $((exports - partial)); statements left at the Val level: $(cat "$out"/*.contract.rs | grep -c 'not reconstructed:'); blockers:"
 cat "$out"/*.contract.rs | grep -oE 'not reconstructed: [a-z ]+' | sort | uniq -c | sort -rn | head -6
 echo "outputs in $out"

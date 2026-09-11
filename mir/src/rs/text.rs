@@ -470,3 +470,34 @@ pub(super) fn pure(rv: &Rvalue<'_>) -> bool {
         _ => false,
     }
 }
+
+/// A number re-encoded from its own words is the number: `u128(hi(x), lo(x))`
+/// is `x`, as is `u128(0, lo(x))` (the small Val, taken when the high word
+/// is zero) and `u64(x)`. Applied until nothing changes.
+pub(super) fn fold_wide(s: &str) -> String {
+    let mut cur = s.to_string();
+    loop {
+        let mut next = cur.clone();
+        for w in ["u64(", "i64(", "u32(", "i32(", "u128(", "i128("] {
+            next = rewrite_calls(&next, w, &|a| {
+                let args = split_top(a, ',');
+                let args: Vec<&str> = args.iter().map(|x| x.trim()).collect();
+                match (w, args.as_slice()) {
+                    ("u64(" | "i64(" | "u32(" | "i32(", [x]) => x.to_string(),
+                    ("u128(" | "i128(", [h, l]) => {
+                        let inner = l.strip_prefix("lo(").and_then(|r| r.strip_suffix(')'));
+                        match inner {
+                            Some(x) if *h == format!("hi({x})") || *h == "0" || *h == "0u64" || h.ends_with("_") && w == "i128(" => x.to_string(),
+                            _ => format!("{w}{a})"),
+                        }
+                    }
+                    _ => format!("{w}{a})"),
+                }
+            });
+        }
+        if next == cur {
+            return cur;
+        }
+        cur = next;
+    }
+}
