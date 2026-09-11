@@ -131,8 +131,9 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 };
                 if let (Some(dst), Some(o)) = (pl.as_local(), carried) {
                     let src = self.source_local(o);
+                    let val_agg = matches!(rv, Rvalue::Aggregate(..));
                     let sh = match o {
-                        Operand::Constant(c) => c.const_.try_to_scalar_int().filter(|_| c.const_.ty() == self.env.val).map(|i| self.val_str(i.to_bits(i.size()) as u64)),
+                        Operand::Constant(c) => c.const_.try_to_scalar_int().filter(|_| val_agg || c.const_.ty() == self.env.val).map(|i| self.val_str(i.to_bits(i.size()) as u64)),
                         _ => src
                             .and_then(|l| self.shape_of(l).or_else(|| (l.as_usize() >= 1 && l.as_usize() <= self.body.arg_count).then(|| self.local(l))))
                             // A word read from what a caller built: the caller knows it.
@@ -189,6 +190,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         }
         let mut a: Vec<String> = Vec::new();
         let mut elems: Option<Vec<(String, Option<Local>)>> = None;
+        let mut arms: Option<Vec<(Vec<Cond>, String)>> = None;
         let mut keys: Option<Vec<String>> = None;
         let mut text: Option<String> = None;
         // The text the code can carry as a literal; the array length behind a `pos(..)`.
@@ -217,6 +219,8 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                         if off % 8 == 0 {
                             elems = self.range_shape(bb, arr, off / 8, len);
                         }
+                    } else if f == "vec_new_from_linear_memory" && off % 8 == 0 {
+                        arms = self.vec_arms(bb, arr, off, &arg_ops[1]);
                     }
                 }
             }
@@ -326,8 +330,13 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                     // write keeps every alternative.
                     let frames: Vec<HashMap<u64, (String, Option<u64>)>> = args.iter().map(|a| self.frame_words(bb, &a.node)).collect();
                     let konst = |w: &str, params: &[String]| -> Option<u64> {
+                        // `a0@0:4`: the callee read four bytes of the word.
+                        let (w, mask) = match w.split_once(':') {
+                            Some((w, b)) => (w, (1u64 << (8 * b.parse::<u32>().ok()?)) - 1),
+                            None => (w, u64::MAX),
+                        };
                         match w.split_once('@') {
-                            Some((p, off)) => frames.get(params.iter().position(|x| x == p)?)?.get(&off.parse::<u64>().ok()?)?.1,
+                            Some((p, off)) => Some(frames.get(params.iter().position(|x| x == p)?)?.get(&off.parse::<u64>().ok()?)?.1? & mask),
                             None => self.konst_u64(&args[params.iter().position(|x| x == w)?].node),
                         }
                     };
@@ -353,6 +362,7 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 }
             }
         };
+        let shape = shape.or_else(|| arms.as_ref().map(|a| alternatives(a.iter().map(|(_, s)| s.clone()).collect())));
         let shape = shape.or_else(|| match (f.as_str(), &elems, &keys) {
             ("map_new_from_linear_memory", es, Some(ks)) => {
                 let fields: Vec<String> = ks
@@ -391,13 +401,13 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
             }
             if let Some(l) = destination.as_local() {
                 // One element with a value per arm: the vec has one per arm too.
-                let per_arm = elems.as_ref().filter(|_| f == "vec_new_from_linear_memory").and_then(|es| {
+                let per_arm = arms.clone().or_else(|| elems.as_ref().filter(|_| f == "vec_new_from_linear_memory").and_then(|es| {
                     let multi: Vec<usize> = (0..es.len()).filter(|&i| es[i].1.and_then(|l| self.shapes.get(&l)).is_some_and(|v| v.len() > 1)).collect();
                     let [i] = multi[..] else { return None };
                     let parts: Vec<String> = es.iter().map(|(e, src)| src.and_then(|l| self.shape_of(l)).unwrap_or_else(|| e.clone())).collect();
                     let entries = self.shapes[&es[i].1?].clone();
                     Some(entries.into_iter().map(|(c, s)| (c, self.vec_case(parts.iter().enumerate().map(|(j, p)| if j == i { s.clone() } else { p.clone() }).collect()))).collect::<Vec<_>>())
-                });
+                }));
                 for (c, s) in per_arm.unwrap_or_else(|| vec![(self.conds_of(bb), sh.clone())]) {
                     if l == Local::ZERO {
                         self.returned(s.clone(), c.clone());

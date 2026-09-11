@@ -111,7 +111,7 @@ fn summaries<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'tcx>], s
     };
     let encoders: HashSet<String> = bodies
         .iter()
-        .filter(|b| b.arg_count == 3 && has_const(b, BinOp::Shl, 6) && has_const(b, BinOp::BitOr, 14))
+        .filter(|b| (2..=3).contains(&b.arg_count) && has_const(b, BinOp::Shl, 6) && has_const(b, BinOp::BitOr, 14))
         .map(|b| tcx.item_name(b.source.def_id()).to_string())
         .collect();
     let mut prev = Inter { encoders: encoders.clone(), ..Default::default() };
@@ -140,10 +140,9 @@ fn summaries<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'tcx>], s
     // Helpers that are `#[contracttype]` derives: every return one case of
     // one union or one struct's map is its `into_val`; unpacking one type's
     // fields or cases is its `try_from_val`.
-    let is_helper = |f: &str| {
-        f.strip_prefix('f').is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
-            && !prev.schema.iter().any(|(_, _, _, who)| who == f || who.starts_with(&format!("{f} via ")))
-    };
+    // Any function that is not an export, whatever it is called (a build
+    // that kept its names calls a derive `from_val`).
+    let is_helper = |f: &str| !spec.params.contains_key(f) && !prev.schema.iter().any(|(_, _, _, who)| who == f || who.starts_with(&format!("{f} via ")));
     let owner = |s: &str| -> Option<String> {
         let s = s.rsplit_once(" /* ").map(|(_, c)| c.trim_end_matches(" */")).unwrap_or(s);
         if let Some((u, _)) = s.split_once("::") {
@@ -167,10 +166,20 @@ fn summaries<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'tcx>], s
         }
         n
     };
+    let unnamed = |f: &str| f.strip_prefix('f').is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()));
     for f in encs {
-        let id = name(&mut used, "SymbolSmall_try_from_bytes".into());
-        renames.insert(f.clone(), (id, "/// The SDK's `SymbolSmall::try_from_bytes`: a short symbol packed from its text.\n".into()));
-        prev.text_helpers.insert(f.clone(), (1, 2, "Symbol"));
+        // `(out, ptr, len)` is `SymbolSmall::try_from_bytes`; `(out, &&str)` is
+        // `Symbol::try_from_val`, which inlines it. A build that kept its
+        // names has said which already.
+        let three = bodies.iter().any(|b| b.arg_count == 3 && tcx.item_name(b.source.def_id()).as_str() == f);
+        if unnamed(f) {
+            let id = name(&mut used, if three { "SymbolSmall_try_from_bytes" } else { "Symbol_try_from_val" }.into());
+            let doc = if three { "/// The SDK's `SymbolSmall::try_from_bytes`: a short symbol packed from its text.\n" } else { "/// The SDK's `Symbol::try_from_val` from a `&str`.\n" };
+            renames.insert(f.clone(), (id, doc.into()));
+        }
+        if three {
+            prev.text_helpers.insert(f.clone(), (1, 2, "Symbol"));
+        }
     }
     let mut fs: Vec<&String> = prev.ret_shapes.keys().collect();
     fs.sort();

@@ -281,9 +281,9 @@ down (the objects were still fetchable by SHA through a fork). A plain
 | bottoms in lifted output | 4 (memory.size, memory.grow) |
 | binaries through MIR + stable rustc type-check | 68 / 68 |
 | functions stellar-diver-mir drops (indirect calls) | 7 |
-| helpers named by fingerprints | 296 of 2037 |
-| derives named | 81 |
-| derive `into_val` calls resolved to one case / left as alternatives | 203 / 73 |
+| helpers named by fingerprints | 300 of 2037 |
+| derives named | 105 |
+| derive `into_val` calls resolved to one case / left as alternatives | 203 / 75 |
 | storage rows / with alternatives / keyed by an unresolved local | 321 / 34 / 8 |
 | contract exports reconstructed whole | 57 of 711 |
 

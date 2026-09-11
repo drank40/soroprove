@@ -168,6 +168,21 @@ impl Spec {
         })
     }
 
+    pub(super) fn u64_at(&self, pos: u64) -> Option<u64> {
+        self.rodata.iter().find_map(|(base, d)| {
+            let off = pos.checked_sub(*base)? as usize;
+            Some(u64::from_le_bytes(d.get(off..off.checked_add(8)?)?.try_into().ok()?))
+        })
+    }
+
+    /// A little-endian u32 in rodata: half of a `&str` stored there.
+    pub(super) fn u32_at(&self, pos: u64) -> Option<u32> {
+        self.rodata.iter().find_map(|(base, d)| {
+            let off = pos.checked_sub(*base)? as usize;
+            Some(u32::from_le_bytes(d.get(off..off.checked_add(4)?)?.try_into().ok()?))
+        })
+    }
+
     /// `Error::AnError` for a contract error code, when exactly one case has it.
     pub(super) fn error_name(&self, code: u64) -> Option<String> {
         let mut it = self.errors.iter().filter(|(_, _, v)| *v as u64 == code);

@@ -67,6 +67,18 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         n
     }
 
+    /// The type a use gives an otherwise untyped local (a storage read
+    /// rustc cannot infer): the receiver of `require_auth` is an `Address`.
+    /// diver: the one use-typed case so far.
+    fn use_type(&self, l: Local) -> Option<&'static str> {
+        self.body.basic_blocks.iter().find_map(|b| match &b.terminator.as_ref()?.kind {
+            TerminatorKind::Call { func, args, .. } if self.callee_name(func).as_deref() == Some("require_auth") => {
+                (self.source_local(&args.first()?.node) == Some(l)).then_some("Address")
+            }
+            _ => None,
+        })
+    }
+
     pub(super) fn sdk_name(&self, l: Local) -> String {
         let n = self.raw_name(l);
         if l == Local::ZERO && n == "_0" { "ret".into() } else { n }
@@ -477,7 +489,8 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         let mut s = format!("    {}\n", sdk_header(&sig)?);
         for l in self.body.vars_and_temps_iter().chain(Some(Local::ZERO)) {
             if self.declared.contains(&l) {
-                s.push_str(&format!("        let mut {};\n", self.sdk_name(l)));
+                let ty = self.use_type(l).map(|t| format!(": {t}")).unwrap_or_default();
+                s.push_str(&format!("        let mut {}{ty};\n", self.sdk_name(l)));
             }
         }
         for (depth, text) in lines {

@@ -219,10 +219,35 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     /// `Val((ptr as u64) << 32 | 4)`, `ptr = &raw mut arr as *mut u8` plus a
     /// constant offset -> `(arr, byte offset)`.
     pub(super) fn array_behind_at(&self, o: &Operand<'tcx>, depth: u8) -> Option<(Local, u64)> {
-        if depth > 8 {
+        if depth > 16 {
             return None;
         }
-        match self.def_of(o)? {
+        if let Some(rv) = self.def_of(o) {
+            return self.array_behind_rv(rv, depth);
+        }
+        // A phi of the same address on every path (LLVM keeps the arms'
+        // separate geps apart): that address.
+        let l = match o {
+            Operand::Copy(p) | Operand::Move(p) => p.as_local().filter(|l| self.defs.get(l).copied().unwrap_or(0) > 1)?,
+            _ => return None,
+        };
+        let mut found: Option<(Local, u64)> = None;
+        for st in self.body.basic_blocks.iter().flat_map(|b| &b.statements) {
+            let StatementKind::Assign(a) = &st.kind else { continue };
+            if a.0.as_local() != Some(l) {
+                continue;
+            }
+            let here = self.array_behind_rv(&a.1, depth + 1)?;
+            if found.is_some_and(|f| f != here) {
+                return None;
+            }
+            found = Some(here);
+        }
+        found
+    }
+
+    fn array_behind_rv(&self, rv: &Rvalue<'tcx>, depth: u8) -> Option<(Local, u64)> {
+        match rv {
             Rvalue::Aggregate(_, fs) => self.array_behind_at(fs.iter().next()?, depth + 1),
             Rvalue::BinaryOp(BinOp::BitOr | BinOp::Shl, ab) => self.array_behind_at(&ab.0, depth + 1),
             Rvalue::BinaryOp(BinOp::Offset | BinOp::Add, ab) => {
@@ -326,7 +351,14 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 // narrowing cast of the parameter compares the caller's
                 // whole constant; enum discriminants are small.
                 let word = if let Some((p, off)) = self.param_load(discr) {
-                    format!("{}@{off}", self.local(p))
+                    let bytes = match discr.ty(&self.body.local_decls, self.tcx).kind() {
+                        ty::Uint(ty::UintTy::U8) | ty::Int(ty::IntTy::I8) => 1,
+                        ty::Uint(ty::UintTy::U16) | ty::Int(ty::IntTy::I16) => 2,
+                        ty::Uint(ty::UintTy::U32) | ty::Int(ty::IntTy::I32) => 4,
+                        _ => 8,
+                    };
+                    let w = format!("{}@{off}", self.local(p));
+                    if bytes < 8 { format!("{w}:{bytes}") } else { w }
                 } else if let Some((p, 0)) = self.param_ptr(discr, 0) {
                     self.local(p)
                 } else {
@@ -349,7 +381,16 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     /// knows it, its constant). One value where every path agrees; the
     /// alternatives otherwise.
     pub(super) fn frame_words(&self, bb: BasicBlock, o: &Operand<'tcx>) -> HashMap<u64, (String, Option<u64>)> {
-        let Some((arr, base)) = self.array_behind_at(o, 0) else { return HashMap::new() };
+        let Some((arr, base)) = self.array_behind_at(o, 0) else {
+            // A pointer into rodata: a static, its words as they lie there.
+            let Some(p) = self.konst_u64(o) else { return HashMap::new() };
+            return (0..8)
+                .filter_map(|i| {
+                    let w = self.spec.u64_at(p + 8 * i)?;
+                    Some((8 * i, (self.val_str(w), Some(w))))
+                })
+                .collect();
+        };
         self.words_at(bb, self.body.basic_blocks[bb].statements.len(), arr)
             .into_iter()
             .filter_map(|(k, vs)| {
@@ -570,12 +611,19 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         if !self.prev.encoders.contains(&self.callee_name(func)?) {
             return None;
         }
-        let [out, pos, len] = &args[..] else { return None };
+        let (out, text) = match &args[..] {
+            [out, pos, len] => (out, self.spec.text_at(self.konst_u64(&pos.node)?, self.konst_u64(&len.node)?)?),
+            // `(out, &&str)`: the text's position and length sit in rodata.
+            [out, sref] => {
+                let p = self.konst_u64(&sref.node)?;
+                (out, self.spec.text_at(self.spec.u32_at(p)? as u64, self.spec.u32_at(p + 4)? as u64)?)
+            }
+            _ => return None,
+        };
         let (x, k) = self.array_behind_at(&out.node, 0)?;
         if x != arr {
             return None;
         }
-        let text = self.spec.text_at(self.konst_u64(&pos.node)?, self.konst_u64(&len.node)?)?;
         let sym = match self.spec.union_case(&text) {
             Some(case) => format!("Symbol({text:?}) /* {case} */"),
             None => format!("Symbol({text:?})"),
@@ -584,6 +632,71 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
     }
 
     /// A frame: an array of words, Vals or integers.
+    /// A vec built from a frame with a length that is a constant per arm --
+    /// a derive whose cases carry different payload counts, merged into one
+    /// call: the vec's shape under each arm, from the words stored under it.
+    pub(super) fn vec_arms(&self, bb: BasicBlock, arr: Local, base: u64, len: &Operand<'tcx>) -> Option<Vec<(Vec<Cond>, String)>> {
+        let l = self.source_local(len)?;
+        // The length local is assigned a `U32Val` constant in each arm,
+        // possibly through a copy or a `Val(..)` of another local.
+        let mut lens: Vec<(Vec<Cond>, u64)> = Vec::new();
+        self.const_assigns(l, 0, &mut lens)?;
+        if lens.is_empty() {
+            return None;
+        }
+        let words = self.words_at(bb, self.body.basic_blocks[bb].statements.len(), arr);
+        let mut out = Vec::new();
+        for (c, k) in lens {
+            let parts: Vec<String> = (0..k)
+                .map(|j| {
+                    let vs: Vec<String> = words
+                        .get(&(base + 8 * j))
+                        .map(|v| v.iter().filter(|(ec, ..)| ec.is_empty() || ec.ends_with(&c)).map(|(_, s, _)| s.clone()).collect())
+                        .unwrap_or_default();
+                    match vs.len() {
+                        0 => "_".to_string(),
+                        1 => vs[0].clone(),
+                        _ => alternatives(vs),
+                    }
+                })
+                .collect();
+            out.push((c, self.vec_case(parts)));
+        }
+        Some(out)
+    }
+
+    /// Every `U32Val` constant assigned to `l` (through copies and `Val(..)`
+    /// wrappers), with the arms of the block that assigns it; the zero a
+    /// local starts at does not count. None when any assignment is not one.
+    fn const_assigns(&self, l: Local, depth: u8, out: &mut Vec<(Vec<Cond>, u64)>) -> Option<()> {
+        if depth > 4 {
+            return None;
+        }
+        for (b, data) in self.body.basic_blocks.iter_enumerated() {
+            for st in &data.statements {
+                let StatementKind::Assign(a) = &st.kind else { continue };
+                if a.0.as_local() != Some(l) {
+                    continue;
+                }
+                let op = match &a.1 {
+                    Rvalue::Use(op) => op,
+                    Rvalue::Aggregate(k, fs) if matches!(**k, AggregateKind::Adt(d, ..) if d == self.env.val_def) => fs.iter().next()?,
+                    _ => return None,
+                };
+                match op {
+                    Operand::Constant(_) => match self.konst_u64(op) {
+                        Some(k) if k & 0xff == 4 => out.push((self.conds_of(b), k >> 32)),
+                        Some(_) => {}
+                        None => return None,
+                    },
+                    Operand::Copy(p) | Operand::Move(p) => self.const_assigns(p.as_local()?, depth + 1, out)?,
+                    _ => return None,
+                }
+            }
+        }
+        Some(())
+    }
+
     pub(super) fn is_frame(&self, l: Local) -> bool {
         matches!(self.body.local_decls[l].ty.kind(), ty::Array(e, _) if *e == self.env.val || e.is_integral())
     }
