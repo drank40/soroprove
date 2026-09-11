@@ -260,7 +260,18 @@ only the same build; the shape one (signature + host calls + constants +
 counts) survives wasm-opt and register allocation and is trusted only when it
 names exactly one function. Coverage is bounded by what the reference leaves
 out of line: 292 of 1994 corpus helpers today. Widen `fingerprints/ref/src/lib.rs`
-to widen it.
+to widen it. A wasm that kept its own name section needs none of this: its
+symbols name every helper (the header says `by its own symbol names`).
+
+Before decompiling a binary whose `contractmetav0` names a `source_repo`
+and a `cliver`, rebuild the candidate commit the way stellar-expert's
+build workflow does -- `RUSTUP_TOOLCHAIN=<rsver>` and that exact stellar-cli
+release (`gh release download v<cliver> -R stellar/stellar-cli`) running
+`stellar contract build --optimize --meta source_repo=github:<repo>` -- and
+compare hashes. This reproduced Aquarius's live pool, router and fee
+collector byte for byte from commits whose repository had since been taken
+down (the objects were still fetchable by SHA through a fork). A plain
+`cargo build` never matches: `--optimize` is wasm-opt.
 
 ## Where it stands (numbers from `samples/corpus.sh`, last run 2026-09-11)
 
