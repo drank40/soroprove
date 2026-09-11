@@ -178,12 +178,19 @@ pub(crate) fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, St
     let mut fnames: HashMap<u32, (String, String)> = HashMap::new();
     let mut used: std::collections::HashSet<String> = exports.iter().map(|(n, _)| n.clone()).collect();
     let mut by_shape = 0;
+    let mut own = 0;
     for (i, (exact, shape)) in fps.iter().enumerate() {
         let fi = n_imports + i as u32;
         if exp_idx.contains(&fi) {
             continue;
         }
-        if let Some((full, is_exact)) = table.name(*exact, *shape) {
+        // A build that kept its symbol names says what each function is;
+        // the fingerprints are for the ones that did not.
+        let named = names.get(&fi).map(|n| format!("{:#}", rustc_demangle::demangle(n))).map(|full| (full, true));
+        if named.is_some() {
+            own += 1;
+        }
+        if let Some((full, is_exact)) = named.as_ref().map(|(f, e)| (f.as_str(), *e)).or_else(|| table.name(*exact, *shape)) {
             by_shape += !is_exact as usize;
             // Bodies that are one trap are every panic at once: say so.
             let mut id = if full.contains(" | ") && full.split(" | ").all(|n| n.contains("panic") || n.contains("fail")) {
@@ -199,13 +206,14 @@ pub(crate) fn lower_module(wasm: &[u8], only: Option<&str>) -> Result<String, St
         }
     }
     let sdk_note = format!(
-        "; sdk {} rustc {}; {}: {} of {} helpers named, {} by shape\n",
+        "; sdk {} rustc {}; {}: {} of {} helpers named, {} by shape{}\n",
         sdk_version.as_deref().unwrap_or("?"),
         rust_version.as_deref().unwrap_or("?"),
         table_note,
         fnames.len(),
         bodies.len() - exp_idx.len(),
-        by_shape
+        by_shape,
+        if own > 0 { format!(", {own} by its own symbol names") } else { String::new() }
     );
     let mut md = Mod { types, mem, wasm_sigs, fnames, table: fn_table };
     md.mem.written = writes_data(&bodies, &md, &imports, &local_sigs);
