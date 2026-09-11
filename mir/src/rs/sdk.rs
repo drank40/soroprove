@@ -214,6 +214,46 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
                 expr = Some(format!("{}.contains_key({})", self.sdk_arg(args, 0)?, self.sdk_arg(args, 1)?));
                 None
             }
+            // A fresh collection; rustc infers the element type from the
+            // pushes/sets that follow.
+            "vec_new" => {
+                expr = Some("Vec::new(&env)".into());
+                None
+            }
+            "map_new" => {
+                expr = Some("Map::new(&env)".into());
+                None
+            }
+            // Functional collection updates: the host returns a new handle;
+            // soroban mutates in place, so update a moved copy and yield it.
+            "vec_push_back" => {
+                expr = Some(format!("{{ let mut t = {}; t.push_back({}); t }}", self.sdk_arg(args, 0)?, self.sdk_arg(args, 1)?));
+                None
+            }
+            "vec_pop_back" => {
+                expr = Some(format!("{{ let mut t = {}; t.pop_back(); t }}", self.sdk_arg(args, 0)?));
+                None
+            }
+            "vec_del" | "vec_remove" => {
+                expr = Some(format!("{{ let mut t = {}; t.remove({}); t }}", self.sdk_arg(args, 0)?, self.sdk_arg(args, 1)?));
+                None
+            }
+            "map_put" | "map_set" => {
+                expr = Some(format!("{{ let mut t = {}; t.set({}, {}); t }}", self.sdk_arg(args, 0)?, self.sdk_arg(args, 1)?, self.sdk_arg(args, 2)?));
+                None
+            }
+            "map_del" | "map_remove" => {
+                expr = Some(format!("{{ let mut t = {}; t.remove({}); t }}", self.sdk_arg(args, 0)?, self.sdk_arg(args, 1)?));
+                None
+            }
+            "map_keys" => {
+                expr = Some(format!("{}.keys()", self.sdk_arg(args, 0)?));
+                None
+            }
+            "map_values" => {
+                expr = Some(format!("{}.values()", self.sdk_arg(args, 0)?));
+                None
+            }
             "map_get" => {
                 expr = Some(format!("{}.get({}).unwrap()", self.sdk_arg(args, 0)?, self.sdk_arg(args, 1)?));
                 None
