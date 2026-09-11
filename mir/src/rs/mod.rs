@@ -253,7 +253,7 @@ pub fn emit<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, header: &str, bodies: &[&B
 /// The contract as soroban-sdk source: its types from the spec, its exports
 /// from the shapes. An export the source level cannot say is a `todo!()`
 /// that names the first thing it could not.
-pub fn emit_contract<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'tcx>], spec: &Spec, lines: &[String]) -> R<String> {
+pub fn emit_contract<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'tcx>], spec: &Spec, lines: &[String], partial: bool) -> R<String> {
     let prev = summaries(tcx, env, bodies, spec)?;
     let inter = RefCell::new(Inter::default());
     let mut out = String::from(CONTRACT_HEAD);
@@ -297,8 +297,15 @@ pub fn emit_contract<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'
             out.push_str(&format!("    // {name}: exported, not in the spec.\n\n"));
             continue;
         };
-        match Fn_::new(tcx, env, body, spec, &prev, &inter, true).emit_sdk() {
-            Ok(s) => out.push_str(&s),
+        let emitted = Fn_::new(tcx, env, body, spec, &prev, &inter, true).emit_sdk();
+        match emitted {
+            // Fully reconstructed, or the marked partial view was asked for: as is.
+            Ok(s) if partial || !s.contains("not reconstructed") => out.push_str(&s),
+            // Otherwise a clean, compiling `todo!()` naming what stopped it.
+            Ok(s) => {
+                let why = s.lines().find_map(|l| l.split("not reconstructed: ").nth(1)).unwrap_or("").trim_end_matches(&[';'][..]);
+                out.push_str(&format!("    {}\n        // not reconstructed: {why}\n        todo!()\n    }}\n", sdk_header(&sig)?));
+            }
             Err(why) => out.push_str(&format!("    {}\n        // not reconstructed: {why}\n        todo!()\n    }}\n", sdk_header(&sig)?)),
         }
         out.push('\n');

@@ -378,8 +378,8 @@ pub(super) const CONTRACT_HEAD: &str = "#![no_std]
 //! An export that could not be said at this level is a `todo!()` naming why.
 #![allow(unused_imports, unused_mut, unused_variables, unreachable_code, unused_parens, non_snake_case, clippy::all)]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, vec, Address, Bytes, BytesN, Duration, Env, I256,
-    Map, MuxedAddress, String, Symbol, Timepoint, U256, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token, vec, Address, Bytes, BytesN, Duration, Env,
+    I256, Map, String, Symbol, Timepoint, U256, Val, Vec,
 };
 
 ";

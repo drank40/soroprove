@@ -542,7 +542,17 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         let t = rewrite_calls(&t, "hi(", &|a| format!("(({a} >> 64) as u64)"));
         let t = rewrite_calls(&t, "Val::i32(", &|a| a.to_string());
         let t = t.replace("Val::TRUE", "true").replace("Val::FALSE", "false").replace("Val::VOID", "()");
-        let t = rewrite_calls(&t.replace("Vec[", "Vec("), "Vec(", &|a| format!("vec![&env, {a}]"));
+        let t = rewrite_calls(&t.replace("Vec[", "Vec("), "Vec(", &|a| {
+            let parts = split_top(a, ',');
+            // A key: a leading symbol then payloads of other types. A soroban
+            // tuple encodes to the same vec and, unlike vec!, may be mixed.
+            let sym = parts.first().is_some_and(|p| p.trim_start().starts_with("symbol_short!") || p.trim_start().starts_with("Symbol::new"));
+            if sym && parts.len() > 1 {
+                format!("({})", parts.iter().map(|p| p.trim()).collect::<Vec<_>>().join(", "))
+            } else {
+                format!("vec![&env, {a}]")
+            }
+        });
         let t = expand_shorthand(&t);
         Ok(self.clone_params(&t))
     }

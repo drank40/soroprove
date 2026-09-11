@@ -86,6 +86,7 @@ fn lifted_build_mir<'tcx>(tcx: TyCtxt<'tcx>, def: LocalDefId) -> Body<'tcx> {
 struct Lift {
     rust: bool,
     contract: bool,
+    partial: bool,
 }
 
 impl Callbacks for Lift {
@@ -123,7 +124,7 @@ impl Callbacks for Lift {
                 llvm(|l| sdk_names(&l.m)),
             );
             let text = if self.contract {
-                rs::emit_contract(tcx, &env, &bodies, &spec, &lines).unwrap_or_else(|e| fatal(&e))
+                rs::emit_contract(tcx, &env, &bodies, &spec, &lines, self.partial).unwrap_or_else(|e| fatal(&e))
             } else {
                 let head = llvm(|l| header(&l.m, &l.sigs)).unwrap_or_else(|e| fatal(&e));
                 rs::emit(tcx, &env, &head, &bodies, &spec).unwrap_or_else(|e| fatal(&e))
@@ -155,7 +156,8 @@ fn main() {
         std::process::exit(2)
     });
     let rust = args.iter().any(|a| a == "--rust");
-    let contract = args.iter().any(|a| a == "--contract");
+    let partial = args.iter().any(|a| a == "--contract-partial");
+    let contract = partial || args.iter().any(|a| a == "--contract");
     let validate = !args.iter().any(|a| a == "--no-validate");
 
     let ctx: &'static Context = Box::leak(Box::new(Context::create()));
@@ -194,7 +196,7 @@ fn main() {
     if validate {
         rustc_args.push("-Zvalidate-mir".into());
     }
-    rustc_driver::run_compiler(&rustc_args, &mut Lift { rust, contract });
+    rustc_driver::run_compiler(&rustc_args, &mut Lift { rust, contract, partial });
     let _ = std::fs::remove_dir_all(scratch);
 }
 
