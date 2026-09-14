@@ -240,6 +240,19 @@ Then the layers that make it read like the contract:
 
 ### 5. Contract from MIR (`mir/src/rs/sdk.rs`, `emit_contract`, `--contract`)
 
+Three views:
+- `--contract`: idiomatic soroban-sdk that compiles to wasm. An export that
+  cannot be said idiomatically (a library like rlp/bytes, or a frame-ABI
+  helper) is a `todo!()` naming the blocker.
+- `--contract-complete`: no `todo!()` -- every export is an SDK-typed entry
+  point forwarding to the complete faithful reconstruction in a `mod raw`
+  (the `--rust` output, its own `Val`/host-imports isolated). Type-checks
+  (`cargo check`); does not link to wasm (the raw host imports resolve only
+  on-chain), so it is for reading, not deploying.
+- `--contract-partial`: the reconstructed statements inline, marked where not
+  idiomatic (debugging).
+
+
 Types from the spec lines (`type_item`), `#[contract] pub struct Contract`,
 one `pub fn` per export with the spec signature and `env: Env` first, bodies
 translated statement by statement in "SDK mode" (`sdk: true` on `Fn_`):

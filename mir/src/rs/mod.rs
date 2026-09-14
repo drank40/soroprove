@@ -253,7 +253,7 @@ pub fn emit<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, header: &str, bodies: &[&B
 /// The contract as soroban-sdk source: its types from the spec, its exports
 /// from the shapes. An export the source level cannot say is a `todo!()`
 /// that names the first thing it could not.
-pub fn emit_contract<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'tcx>], spec: &Spec, lines: &[String], partial: bool) -> R<String> {
+pub fn emit_contract<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'tcx>], spec: &Spec, lines: &[String], partial: bool, complete: bool, head: &str) -> R<String> {
     let prev = summaries(tcx, env, bodies, spec)?;
     let inter = RefCell::new(Inter::default());
     let mut out = String::from(CONTRACT_HEAD);
@@ -287,6 +287,7 @@ pub fn emit_contract<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'
         out.push_str(&type_item(l));
     }
     out.push_str("#[contract]\npub struct Contract;\n\n#[contractimpl]\nimpl Contract {\n");
+    let mut need_raw = false;
     for body in bodies {
         let def_id = body.source.def_id();
         let name = tcx.item_name(def_id).to_string();
@@ -301,17 +302,60 @@ pub fn emit_contract<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'
         match emitted {
             // Fully reconstructed, or the marked partial view was asked for: as is.
             Ok(s) if partial || !s.contains("not reconstructed") => out.push_str(&s),
-            // Otherwise a clean, compiling `todo!()` naming what stopped it.
+            // Otherwise an SDK-typed entry point that forwards to the complete
+            // faithful reconstruction in `mod raw` below. No idiomatic form
+            // exists for the library (rlp/bytes) or frame-ABI helpers it calls,
+            // but the full logic is there and it compiles. Blocker named.
             Ok(s) => {
                 let why = s.lines().find_map(|l| l.split("not reconstructed: ").nth(1)).unwrap_or("").trim_end_matches(&[';'][..]);
-                out.push_str(&format!("    {}\n        // not reconstructed: {why}\n        todo!()\n    }}\n", sdk_header(&sig)?));
+                if complete {
+                    out.push_str(&format!("    // not idiomatic ({why}); full logic in `raw::{name}`.\n{}", raw_wrapper(&sig, &name)?));
+                    need_raw = true;
+                } else {
+                    out.push_str(&format!("    {}\n        // not reconstructed: {why}\n        todo!()\n    }}\n", sdk_header(&sig)?));
+                }
             }
-            Err(why) => out.push_str(&format!("    {}\n        // not reconstructed: {why}\n        todo!()\n    }}\n", sdk_header(&sig)?)),
+            Err(why) => {
+                if complete {
+                    out.push_str(&format!("    // not idiomatic ({why}); full logic in `raw::{name}`.\n{}", raw_wrapper(&sig, &name)?));
+                    need_raw = true;
+                } else {
+                    out.push_str(&format!("    {}\n        // not reconstructed: {why}\n        todo!()\n    }}\n", sdk_header(&sig)?));
+                }
+            }
         }
         out.push('\n');
     }
-    let trimmed = out.trim_end().to_string();
-    Ok(format!("{trimmed}\n}}\n"))
+    let mut trimmed = out.trim_end().to_string();
+    trimmed.push_str("\n}\n");
+    if need_raw {
+        let raw = emit(tcx, env, head, bodies, spec)?;
+        let raw: String = raw.lines().filter(|l| !l.trim_start().starts_with("#![no_std")).map(|l| format!("    {l}\n")).collect();
+        trimmed.push_str(&format!("\n#[allow(warnings)]\nmod raw {{\n{raw}}}\n"));
+    }
+    Ok(trimmed)
+}
+
+/// An SDK-typed entry point that forwards to `raw::name`: each argument is
+/// re-encoded to the raw `Val`, the result decoded back to the spec type.
+fn raw_wrapper(sig: &str, name: &str) -> R<String> {
+    let rest = sig.strip_prefix("fn ").unwrap_or(sig);
+    let (name_params, ret) = rest.split_once(" -> ").map(|(a, b)| (a, b.trim())).unwrap_or((rest, "()"));
+    let params = name_params.split_once('(').map(|(_, p)| p.trim_end_matches(')')).unwrap_or("");
+    let names: Vec<String> = if params.is_empty() {
+        vec![]
+    } else {
+        split_top(params, ',').iter().map(|p| p.trim().split_once(": ").map(|(n, _)| n.trim().to_string()).unwrap_or_else(|| p.trim().to_string())).collect()
+    };
+    let hdr = sdk_header(sig)?;
+    let args: Vec<String> = names.iter().map(|n| format!("raw::Val(IntoVal::<_, Val>::into_val(&{n}, &env).get_payload())")).collect();
+    let call = format!("raw::{name}({})", args.join(", "));
+    let body = if ret == "()" || ret.is_empty() {
+        format!("        {call};")
+    } else {
+        format!("        <{ret} as TryFromVal<Env, Val>>::try_from_val(&env, &Val::from_payload({call}.0)).unwrap()")
+    };
+    Ok(format!("    {hdr}\n{body}\n    }}\n"))
 }
 
 struct Fn_<'a, 'tcx> {

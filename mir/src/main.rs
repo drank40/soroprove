@@ -87,6 +87,7 @@ struct Lift {
     rust: bool,
     contract: bool,
     partial: bool,
+    complete: bool,
 }
 
 impl Callbacks for Lift {
@@ -123,10 +124,10 @@ impl Callbacks for Lift {
                 llvm(|l| meta_lines(&l.m, "soroban.rodata")),
                 llvm(|l| sdk_names(&l.m)),
             );
+            let head = llvm(|l| header(&l.m, &l.sigs)).unwrap_or_else(|e| fatal(&e));
             let text = if self.contract {
-                rs::emit_contract(tcx, &env, &bodies, &spec, &lines, self.partial).unwrap_or_else(|e| fatal(&e))
+                rs::emit_contract(tcx, &env, &bodies, &spec, &lines, self.partial, self.complete, &head).unwrap_or_else(|e| fatal(&e))
             } else {
-                let head = llvm(|l| header(&l.m, &l.sigs)).unwrap_or_else(|e| fatal(&e));
                 rs::emit(tcx, &env, &head, &bodies, &spec).unwrap_or_else(|e| fatal(&e))
             };
             std::io::Write::write_all(&mut out, text.as_bytes()).expect("write");
@@ -157,7 +158,8 @@ fn main() {
     });
     let rust = args.iter().any(|a| a == "--rust");
     let partial = args.iter().any(|a| a == "--contract-partial");
-    let contract = partial || args.iter().any(|a| a == "--contract");
+    let complete = args.iter().any(|a| a == "--contract-complete");
+    let contract = partial || complete || args.iter().any(|a| a == "--contract");
     let validate = !args.iter().any(|a| a == "--no-validate");
 
     let ctx: &'static Context = Box::leak(Box::new(Context::create()));
@@ -196,7 +198,7 @@ fn main() {
     if validate {
         rustc_args.push("-Zvalidate-mir".into());
     }
-    rustc_driver::run_compiler(&rustc_args, &mut Lift { rust, contract, partial });
+    rustc_driver::run_compiler(&rustc_args, &mut Lift { rust, contract, partial, complete });
     let _ = std::fs::remove_dir_all(scratch);
 }
 
