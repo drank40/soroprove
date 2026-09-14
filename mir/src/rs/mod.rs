@@ -286,6 +286,33 @@ pub fn emit_contract<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'
     for l in lines {
         out.push_str(&type_item(l));
     }
+    // A spec function may name a UDT the spec never defines (a private
+    // migration/config type). Alias each undefined type to `Val` so the
+    // reconstruction still compiles; the reader sees it was not in the spec.
+    let mut defined: std::collections::HashSet<String> = lines.iter().filter_map(|l| l.split_whitespace().nth(1).map(|n| n.split(['{', '(']).next().unwrap_or(n).to_string())).collect();
+    let builtin = ["Val", "Env", "Address", "MuxedAddress", "Bytes", "BytesN", "String", "Symbol", "Vec", "Map", "Result", "Option", "Timepoint", "Duration", "I256", "U256", "bool", "u32", "i32", "u64", "i64", "u128", "i128", "u256", "i256"];
+    let mut aliases: Vec<String> = Vec::new();
+    for sig in spec.sigs.values() {
+        let ret_params = sig.splitn(2, '(').nth(1).unwrap_or("");
+        let mut word = String::new();
+        for c in ret_params.chars().chain(std::iter::once(' ')) {
+            if c.is_alphanumeric() || c == '_' {
+                word.push(c);
+            } else {
+                if word.chars().next().is_some_and(|f| f.is_ascii_uppercase() || f == '_') && !builtin.contains(&word.as_str()) && !defined.contains(&word) && !aliases.contains(&word) {
+                    aliases.push(word.clone());
+                }
+                word.clear();
+            }
+        }
+    }
+    for a in &aliases {
+        defined.insert(a.clone());
+        out.push_str(&format!("type {a} = Val; // not in the spec; referenced by a signature\n"));
+    }
+    if !aliases.is_empty() {
+        out.push('\n');
+    }
     out.push_str("#[contract]\npub struct Contract;\n\n#[contractimpl]\nimpl Contract {\n");
     let mut need_raw = false;
     for body in bodies {
