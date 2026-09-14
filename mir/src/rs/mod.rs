@@ -306,9 +306,26 @@ pub fn emit_contract<'tcx>(tcx: TyCtxt<'tcx>, env: &Env<'tcx>, bodies: &[&Body<'
             }
         }
     }
+    // A referenced-but-undefined type whose value the code requires to be
+    // Void carries no data: it is `()`. Others get `Val` (safe for any shape).
+    let mut unit: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for body in bodies {
+        let n = tcx.item_name(body.source.def_id()).to_string();
+        let Some(ptys) = spec.params.get(&n) else { continue };
+        let f = Fn_::new(tcx, env, body, spec, &prev, &inter, true);
+        for (i, ty) in ptys.iter().enumerate() {
+            if aliases.contains(ty) && f.param_is_void(i) {
+                unit.insert(ty.clone());
+            }
+        }
+    }
     for a in &aliases {
         defined.insert(a.clone());
-        out.push_str(&format!("type {a} = Val; // not in the spec; referenced by a signature\n"));
+        if unit.contains(a) {
+            out.push_str(&format!("type {a} = (); // not in the spec; the code requires it to be Void (carries no data)\n"));
+        } else {
+            out.push_str(&format!("type {a} = Val; // not in the spec; referenced by a signature\n"));
+        }
     }
     if !aliases.is_empty() {
         out.push('\n');

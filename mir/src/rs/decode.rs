@@ -45,6 +45,36 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         }
     }
 
+    /// A parameter the body requires to be `Void`: the sole non-diverging arm
+    /// of the tag switch on it is `Void` (tag 2). Such a parameter's type
+    /// carries no data -- it is `()`.
+    pub(super) fn param_is_void(&self, i: usize) -> bool {
+        let local = Local::from_usize(i + 1);
+        for data in self.body.basic_blocks.iter() {
+            let TerminatorKind::SwitchInt { discr, targets } = &data.terminator().kind else { continue };
+            if self.tag_of(discr) != Some(local) {
+                continue;
+            }
+            let mut void_live = false;
+            let mut other_live = false;
+            for (v, t) in targets.iter() {
+                if self.diverges_at(t, 0) {
+                    continue;
+                }
+                if v == 2 {
+                    void_live = true;
+                } else {
+                    other_live = true;
+                }
+            }
+            if !self.diverges_at(targets.otherwise(), 0) {
+                other_live = true;
+            }
+            return void_live && !other_live;
+        }
+        false
+    }
+
     /// Every decode switch in the body, by its block.
     pub(super) fn find_decodes(&self) -> HashMap<BasicBlock, Decode> {
         let mut out = HashMap::new();
