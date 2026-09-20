@@ -9,7 +9,9 @@ let
   #   libstdc++.so.6: version `CXXABI_1.3.15' not found
   # Putting gcc 14's lib on the search path fixes it. libstdc++ is backward
   # compatible, so shadowing the older one is safe for everything else here.
-  stdcxx = pkgs.lib.makeLibraryPath [ pkgs.gcc14.cc.lib ];
+  # gcc14 libstdc++ (for the stellar CLI) and libLLVM.so.18.1 (llvm-sys links
+  # it dynamically; must be found at runtime, not just at build).
+  stdcxx = pkgs.lib.makeLibraryPath [ pkgs.gcc14.cc.lib llvm ];
 in
 pkgs.mkShell {
   # llvm-config, found by llvm-sys via LLVM_SYS_181_PREFIX.
