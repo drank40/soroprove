@@ -1878,16 +1878,14 @@ fn write_summary<'c>(
     let mut out = vec![];
     for i in all_instrs(g) {
         if callee_has(i, "put_contract_data") {
-            let (dur, arity) = match i.get_operand(0) {
-                Some(Operand::Value(k)) => {
-                    if let Src::Store { dur, params } = store_src(i, &gargs) {
-                        let _ = k;
-                        (dur, params.len())
-                    } else {
-                        ("?".into(), 0)
-                    }
-                }
-                _ => ("?".into(), 0),
+            // put_contract_data(key, value, durability): dur is operand 2, key operand 0.
+            let dur = match i.get_operand(2) {
+                Some(Operand::Value(x)) => durability(x),
+                _ => "?".into(),
+            };
+            let arity = match i.get_operand(0) {
+                Some(Operand::Value(k)) => key_params(k, &gargs).len(),
+                _ => 0,
             };
             let ve = match i.get_operand(1) {
                 Some(Operand::Value(val)) => value_expr(val, g, module, vmemo, depth),
@@ -2061,6 +2059,133 @@ fn emit_lean_amm(entries: &[(String, Vec<(&'static str, &'static str, bool)>)]) 
     println!("\nend AMM");
 }
 
+/// Render a recovered value Expr as Lean, over the entry's args; None if any
+/// part is opaque (unrecovered), which makes the slot not provably updated.
+fn lean_of_expr(e: &Expr, args: &Args) -> Option<String> {
+    match e {
+        Expr::Slot(dur, _) => Some(format!("s.{dur}")),
+        Expr::Param(i) => args.get(*i).map(|(_, n, _)| n.clone()),
+        Expr::Const(k) => Some(k.to_string()),
+        Expr::Bin(op, a, b) => {
+            let a = lean_of_expr(a, args)?;
+            let b = lean_of_expr(b, args)?;
+            Some(format!("({a} {op} {b})"))
+        }
+        Expr::Opaque(_, _) => None,
+    }
+}
+
+/// One entry's pool transition: name, amount arg, per-slot recovered update
+/// (None = opaque), recovered success guards, whether a SEP-41 transfer occurs.
+struct PoolEntry {
+    name: String,
+    amount: Option<String>,
+    updates: Vec<(String, Option<String>, bool)>, // (slot dur, lean update expr | None, is-arithmetic)
+    guards: Vec<String>,
+    has_transfer: bool,
+}
+
+/// Emit a Lean no-drain proof: tracked storage slots never go negative, proved
+/// over the RECOVERED update expressions and guards. Only slots with numeric
+/// (arithmetic) updates are tracked; the theorem is emitted only when every
+/// tracked update recovered cleanly, otherwise the opaque ones are reported.
+fn emit_lean_pool(entries: &[PoolEntry]) {
+    // tracked slots = durabilities that get an ARITHMETIC (read-modify-write)
+    // update somewhere — a balance/reserve, not a plain address store. Tracked
+    // even when the operands are opaque, so an unrecovered reserve update is
+    // flagged infeasible rather than silently dropped into a vacuous Inv.
+    let mut tracked: BTreeSet<String> = BTreeSet::new();
+    for e in entries {
+        for (dur, _upd, arith) in &e.updates {
+            if *arith {
+                tracked.insert(dur.clone());
+            }
+        }
+    }
+    // feasibility: a tracked slot must never be written opaquely.
+    let mut opaque_hits = vec![];
+    for e in entries {
+        for (dur, upd, _) in &e.updates {
+            if tracked.contains(dur) && upd.is_none() {
+                opaque_hits.push((e.name.clone(), dur.clone()));
+            }
+        }
+    }
+
+    println!("-- Auto-emitted by stellar-diver from lifted LLVM IR.");
+    println!("-- No-drain: each tracked storage slot (a balance/reserve) stays >= 0 across every");
+    println!("-- entrypoint, proved over the RECOVERED update expressions and guards.");
+    println!("-- i128/u128 modelled as unbounded Int (sound under the contract's range checks).\n");
+    println!("namespace Pool\n");
+    println!("structure State where");
+    for d in &tracked {
+        println!("  {d} : Int   -- storage.{d}[user] (a balance/reserve)");
+    }
+    println!();
+
+    println!("inductive Action where");
+    for e in entries {
+        let c = lean_ctor(&e.name);
+        match &e.amount {
+            Some(a) => println!("  | {c} ({a} : Int) : Action"),
+            None => println!("  | {c} : Action"),
+        }
+    }
+    println!();
+
+    println!("def guard (s : State) : Action → Prop");
+    for e in entries {
+        let c = lean_ctor(&e.name);
+        let bind = e.amount.as_ref().map(|a| format!(" {a}")).unwrap_or_default();
+        let mut parts = e.guards.clone();
+        if e.has_transfer {
+            if let Some(a) = &e.amount {
+                parts.push(format!("{a} ≥ 0"));
+            }
+        }
+        let body = if parts.is_empty() { "True".into() } else { parts.join(" ∧ ") };
+        println!("  | .{c}{bind} => {body}");
+    }
+    println!();
+
+    println!("def step (s : State) : Action → State");
+    for e in entries {
+        let c = lean_ctor(&e.name);
+        let bind = e.amount.as_ref().map(|a| format!(" {a}")).unwrap_or_default();
+        let upd: Vec<String> = e
+            .updates
+            .iter()
+            .filter(|(d, _, _)| tracked.contains(d))
+            .filter_map(|(d, u, _)| u.as_ref().map(|e| format!("{d} := {e}")))
+            .collect();
+        if upd.is_empty() {
+            println!("  | .{c}{bind} => s");
+        } else {
+            println!("  | .{c}{bind} => {{ s with {} }}", upd.join(", "));
+        }
+    }
+    println!();
+
+    println!("def Inv (s : State) : Prop :=");
+    let conj: Vec<String> = tracked.iter().map(|d| format!("s.{d} ≥ 0")).collect();
+    println!("  {}\n", if conj.is_empty() { "True".into() } else { conj.join(" ∧ ") });
+
+    if opaque_hits.is_empty() {
+        println!("-- NO-DRAIN, proved across every entrypoint by omega (over recovered updates):");
+        println!("theorem no_drain (s : State) (a : Action) (h : Inv s) (g : guard s a) :");
+        println!("    Inv (step s a) := by");
+        println!("  cases a <;> simp_all [Inv, guard, step] <;> omega");
+    } else {
+        println!("-- NOT YET FEASIBLE: these entrypoints write a tracked slot with an update the");
+        println!("-- abstraction could not recover (opaque, interprocedurally spilled):");
+        for (n, d) in &opaque_hits {
+            println!("--   {n} writes storage.{d} opaquely");
+        }
+        println!("-- (model emitted above; the no_drain theorem is withheld until these recover.)");
+    }
+    println!("\nend Pool");
+}
+
 /// Build the transition record for one entry: amount arg, recovered success
 /// guards, storage updates, SEP-41 direction, auth. Returns the slot durabilities
 /// it touches so the caller can assemble the shared state signature.
@@ -2145,8 +2270,8 @@ fn main() {
         args.next()
             .expect("usage: slice <file.ll> [--fn F] [--sink transfer|trap|error|error-ret|all] [--callee call] [--sym transfer|any]"),
     );
-    let (mut only_fn, mut callee, mut sym, mut sink_sel, mut raw, mut lean_sm, mut amm_dbg, mut lean_amm, mut expr_dbg) =
-        (None, "call".to_string(), Some("transfer".to_string()), "all".to_string(), false, false, false, false, false);
+    let (mut only_fn, mut callee, mut sym, mut sink_sel, mut raw, mut lean_sm, mut amm_dbg, mut lean_amm, mut expr_dbg, mut lean_pool) =
+        (None, "call".to_string(), Some("transfer".to_string()), "all".to_string(), false, false, false, false, false, false);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--fn" => only_fn = args.next(),
@@ -2157,6 +2282,7 @@ fn main() {
             "--lean-sm" => lean_sm = true,
             "--amm-dbg" => amm_dbg = true,
             "--lean-amm" => lean_amm = true,
+            "--lean-pool" => lean_pool = true,
             "--expr-dbg" => expr_dbg = true,
             other => eprintln!("ignoring arg {other}"),
         }
@@ -2177,12 +2303,44 @@ fn main() {
     let mut transes: Vec<Trans> = vec![];
     let mut all_slots: BTreeSet<String> = BTreeSet::new();
     let mut amm_entries: Vec<(String, Vec<(&'static str, &'static str, bool)>)> = vec![];
+    let mut pool_entries: Vec<PoolEntry> = vec![];
     for f in module.get_functions() {
         if f.count_basic_blocks() == 0 {
             continue;
         }
         let name = f.get_name().to_string_lossy().into_owned();
         if only_fn.as_ref().map(|w| &name != w).unwrap_or(false) {
+            continue;
+        }
+
+        if lean_pool {
+            if !is_entry(f) {
+                continue;
+            }
+            let fargs = arg_table(f);
+            let (t, _slots) = build_trans(f, &module, &callee);
+            let (mut wmemo, mut vmemo) = (HashMap::new(), HashMap::new());
+            let writes = write_summary(f, &module, &mut wmemo, &mut vmemo, 14);
+            // dedup updates by durability, keep the recovered value expr + arith flag.
+            let mut updates: Vec<(String, Option<String>, bool)> = vec![];
+            for (dur, _ar, expr) in &writes {
+                if updates.iter().any(|(d, _, _)| d == dur) {
+                    continue;
+                }
+                updates.push((dur.clone(), lean_of_expr(expr, &fargs), expr_ops(expr) >= 1));
+            }
+            let guards: Vec<String> = t
+                .guards
+                .iter()
+                .map(|(op, l, r)| format!("{} {} {}", lean_term(l), op.lean(), lean_term(r)))
+                .collect();
+            pool_entries.push(PoolEntry {
+                name,
+                amount: t.amount,
+                updates,
+                guards,
+                has_transfer: t.ext != 0,
+            });
             continue;
         }
 
@@ -2270,6 +2428,9 @@ fn main() {
     }
     if lean_amm {
         emit_lean_amm(&amm_entries);
+    }
+    if lean_pool {
+        emit_lean_pool(&pool_entries);
     }
 }
 
