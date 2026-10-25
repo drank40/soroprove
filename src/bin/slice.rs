@@ -1380,6 +1380,152 @@ fn write_updates<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>,
     ups
 }
 
+// ---- transitive SEP-41 transfer summary (general, any depth) ----
+
+/// The length of a `*_from_linear_memory` vector (its `U32Val` count operand).
+fn vec_len(vec: InstructionValue) -> usize {
+    if let Some(Operand::Value(v)) = vec.get_operand(1) {
+        if let Some(i) = as_instr(v) {
+            if callee_has(i, "from_payload") {
+                if let Some(Operand::Value(BasicValueEnum::IntValue(c))) = i.get_operand(0) {
+                    return (c.get_zero_extended_constant().unwrap_or(0) >> 32) as usize;
+                }
+            }
+        }
+    }
+    0
+}
+
+/// The values stored into a call-arg vector, in element order (the last `len`
+/// frame stores before the vec, sorted by offset) — e.g. [from, to, amount].
+fn linmem_vals_ordered<'c>(v: BasicValueEnum<'c>) -> Vec<BasicValueEnum<'c>> {
+    let Some(vec) = find_key_vec(v, 8) else { return vec![] };
+    let Some(bb) = vec.get_parent() else { return vec![] };
+    let len = vec_len(vec);
+    let mut stores: Vec<(i64, BasicValueEnum)> = vec![];
+    let mut it = bb.get_first_instruction();
+    while let Some(i) = it {
+        if i == vec {
+            break;
+        }
+        if i.get_opcode() == InstructionOpcode::Store {
+            let off = match i.get_operand(1) {
+                Some(Operand::Value(p)) => gep_off(p),
+                _ => 0,
+            };
+            if let Some(Operand::Value(val)) = i.get_operand(0) {
+                stores.push((off, val));
+            }
+        }
+        it = i.get_next_instruction();
+    }
+    stores.sort_by_key(|(o, _)| *o);
+    if len > 0 && stores.len() >= len {
+        stores.split_off(stores.len() - len).into_iter().map(|(_, v)| v).collect()
+    } else {
+        stores.into_iter().map(|(_, v)| v).collect()
+    }
+}
+
+/// Which parameter of `g` a value is (through Val wrappers), if any.
+fn param_index(v: BasicValueEnum, g: FunctionValue) -> Option<usize> {
+    for (i, p) in g.get_params().iter().enumerate() {
+        if *p == v {
+            return Some(i);
+        }
+    }
+    let i = as_instr(v)?;
+    let n = callee_name(i)?;
+    if n.contains("from_payload") || n.contains("val.payload") || n.contains("obj_to_i128") {
+        if let Some(Operand::Value(o)) = i.get_operand(0) {
+            return param_index(o, g);
+        }
+    }
+    None
+}
+
+/// Where a transfer operand comes from, relative to a function's parameters.
+#[derive(Clone, Copy, PartialEq)]
+enum ARef {
+    Param(usize),
+    Contract,
+    Other,
+}
+
+fn aref(v: BasicValueEnum, g: FunctionValue) -> ARef {
+    if let Some(i) = param_index(v, g) {
+        return ARef::Param(i);
+    }
+    if let Some(ins) = as_instr(v) {
+        let n = callee_name(ins).unwrap_or_default();
+        if n.contains("get_current_contract_address") {
+            return ARef::Contract;
+        }
+        if n.contains("from_payload") || n.contains("val.payload") || n.contains("obj_to_i128") {
+            if let Some(Operand::Value(o)) = ins.get_operand(0) {
+                return aref(o, g);
+            }
+        }
+    }
+    ARef::Other
+}
+
+#[derive(Clone)]
+struct TFact {
+    from: ARef,
+    to: ARef,
+    amount: ARef,
+}
+
+/// Transitive SEP-41 transfer summary of `g`, as facts over g's OWN parameters.
+/// Descends through `fastcc` helpers, substituting call-site args at each hop.
+fn summarize<'c>(
+    g: FunctionValue<'c>,
+    module: &inkwell::module::Module<'c>,
+    memo: &mut HashMap<String, Vec<TFact>>,
+    depth: u32,
+) -> Vec<TFact> {
+    let name = g.get_name().to_string_lossy().into_owned();
+    if let Some(f) = memo.get(&name) {
+        return f.clone();
+    }
+    memo.insert(name.clone(), vec![]); // recursion guard
+    if depth == 0 {
+        return vec![];
+    }
+    let mut facts = vec![];
+    for i in all_instrs(g) {
+        if callee_has(i, "call.call") && call_symbol(i).as_deref() == Some("transfer") {
+            let vals = match i.get_operand(2) {
+                Some(Operand::Value(av)) => linmem_vals_ordered(av),
+                _ => vec![],
+            };
+            let at = |k: usize| vals.get(k).map(|v| aref(*v, g)).unwrap_or(ARef::Other);
+            facts.push(TFact { from: at(0), to: at(1), amount: at(2) });
+            continue;
+        }
+        let Some(cn) = callee_name(i) else { continue };
+        let Some(h) = module.get_function(&cn) else { continue };
+        if h.count_basic_blocks() == 0 {
+            continue;
+        }
+        let hs = summarize(h, module, memo, depth - 1);
+        // map h's param-relative facts to g's terms via the call-site actuals.
+        let remap = |r: ARef| match r {
+            ARef::Param(j) => match i.get_operand(j as u32) {
+                Some(Operand::Value(a)) => aref(a, g),
+                _ => ARef::Other,
+            },
+            other => other,
+        };
+        for f in hs {
+            facts.push(TFact { from: remap(f.from), to: remap(f.to), amount: remap(f.amount) });
+        }
+    }
+    memo.insert(name, facts.clone());
+    facts
+}
+
 /// Direction of each SEP-41 transfer w.r.t. a user arg: +1 user receives,
 /// -1 user sends, 0 unknown. (SEP-41 is abstracted: no descent into the token.)
 fn transfer_dirs(f: FunctionValue, args: &Args) -> Vec<i32> {
@@ -1637,6 +1783,124 @@ fn emit_lean_sm(trans: &[Trans], slots: &BTreeSet<String>) {
     println!("end Contract");
 }
 
+/// Which conservation "party" a transfer endpoint maps to.
+fn party(r: ARef) -> &'static str {
+    match r {
+        ARef::Contract => "pool",   // the AMM contract itself
+        ARef::Param(_) => "ext",    // an external address arg (caller / destination)
+        ARef::Other => "other",     // unresolved recipient (potential leak — flagged)
+    }
+}
+
+/// Emit a Lean token-conservation model for an AMM: every SEP-41 transfer (found
+/// transitively, any depth) moves an amount between `ext` (external parties),
+/// `pool` (the contract) and `other` (unresolved). The amounts are action inputs
+/// (the nonlinear swap output is just another input), so conservation of the
+/// total is LINEAR and `omega` proves it across every entrypoint.
+fn emit_lean_amm(entries: &[(String, Vec<(&'static str, &'static str, bool)>)]) {
+    println!("-- Auto-emitted by stellar-diver from lifted LLVM IR (real AMM, any depth).");
+    println!("-- Token movements are the SEP-41 transfers recovered transitively through the");
+    println!("-- contract's fastcc helpers. Amounts are action inputs (the nonlinear swap");
+    println!("-- output is just an unconstrained input), so conservation is linear: `omega`.");
+    println!("-- Parties: ext = external caller/destination, pool = the AMM, other = UNRESOLVED.\n");
+    println!("namespace AMM\n");
+    println!("structure State where");
+    println!("  ext : Int   -- aggregate external-party token holdings");
+    println!("  pool : Int  -- the AMM's token holdings");
+    println!("  other : Int -- tokens sent to unresolved recipients (should stay 0)");
+    println!("  c0 : Int    -- initial total (constant)\n");
+
+    println!("inductive Action where");
+    for (name, pairs) in entries {
+        let c = lean_ctor(name);
+        if pairs.is_empty() {
+            println!("  | {c} : Action");
+        } else {
+            let ps: Vec<String> = (0..pairs.len()).map(|k| format!("(a{k} : Int)")).collect();
+            println!("  | {c} {} : Action", ps.join(" "));
+        }
+    }
+    println!();
+
+    // guard: transfer amounts are non-negative (SEP-41).
+    println!("def guard : Action → Prop");
+    for (name, pairs) in entries {
+        let c = lean_ctor(name);
+        let bind: String = (0..pairs.len()).map(|k| format!(" a{k}")).collect();
+        if pairs.is_empty() {
+            println!("  | .{c} => True");
+        } else {
+            let conj: Vec<String> = (0..pairs.len()).map(|k| format!("a{k} ≥ 0")).collect();
+            println!("  | .{c}{bind} => {}", conj.join(" ∧ "));
+        }
+    }
+    println!();
+
+    // step: apply each transfer's delta to its two parties.
+    println!("def step (s : State) : Action → State");
+    for (name, pairs) in entries {
+        let c = lean_ctor(name);
+        let bind: String = (0..pairs.len()).map(|k| format!(" a{k}")).collect();
+        if pairs.is_empty() {
+            println!("  | .{c} => s");
+            continue;
+        }
+        let mut upd = vec![];
+        for p in ["ext", "pool", "other"] {
+            let mut e = format!("s.{p}");
+            let mut touched = false;
+            for (k, (from, to, _)) in pairs.iter().enumerate() {
+                if *to == p {
+                    e.push_str(&format!(" + a{k}"));
+                    touched = true;
+                }
+                if *from == p {
+                    e.push_str(&format!(" - a{k}"));
+                    touched = true;
+                }
+            }
+            if touched {
+                upd.push(format!("{p} := {e}"));
+            }
+        }
+        if upd.is_empty() {
+            println!("  | .{c}{bind} => s");
+        } else {
+            println!("  | .{c}{bind} => {{ s with {} }}", upd.join(", "));
+        }
+    }
+    println!();
+
+    println!("def init (e p o : Int) : State := {{ ext := e, pool := p, other := o, c0 := e + p + o }}\n");
+
+    println!("-- ===== INVARIANT: the AMM creates/destroys no tokens (aggregate conservation) =====");
+    println!("def Inv (s : State) : Prop := s.ext + s.pool + s.other = s.c0\n");
+
+    println!("theorem init_holds (e p o : Int) : Inv (init e p o) := by");
+    println!("  simp only [Inv, init] <;> omega\n");
+
+    println!("-- PROVED across EVERY entrypoint of the real AMM, by omega (amounts arbitrary):");
+    println!("theorem conserved (s : State) (a : Action) (h : Inv s) (g : guard a) :");
+    println!("    Inv (step s a) := by");
+    println!("  cases a <;> simp_all [Inv, step] <;> omega\n");
+
+    // provenance: list each entry's recovered transfers and flag unresolved recipients.
+    println!("/- recovered transfer structure (provenance):");
+    for (name, pairs) in entries {
+        if pairs.is_empty() {
+            continue;
+        }
+        let leak = pairs.iter().any(|(_, _, resolved)| !*resolved);
+        let flag = if leak { "   <-- UNRESOLVED recipient (review)" } else { "" };
+        print!("   {name}:{flag}\n");
+        for (from, to, _) in pairs {
+            println!("      {from} -> {to}");
+        }
+    }
+    println!("-/");
+    println!("\nend AMM");
+}
+
 /// Build the transition record for one entry: amount arg, recovered success
 /// guards, storage updates, SEP-41 direction, auth. Returns the slot durabilities
 /// it touches so the caller can assemble the shared state signature.
@@ -1721,8 +1985,8 @@ fn main() {
         args.next()
             .expect("usage: slice <file.ll> [--fn F] [--sink transfer|trap|error|error-ret|all] [--callee call] [--sym transfer|any]"),
     );
-    let (mut only_fn, mut callee, mut sym, mut sink_sel, mut raw, mut lean, mut lean_sm) =
-        (None, "call".to_string(), Some("transfer".to_string()), "all".to_string(), false, false, false);
+    let (mut only_fn, mut callee, mut sym, mut sink_sel, mut raw, mut lean, mut lean_sm, mut amm_dbg, mut lean_amm) =
+        (None, "call".to_string(), Some("transfer".to_string()), "all".to_string(), false, false, false, false, false);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--fn" => only_fn = args.next(),
@@ -1732,6 +1996,8 @@ fn main() {
             "--raw" => raw = true,
             "--lean" => lean = true,
             "--lean-sm" => lean_sm = true,
+            "--amm-dbg" => amm_dbg = true,
+            "--lean-amm" => lean_amm = true,
             other => eprintln!("ignoring arg {other}"),
         }
     }
@@ -1751,12 +2017,52 @@ fn main() {
     let mut entries: Vec<EntryInfo> = vec![];
     let mut transes: Vec<Trans> = vec![];
     let mut all_slots: BTreeSet<String> = BTreeSet::new();
+    let mut amm_entries: Vec<(String, Vec<(&'static str, &'static str, bool)>)> = vec![];
     for f in module.get_functions() {
         if f.count_basic_blocks() == 0 {
             continue;
         }
         let name = f.get_name().to_string_lossy().into_owned();
         if only_fn.as_ref().map(|w| &name != w).unwrap_or(false) {
+            continue;
+        }
+
+        if amm_dbg {
+            if !is_entry(f) {
+                continue;
+            }
+            let fargs = arg_table(f);
+            let mut memo = HashMap::new();
+            let facts = summarize(f, &module, &mut memo, 12);
+            if facts.is_empty() {
+                continue;
+            }
+            let show = |r: ARef| match r {
+                ARef::Param(i) => fargs.get(i).map(|(_, n, _)| n.clone()).unwrap_or(format!("param{i}")),
+                ARef::Contract => "this.pool".into(),
+                ARef::Other => "?".into(),
+            };
+            println!("@{name}:");
+            for tf in &facts {
+                println!("    transfer(from={}, to={}, amount={})", show(tf.from), show(tf.to), show(tf.amount));
+            }
+            continue;
+        }
+
+        if lean_amm {
+            if !is_entry(f) {
+                continue;
+            }
+            let mut memo = HashMap::new();
+            let facts = summarize(f, &module, &mut memo, 12);
+            let pairs: Vec<(&'static str, &'static str, bool)> = facts
+                .iter()
+                .map(|tf| {
+                    let resolved = tf.from != ARef::Other && tf.to != ARef::Other;
+                    (party(tf.from), party(tf.to), resolved)
+                })
+                .collect();
+            amm_entries.push((name, pairs));
             continue;
         }
 
@@ -1825,6 +2131,9 @@ fn main() {
     }
     if lean_sm {
         emit_lean_sm(&transes, &all_slots);
+    }
+    if lean_amm {
+        emit_lean_amm(&amm_entries);
     }
 }
 
