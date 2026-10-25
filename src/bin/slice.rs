@@ -1888,7 +1888,7 @@ fn write_summary<'c>(
                 _ => 0,
             };
             let ve = match i.get_operand(1) {
-                Some(Operand::Value(val)) => value_expr(val, g, module, vmemo, depth),
+                Some(Operand::Value(val)) => simplify(value_expr(val, g, module, vmemo, depth)),
                 _ => Expr::Opaque("?".into(), vec![]),
             };
             out.push((dur, arity, ve));
@@ -1915,6 +1915,65 @@ fn write_summary<'c>(
     }
     wmemo.insert(key, out.clone());
     out
+}
+
+/// `v & 0xffffffff` — the low 32-bit limb of v.
+fn lo_limb(e: &Expr) -> Option<&Expr> {
+    if let Expr::Opaque(l, xs) = e {
+        if l == "And" && xs.len() == 2 && xs[1] == Expr::Const(4294967295) {
+            return Some(&xs[0]);
+        }
+    }
+    None
+}
+/// `v >> 32` — the high 32-bit limb of v.
+fn hi_limb(e: &Expr) -> Option<&Expr> {
+    if let Expr::Opaque(l, xs) = e {
+        if l == "LShr" && xs.len() == 2 && xs[1] == Expr::Const(32) {
+            return Some(&xs[0]);
+        }
+    }
+    None
+}
+
+/// Either limb (low via `&mask`, or high via `>>32`) of a value.
+fn limb_of(e: &Expr) -> Option<&Expr> {
+    lo_limb(e).or_else(|| hi_limb(e))
+}
+
+/// Collapse the 64-bit-multiply-from-32-bit-limbs idiom back to a Mul:
+///   (lo A * hi B + hi A * lo B) << 32  +  lo A * lo B   ==>   A * B
+/// (bottom-up), so a native i64 `y*dx` lowered to limb products reads as `y*dx`.
+fn simplify(e: Expr) -> Expr {
+    let e = match e {
+        Expr::Bin(op, a, b) => Expr::Bin(op, Box::new(simplify(*a)), Box::new(simplify(*b))),
+        Expr::Opaque(l, xs) => Expr::Opaque(l, xs.into_iter().map(simplify).collect()),
+        x => x,
+    };
+    if let Expr::Bin('+', shl, low) = &e {
+        if let (Expr::Opaque(sl, sx), Expr::Bin('*', la, lb)) = (&**shl, &**low) {
+            if sl == "Shl" && sx.len() == 2 && sx[1] == Expr::Const(32) {
+                if let (Some(a), Some(b)) = (lo_limb(la), lo_limb(lb)) {
+                    // the low term is lo(a)*lo(b) and a <<32 cross term is present:
+                    // the standard low-64-bits-of-(a*b) shape. Verify the cross term
+                    // is built from the limbs of a and b (one hi, one lo each).
+                    let cross_ok = |c: &Expr| matches!(c, Expr::Bin('*', m, n)
+                        if {
+                            let (lm, ln) = (limb_of(m), limb_of(n));
+                            (lm == Some(a) && ln == Some(b)) || (lm == Some(b) && ln == Some(a))
+                        });
+                    let shl_ok = match &sx[0] {
+                        Expr::Bin('+', c1, c2) => cross_ok(c1) && cross_ok(c2),
+                        c => cross_ok(c),
+                    };
+                    if shl_ok {
+                        return Expr::Bin('*', Box::new(a.clone()), Box::new(b.clone()));
+                    }
+                }
+            }
+        }
+    }
+    e
 }
 
 /// Render an Expr for humans, using the entry's arg names for Param.
@@ -2186,10 +2245,99 @@ fn emit_lean_pool(entries: &[PoolEntry]) {
     println!("\nend Pool");
 }
 
-/// Emit the constant-product NO-DRAIN proof (core Lean 4, no Mathlib) for the
-/// pool's recognized exchange entrypoints. The reserve-update STRUCTURE (dx in,
-/// `out` out between two reserves) is recovered from the SEP-41 transfer summary;
-/// the constant-product output bound is the one spec hypothesis (annotated).
+/// Recognize the constant-product swap in an entry's recovered storage writes:
+///   x-reserve := x + dx        and        y-reserve := y - (y*dx)/(x+dx)
+/// Returns (x durability, y durability, dx arg name) when it matches. This is
+/// what ties the emitted no-drain proof to the actual bytecode.
+fn recognize_cpmm(writes: &[(String, usize, Expr)], args: &Args) -> Option<(String, String, String)> {
+    let slot = |e: &Expr| if let Expr::Slot(d, _) = e { Some(d.clone()) } else { None };
+    let param = |e: &Expr| if let Expr::Param(i) = e { Some(*i) } else { None };
+    // x-reserve: d := Slot(d) + Param(dx)
+    let mut xinfo: Option<(String, usize)> = None;
+    for (d, _, e) in writes {
+        if let Expr::Bin('+', a, b) = e {
+            if slot(a).as_deref() == Some(d) {
+                if let Some(dx) = param(b) {
+                    xinfo = Some((d.clone(), dx));
+                }
+            }
+        }
+    }
+    let (xdur, dx) = xinfo?;
+    // y-reserve: d := Slot(d) - ((Slot(d) * Param(dx)) / (Slot(xdur) + Param(dx)))
+    for (d, _, e) in writes {
+        if let Expr::Bin('-', y1, divv) = e {
+            if slot(y1).as_deref() != Some(d) {
+                continue;
+            }
+            if let Expr::Bin('/', num, den) = &**divv {
+                if let (Expr::Bin('*', ya, dxa), Expr::Bin('+', xa, dxb)) = (&**num, &**den) {
+                    let ok = slot(ya).as_deref() == Some(d)
+                        && param(dxa) == Some(dx)
+                        && slot(xa).as_deref() == Some(&xdur)
+                        && param(dxb) == Some(dx);
+                    if ok {
+                        let dxname = args.get(dx).map(|(_, n, _)| n.clone()).unwrap_or_else(|| "dx".into());
+                        return Some((xdur, d.clone(), dxname));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Emit the constant-product NO-DRAIN proof (core Lean 4, no Mathlib). When the
+/// constant-product swap formula is RECOGNIZED in the recovered writes, the
+/// anti-drain bound `out*(x+dx) ≤ y*dx` is DISCHARGED from the recovered floor
+/// division (Nat.div_mul_le_self) -- not assumed. Otherwise the proof is withheld.
+fn emit_lean_cpmm_proved(recognized: &[(String, String, String, String)]) {
+    if recognized.is_empty() {
+        println!("-- Auto-emitted by stellar-diver: the constant-product swap formula");
+        println!("-- (x += dx ; y -= y*dx/(x+dx)) was NOT recognized in any entrypoint's");
+        println!("-- recovered storage writes, so the no-drain proof is withheld.");
+        println!("-- (Run --expr-dbg to see the recovered update expressions.)");
+        return;
+    }
+    println!("-- Auto-emitted by stellar-diver from lifted LLVM IR.");
+    println!("-- Constant-product NO-DRAIN, RECOGNIZED in the recovered bytecode:");
+    for (ent, xd, yd, dxn) in recognized {
+        println!("--   {ent}: x=storage.{xd}, y=storage.{yd}, dx={dxn}");
+        println!("--     x := x + {dxn};  y := y - (y*{dxn})/(x+{dxn})   [matches y*dx/(x+dx)]");
+    }
+    println!("-- The anti-drain bound out*(x+dx) ≤ y*dx is DISCHARGED from the recovered");
+    println!("-- floor division (Nat.div_mul_le_self) -- it is NOT assumed.\n");
+    println!("namespace Pool");
+    println!("-- Reserves x, y as Nat. Recovered swap: x := x + dx ;  y := y - out,");
+    println!("-- where out = y*dx / (x+dx)  (floor division, as in the bytecode).\n");
+    println!("def out (x y dx : Nat) : Nat := y * dx / (x + dx)");
+    println!("def Inv (x y k0 : Nat) : Prop := k0 ≤ x * y\n");
+    println!("theorem no_drain_step (x y dx k0 : Nat) (hi : Inv x y k0) :");
+    println!("    Inv (x + dx) (y - out x y dx) k0 := by");
+    println!("  unfold Inv at *");
+    println!("  have hfloor : out x y dx * (x + dx) ≤ y * dx := Nat.div_mul_le_self (y * dx) (x + dx)");
+    println!("  have hdist  : (x + dx) * (y - out x y dx) = (x + dx) * y - (x + dx) * out x y dx := Nat.mul_sub _ _ _");
+    println!("  have hxy    : (x + dx) * y = x * y + dx * y := Nat.add_mul x dx y");
+    println!("  have hc1    : y * dx = dx * y := Nat.mul_comm y dx");
+    println!("  have hc2    : out x y dx * (x + dx) = (x + dx) * out x y dx := Nat.mul_comm _ _");
+    println!("  rw [hdist, hxy]; omega\n");
+    println!("inductive Reach (x0 y0 : Nat) : Nat → Nat → Prop where");
+    println!("  | refl : Reach x0 y0 x0 y0");
+    println!("  | step {{x y dx}} : Reach x0 y0 x y → Reach x0 y0 (x + dx) (y - out x y dx)\n");
+    println!("-- NO-DRAIN: product ≥ k0 at every reachable state -- the pool cannot be drained.");
+    println!("theorem no_drain (x0 y0 k0 x y : Nat) (hi : Inv x0 y0 k0) (r : Reach x0 y0 x y) :");
+    println!("    Inv x y k0 := by");
+    println!("  induction r with");
+    println!("  | refl => exact hi");
+    println!("  | step _ ih => exact no_drain_step _ _ _ _ ih\n");
+    println!("-- from initial product k0 = x0*y0, every reachable state has x*y ≥ k0.");
+    println!("theorem product_floor (x0 y0 x y : Nat) (r : Reach x0 y0 x y) : x0 * y0 ≤ x * y :=");
+    println!("  no_drain x0 y0 (x0 * y0) x y (Nat.le_refl _) r\n");
+    println!("end Pool");
+}
+
+/// (legacy) assume-the-bound variant, kept unused.
+#[allow(dead_code)]
 fn emit_lean_cpmm(swap_names: &[String], u256_ops: usize) {
     println!("-- Auto-emitted by stellar-diver from lifted LLVM IR.");
     println!("-- Constant-product NO-DRAIN for the pool's exchange entrypoint(s): {}.", swap_names.join(", "));
@@ -2361,7 +2509,7 @@ fn main() {
     let mut all_slots: BTreeSet<String> = BTreeSet::new();
     let mut amm_entries: Vec<(String, Vec<(&'static str, &'static str, bool)>)> = vec![];
     let mut pool_entries: Vec<PoolEntry> = vec![];
-    let mut swap_names: Vec<String> = vec![];
+    let mut cpmm_hits: Vec<(String, String, String, String)> = vec![];
     for f in module.get_functions() {
         if f.count_basic_blocks() == 0 {
             continue;
@@ -2375,12 +2523,11 @@ fn main() {
             if !is_entry(f) {
                 continue;
             }
-            let mut memo = HashMap::new();
-            let facts = summarize(f, &module, &mut memo, 12);
-            let has_in = facts.iter().any(|t| t.from != ARef::Contract && t.to == ARef::Contract);
-            let has_out = facts.iter().any(|t| t.from == ARef::Contract && t.to != ARef::Contract);
-            if has_in && has_out {
-                swap_names.push(name);
+            let fargs = arg_table(f);
+            let (mut wmemo, mut vmemo) = (HashMap::new(), HashMap::new());
+            let writes = write_summary(f, &module, &mut wmemo, &mut vmemo, 40);
+            if let Some((xd, yd, dxn)) = recognize_cpmm(&writes, &fargs) {
+                cpmm_hits.push((name, xd, yd, dxn));
             }
             continue;
         }
@@ -2392,7 +2539,7 @@ fn main() {
             let fargs = arg_table(f);
             let (t, _slots) = build_trans(f, &module, &callee);
             let (mut wmemo, mut vmemo) = (HashMap::new(), HashMap::new());
-            let writes = write_summary(f, &module, &mut wmemo, &mut vmemo, 14);
+            let writes = write_summary(f, &module, &mut wmemo, &mut vmemo, 40);
             // dedup updates by durability, keep the recovered value expr + arith flag.
             let mut updates: Vec<(String, Option<String>, bool)> = vec![];
             for (dur, _ar, expr) in &writes {
@@ -2422,7 +2569,7 @@ fn main() {
             }
             let fargs = arg_table(f);
             let (mut wmemo, mut vmemo) = (HashMap::new(), HashMap::new());
-            let writes = write_summary(f, &module, &mut wmemo, &mut vmemo, 14);
+            let writes = write_summary(f, &module, &mut wmemo, &mut vmemo, 40);
             if writes.is_empty() {
                 continue;
             }
@@ -2505,15 +2652,7 @@ fn main() {
         emit_lean_pool(&pool_entries);
     }
     if lean_cpmm {
-        let u256 = module
-            .get_functions()
-            .filter(|f| f.count_basic_blocks() > 0)
-            .flat_map(all_instrs)
-            .filter(|i| callee_has(*i, "u256_mul") || callee_has(*i, "u256_div"))
-            .count();
-        // keep the core exchanges (swap*), which the recognizer flags.
-        let swaps: Vec<String> = swap_names.iter().filter(|n| n.contains("swap")).cloned().collect();
-        emit_lean_cpmm(if swaps.is_empty() { &swap_names } else { &swaps }, u256);
+        emit_lean_cpmm_proved(&cpmm_hits);
     }
 }
 
