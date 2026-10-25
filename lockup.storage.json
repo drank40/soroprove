@@ -1,0 +1,10 @@
+{
+  "slots": [
+    { "durability": "instance", "key": "ReserveA", "key_params": [], "value_type": "i128", "access": "write" },
+    { "durability": "instance", "key": "ReserveB", "key_params": [], "value_type": "i128", "access": "write" },
+    { "durability": "instance", "key": "TokenA", "key_params": [], "value_type": "Address", "access": "read/write" },
+    { "durability": "instance", "key": "TokenB", "key_params": [], "value_type": "Address", "access": "write" },
+    { "durability": "instance", "key": "TotalShares", "key_params": [], "value_type": "i128", "access": "write" },
+    { "durability": "persistent", "key": "Shares", "key_params": ["Address"], "value_type": "i128", "access": "read" }
+  ]
+}
