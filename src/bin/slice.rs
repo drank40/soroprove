@@ -1574,6 +1574,264 @@ fn emit_lean_sm(trans: &[Trans], slots: &BTreeSet<String>) {
     println!("end Contract");
 }
 
+// ================= faithful symbolic value translation (general) =================
+
+/// A recovered value expression over a function's parameters and storage.
+#[derive(Clone)]
+enum Expr {
+    Param(usize),             // a parameter of the function being analyzed
+    Slot(String, usize),      // a storage read: durability + key arity
+    Const(i64),
+    Bin(char, Box<Expr>, Box<Expr>), // +, -, *, /, % on recognized (host) arithmetic
+    Opaque(String, Vec<Expr>),       // an unrecognized op, as an uninterpreted fn of its inputs
+}
+
+/// Map a host arithmetic callee to an operator, if recognized.
+fn host_op(name: &str) -> Option<char> {
+    let n = name;
+    if n.contains("u256_mul") || n.contains("i128_mul") || n.ends_with(".mul") {
+        Some('*')
+    } else if n.contains("u256_div") || n.contains("i128_div") || n.ends_with(".div") {
+        Some('/')
+    } else if n.contains("u256_add") || n.contains("i128_add") {
+        Some('+')
+    } else if n.contains("u256_sub") || n.contains("i128_sub") {
+        Some('-')
+    } else if n.contains("rem_euclid") || n.contains("u256_rem") {
+        Some('%')
+    } else {
+        None
+    }
+}
+
+/// Is this callee a transparent Val/int wrapper we look straight through?
+fn is_wrapper(name: &str) -> bool {
+    name.contains("from_payload")
+        || name.contains("val.payload")
+        || name.contains("obj_to_u128")
+        || name.contains("obj_to_i128")
+        || name.contains("obj_to_u64")
+        || name.contains("obj_to_i64")
+        || name.contains("obj_from_u64")
+        || name.contains("obj_from_i64")
+}
+
+/// Recover the symbolic value of `v` inside function `g`, inlining `fastcc`
+/// helpers (their return expression, param-substituted). SOUND: anything not
+/// recognized becomes an uninterpreted function of its recovered inputs.
+fn value_expr<'c>(
+    v: BasicValueEnum<'c>,
+    g: FunctionValue<'c>,
+    module: &inkwell::module::Module<'c>,
+    memo: &mut HashMap<String, Option<Expr>>,
+    depth: u32,
+) -> Expr {
+    if depth == 0 {
+        return Expr::Opaque("deep".into(), vec![]);
+    }
+    if let Some(i) = param_index(v, g) {
+        return Expr::Param(i);
+    }
+    if let Some(BasicValueEnum::IntValue(c)) = Some(v) {
+        if c.is_const() {
+            if let Some(k) = c.get_sign_extended_constant() {
+                return Expr::Const(k);
+            }
+        }
+    }
+    let Some(ins) = as_instr(v) else { return Expr::Opaque("arg".into(), vec![]) };
+    let name = callee_name(ins).unwrap_or_default();
+
+    if name.contains("get_contract_data") {
+        if let Src::Store { dur, params } = store_src(ins, &arg_table(g)) {
+            return Expr::Slot(dur, params.len());
+        }
+    }
+    if let Some(op) = host_op(&name) {
+        // binary host arithmetic: first two Val operands.
+        let a = match ins.get_operand(0) { Some(Operand::Value(x)) => value_expr(x, g, module, memo, depth - 1), _ => Expr::Opaque("?".into(), vec![]) };
+        let b = match ins.get_operand(1) { Some(Operand::Value(x)) => value_expr(x, g, module, memo, depth - 1), _ => Expr::Opaque("?".into(), vec![]) };
+        return Expr::Bin(op, Box::new(a), Box::new(b));
+    }
+    if is_wrapper(&name) {
+        if let Some(Operand::Value(inner)) = ins.get_operand(0) {
+            return value_expr(inner, g, module, memo, depth - 1);
+        }
+    }
+    // obj_from_*_pieces(hi, lo): if both limbs are hi/lo of the SAME value, pass it through.
+    if name.contains("obj_from_") && name.contains("_pieces") {
+        let unwrap_limb = |k: u32| -> Option<BasicValueEnum<'c>> {
+            match ins.get_operand(k) {
+                Some(Operand::Value(x)) => as_instr(x).and_then(|xi| {
+                    if callee_name(xi).map(|n| n.contains("obj_to_")).unwrap_or(false) {
+                        match xi.get_operand(0) { Some(Operand::Value(w)) => Some(w), _ => None }
+                    } else { None }
+                }),
+                _ => None,
+            }
+        };
+        if let (Some(hw), Some(lw)) = (unwrap_limb(0), unwrap_limb(1)) {
+            if hw == lw {
+                return value_expr(hw, g, module, memo, depth - 1);
+            }
+        }
+    }
+    // an internal fastcc helper: inline its return expression, substituting args.
+    if let Some(h) = module.get_function(&name) {
+        if h.count_basic_blocks() > 0 {
+            if let Some(re) = ret_expr(h, module, memo, depth - 1) {
+                let actuals: Vec<Expr> = (0..ins.get_num_operands().saturating_sub(1))
+                    .map(|k| match ins.get_operand(k) {
+                        Some(Operand::Value(x)) => value_expr(x, g, module, memo, depth - 1),
+                        _ => Expr::Opaque("?".into(), vec![]),
+                    })
+                    .collect();
+                return subst(&re, &actuals);
+            }
+        }
+    }
+    // unrecognized: uninterpreted function of its recovered value operands.
+    let label = if name.is_empty() { format!("{:?}", ins.get_opcode()) } else { name };
+    let inputs: Vec<Expr> = (0..ins.get_num_operands())
+        .filter_map(|k| match ins.get_operand(k) {
+            Some(Operand::Value(x)) if x.is_int_value() || x.is_pointer_value() => {
+                Some(value_expr(x, g, module, memo, depth - 1))
+            }
+            _ => None,
+        })
+        .collect();
+    Expr::Opaque(sanitize(&label), inputs)
+}
+
+/// The return expression of `g` over its own parameters (memoized).
+fn ret_expr<'c>(
+    g: FunctionValue<'c>,
+    module: &inkwell::module::Module<'c>,
+    memo: &mut HashMap<String, Option<Expr>>,
+    depth: u32,
+) -> Option<Expr> {
+    let key = g.get_name().to_string_lossy().into_owned();
+    if let Some(e) = memo.get(&key) {
+        return e.clone();
+    }
+    memo.insert(key.clone(), None); // recursion guard
+    if depth == 0 {
+        return None;
+    }
+    // find a `ret <val>` with a value operand.
+    let mut result = None;
+    for i in all_instrs(g) {
+        if i.get_opcode() == InstructionOpcode::Return {
+            if let Some(Operand::Value(rv)) = i.get_operand(0) {
+                result = Some(value_expr(rv, g, module, memo, depth - 1));
+                break;
+            }
+        }
+    }
+    memo.insert(key, result.clone());
+    result
+}
+
+/// Substitute a callee's param-relative expression with the caller's arg exprs.
+fn subst(e: &Expr, actuals: &[Expr]) -> Expr {
+    match e {
+        Expr::Param(i) => actuals.get(*i).cloned().unwrap_or(Expr::Opaque("arg".into(), vec![])),
+        Expr::Bin(op, a, b) => Expr::Bin(*op, Box::new(subst(a, actuals)), Box::new(subst(b, actuals))),
+        Expr::Opaque(l, xs) => Expr::Opaque(l.clone(), xs.iter().map(|x| subst(x, actuals)).collect()),
+        other => other.clone(),
+    }
+}
+
+fn sanitize(s: &str) -> String {
+    s.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect()
+}
+
+/// Transitive storage-write summary of `g`, as (slot, value-expr) over g's own
+/// parameters. Descends `fastcc` helpers, substituting call-site args.
+fn write_summary<'c>(
+    g: FunctionValue<'c>,
+    module: &inkwell::module::Module<'c>,
+    wmemo: &mut HashMap<String, Vec<(String, usize, Expr)>>,
+    vmemo: &mut HashMap<String, Option<Expr>>,
+    depth: u32,
+) -> Vec<(String, usize, Expr)> {
+    let key = g.get_name().to_string_lossy().into_owned();
+    if let Some(w) = wmemo.get(&key) {
+        return w.clone();
+    }
+    wmemo.insert(key.clone(), vec![]);
+    if depth == 0 {
+        return vec![];
+    }
+    let gargs = arg_table(g);
+    let mut out = vec![];
+    for i in all_instrs(g) {
+        if callee_has(i, "put_contract_data") {
+            let (dur, arity) = match i.get_operand(0) {
+                Some(Operand::Value(k)) => {
+                    if let Src::Store { dur, params } = store_src(i, &gargs) {
+                        let _ = k;
+                        (dur, params.len())
+                    } else {
+                        ("?".into(), 0)
+                    }
+                }
+                _ => ("?".into(), 0),
+            };
+            let ve = match i.get_operand(1) {
+                Some(Operand::Value(val)) => value_expr(val, g, module, vmemo, depth),
+                _ => Expr::Opaque("?".into(), vec![]),
+            };
+            out.push((dur, arity, ve));
+            continue;
+        }
+        let Some(cn) = callee_name(i) else { continue };
+        let Some(h) = module.get_function(&cn) else { continue };
+        if h.count_basic_blocks() == 0 {
+            continue;
+        }
+        let hs = write_summary(h, module, wmemo, vmemo, depth - 1);
+        if hs.is_empty() {
+            continue;
+        }
+        let actuals: Vec<Expr> = (0..i.get_num_operands().saturating_sub(1))
+            .map(|k| match i.get_operand(k) {
+                Some(Operand::Value(x)) => value_expr(x, g, module, vmemo, depth),
+                _ => Expr::Opaque("?".into(), vec![]),
+            })
+            .collect();
+        for (dur, arity, ve) in hs {
+            out.push((dur, arity, subst(&ve, &actuals)));
+        }
+    }
+    wmemo.insert(key, out.clone());
+    out
+}
+
+/// Render an Expr for humans, using the entry's arg names for Param.
+fn render_expr(e: &Expr, args: &Args) -> String {
+    match e {
+        Expr::Param(i) => args.get(*i).map(|(_, n, _)| n.clone()).unwrap_or(format!("p{i}")),
+        Expr::Slot(dur, ar) => format!("storage.{dur}/{ar}"),
+        Expr::Const(k) => k.to_string(),
+        Expr::Bin(op, a, b) => format!("({} {} {})", render_expr(a, args), op, render_expr(b, args)),
+        Expr::Opaque(l, xs) if xs.is_empty() => l.clone(),
+        Expr::Opaque(l, xs) => {
+            let inner: Vec<String> = xs.iter().map(|x| render_expr(x, args)).collect();
+            format!("{l}({})", inner.join(", "))
+        }
+    }
+}
+
+/// How many arithmetic operators a recovered expr contains (recovery signal).
+fn expr_ops(e: &Expr) -> usize {
+    match e {
+        Expr::Bin(_, a, b) => 1 + expr_ops(a) + expr_ops(b),
+        Expr::Opaque(_, xs) => xs.iter().map(expr_ops).sum(),
+        _ => 0,
+    }
+}
+
 /// Which conservation "party" a transfer endpoint maps to.
 fn party(r: ARef) -> &'static str {
     match r {
@@ -1776,8 +2034,8 @@ fn main() {
         args.next()
             .expect("usage: slice <file.ll> [--fn F] [--sink transfer|trap|error|error-ret|all] [--callee call] [--sym transfer|any]"),
     );
-    let (mut only_fn, mut callee, mut sym, mut sink_sel, mut raw, mut lean_sm, mut amm_dbg, mut lean_amm) =
-        (None, "call".to_string(), Some("transfer".to_string()), "all".to_string(), false, false, false, false);
+    let (mut only_fn, mut callee, mut sym, mut sink_sel, mut raw, mut lean_sm, mut amm_dbg, mut lean_amm, mut expr_dbg) =
+        (None, "call".to_string(), Some("transfer".to_string()), "all".to_string(), false, false, false, false, false);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--fn" => only_fn = args.next(),
@@ -1788,6 +2046,7 @@ fn main() {
             "--lean-sm" => lean_sm = true,
             "--amm-dbg" => amm_dbg = true,
             "--lean-amm" => lean_amm = true,
+            "--expr-dbg" => expr_dbg = true,
             other => eprintln!("ignoring arg {other}"),
         }
     }
@@ -1813,6 +2072,23 @@ fn main() {
         }
         let name = f.get_name().to_string_lossy().into_owned();
         if only_fn.as_ref().map(|w| &name != w).unwrap_or(false) {
+            continue;
+        }
+
+        if expr_dbg {
+            if !is_entry(f) {
+                continue;
+            }
+            let fargs = arg_table(f);
+            let (mut wmemo, mut vmemo) = (HashMap::new(), HashMap::new());
+            let writes = write_summary(f, &module, &mut wmemo, &mut vmemo, 14);
+            if writes.is_empty() {
+                continue;
+            }
+            println!("@{name}:");
+            for (dur, ar, ve) in &writes {
+                println!("    storage.{dur}/{ar} := {}   [{} ops]", render_expr(ve, &fargs), expr_ops(ve));
+            }
             continue;
         }
 
