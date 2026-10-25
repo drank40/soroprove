@@ -1630,55 +1630,138 @@ fn ptr_base_off(p: BasicValueEnum) -> (String, i64) {
     (fmt(p), 0)
 }
 
-/// The value feeding a `load`, via store-forwarding. First the reaching
-/// definition within the load's own basic block (the latest preceding store to
-/// the same slot) — this resolves the common spill-then-reload pattern even when
-/// the frame slot is reused elsewhere. Failing that, a whole-function UNIQUE
-/// store (a single definition). Both are sound; neither blows up.
+/// Does this pointer bottom out at an `alloca` (through geps)? Only then can we
+/// compare it precisely; anything else (inttoptr of an i64 address, unknown) is
+/// opaque and a store through it may-aliases every slot.
+fn ptr_is_clean(p: BasicValueEnum) -> bool {
+    let mut cur = p;
+    loop {
+        match as_instr(cur) {
+            Some(i) if i.get_opcode() == InstructionOpcode::Alloca => return true,
+            Some(i) if i.get_opcode() == InstructionOpcode::GetElementPtr => match i.get_operand(0) {
+                Some(Operand::Value(b)) => cur = b,
+                _ => return false,
+            },
+            _ => return false,
+        }
+    }
+}
+
+/// The state of the slot after scanning block `b` up to `stop`: None = untouched
+/// here (look at predecessors); Some(None) = clobbered/ambiguous (a may-alias
+/// store); Some(Some v) = cleanly defined to v. A store through an un-analyzable
+/// pointer KILLS the definition — this is what keeps forwarding sound.
+fn block_rd<'c>(b: BasicBlock<'c>, stop: Option<InstructionValue<'c>>, ptr: BasicValueEnum<'c>, target: &(String, i64)) -> Option<Option<BasicValueEnum<'c>>> {
+    let mut cur: Option<Option<BasicValueEnum<'c>>> = None;
+    let mut it = b.get_first_instruction();
+    while let Some(i) = it {
+        if Some(i) == stop {
+            break;
+        }
+        if i.get_opcode() == InstructionOpcode::Store {
+            if let (Some(Operand::Value(sv)), Some(Operand::Value(sp))) = (i.get_operand(0), i.get_operand(1)) {
+                if sp == ptr {
+                    cur = Some(Some(sv));
+                } else if ptr_is_clean(sp) {
+                    if ptr_base_off(sp) == *target {
+                        cur = Some(Some(sv)); // same clean location
+                    }
+                    // else: a provably different alloca location — no effect.
+                } else {
+                    cur = Some(None); // may-alias store -> clobber (sound)
+                }
+            } else {
+                cur = Some(None);
+            }
+        }
+        it = i.get_next_instruction();
+    }
+    cur
+}
+
+/// The store reaching the ENTRY of block `bi`, if a SINGLE definition reaches on
+/// every path (else None). Loops are treated conservatively (None). This is a
+/// sound intra-procedural reaching-definition: it never forwards an ambiguous value.
+fn entry_reach<'c>(
+    bi: usize,
+    blocks: &[BasicBlock<'c>],
+    preds: &[Vec<usize>],
+    ptr: BasicValueEnum<'c>,
+    target: &(String, i64),
+    visiting: &mut HashSet<usize>,
+    memo: &mut HashMap<usize, Option<BasicValueEnum<'c>>>,
+) -> Option<BasicValueEnum<'c>> {
+    if let Some(m) = memo.get(&bi) {
+        return *m;
+    }
+    if !visiting.insert(bi) {
+        return None; // loop -> ambiguous
+    }
+    let ps = &preds[bi];
+    let mut agreed: Option<Option<BasicValueEnum<'c>>> = None; // None=unset; Some(Some v)=agreed v; Some(None)=ambiguous
+    if ps.is_empty() {
+        agreed = Some(None); // entry block: uninitialized / a parameter -> not forwardable
+    }
+    for &p in ps {
+        let via = match block_rd(blocks[p], None, ptr, target) {
+            Some(x) => x,                                                      // block p defines or clobbers
+            None => entry_reach(p, blocks, preds, ptr, target, visiting, memo), // untouched in p -> look further back
+        };
+        agreed = Some(match agreed {
+            None => via,
+            Some(a) if a == via => a,
+            _ => None, // paths disagree -> ambiguous
+        });
+    }
+    visiting.remove(&bi);
+    let result = agreed.flatten();
+    memo.insert(bi, result);
+    result
+}
+
+/// The value feeding a `load`, via SOUND intra-procedural reaching definitions:
+/// the unique store to the slot that reaches the load on every path. Returns
+/// None (stays opaque) whenever the reaching definition is ambiguous — it never
+/// forwards a value that isn't guaranteed, so it cannot fabricate.
 fn forward_load<'c>(load: InstructionValue<'c>, g: FunctionValue<'c>) -> Option<BasicValueEnum<'c>> {
     let ptr = match load.get_operand(0) {
         Some(Operand::Value(p)) => p,
         _ => return None,
     };
+    // only analyze loads from a precisely-comparable (alloca-based) slot.
+    if !ptr_is_clean(ptr) {
+        return None;
+    }
     let target = ptr_base_off(ptr);
-    // (1) latest store to this slot earlier in the load's own block.
-    if let Some(blk) = load.get_parent() {
-        let mut latest = None;
-        let mut it = blk.get_first_instruction();
-        while let Some(i) = it {
-            if i == load {
-                break;
-            }
-            if i.get_opcode() == InstructionOpcode::Store {
-                if let (Some(Operand::Value(sval)), Some(Operand::Value(sptr))) =
-                    (i.get_operand(0), i.get_operand(1))
-                {
-                    if sptr == ptr || ptr_base_off(sptr) == target {
-                        latest = Some(sval);
+    let blocks = g.get_basic_blocks();
+    let load_blk = load.get_parent()?;
+    // within the load's own block: the reaching state before the load.
+    match block_rd(load_blk, Some(load), ptr, &target) {
+        Some(Some(v)) => return Some(v),
+        Some(None) => return None, // clobbered in-block before the load
+        None => {}                 // untouched here -> predecessors
+    }
+    // otherwise, the reaching definition at the block entry (across predecessors).
+    let bidx: HashMap<String, usize> = blocks
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.get_name().to_string_lossy().into_owned(), i))
+        .collect();
+    let mut preds: Vec<Vec<usize>> = vec![vec![]; blocks.len()];
+    for (i, b) in blocks.iter().enumerate() {
+        if let Some(term) = b.get_terminator() {
+            for k in 0..term.get_num_operands() {
+                if let Some(Operand::Block(bb)) = term.get_operand(k) {
+                    if let Some(&j) = bidx.get(&bb.get_name().to_string_lossy().into_owned()) {
+                        preds[j].push(i);
                     }
                 }
             }
-            it = i.get_next_instruction();
-        }
-        if latest.is_some() {
-            return latest;
         }
     }
-    // (2) whole-function unique store.
-    let mut found = None;
-    let mut count = 0usize;
-    for i in all_instrs(g) {
-        if i.get_opcode() != InstructionOpcode::Store {
-            continue;
-        }
-        let (Some(Operand::Value(sval)), Some(Operand::Value(sptr))) =
-            (i.get_operand(0), i.get_operand(1)) else { continue };
-        if sptr == ptr || ptr_base_off(sptr) == target {
-            found = Some(sval);
-            count += 1;
-        }
-    }
-    if count == 1 { found } else { None }
+    let load_bi = *bidx.get(&load_blk.get_name().to_string_lossy().into_owned())?;
+    let (mut visiting, mut memo) = (HashSet::new(), HashMap::new());
+    entry_reach(load_bi, &blocks, &preds, ptr, &target, &mut visiting, &mut memo)
 }
 
 /// Recover the symbolic value of `v` inside `g`, NORMALIZING the Soroban i128/u128
