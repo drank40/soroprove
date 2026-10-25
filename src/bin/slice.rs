@@ -2127,6 +2127,16 @@ fn limb_of(e: &Expr) -> Option<&Expr> {
     lo_limb(e).or_else(|| hi_limb(e))
 }
 
+/// Does an expr's tree mention an op whose label contains `needle`?
+fn mentions(e: &Expr, needle: &str) -> bool {
+    match e {
+        Expr::Opaque(l, xs) => l.contains(needle) || xs.iter().any(|x| mentions(x, needle)),
+        Expr::Bin(_, a, b) => mentions(a, needle) || mentions(b, needle),
+        Expr::VecGet(h, i) => mentions(h, needle) || mentions(i, needle),
+        _ => false,
+    }
+}
+
 /// Collapse the 64-bit-multiply-from-32-bit-limbs idiom back to a Mul:
 ///   (lo A * hi B + hi A * lo B) << 32  +  lo A * lo B   ==>   A * B
 /// (bottom-up), so a native i64 `y*dx` lowered to limb products reads as `y*dx`.
@@ -2137,6 +2147,14 @@ fn simplify(e: Expr) -> Expr {
         Expr::Opaque(l, xs) => Expr::Opaque(l, xs.into_iter().map(simplify).collect()),
         x => x,
     };
+    // storage-present default: Select(has_contract_data?, present, 0) -> present.
+    // Models the pool as initialized (the no-drain precondition), as the absent
+    // branch is the 0-default a get-or-default returns.
+    if let Expr::Opaque(l, xs) = &e {
+        if l == "Select" && xs.len() == 3 && xs[2] == Expr::Const(0) && mentions(&xs[0], "has_contract_data") {
+            return xs[1].clone();
+        }
+    }
     if let Expr::Bin('+', shl, low) = &e {
         if let (Expr::Opaque(sl, sx), Expr::Bin('*', la, lb)) = (&**shl, &**low) {
             if sl == "Shl" && sx.len() == 2 && sx[1] == Expr::Const(32) {
