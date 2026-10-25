@@ -2014,6 +2014,19 @@ fn ret_expr<'c>(
     if depth == 0 {
         return None;
     }
+    // u128->u256 widening helper: serializes its two limb params through linear
+    // memory into a host Bytes object, then `u256_val_from_be_bytes`. That round
+    // trip is host-managed memory we can't thread, but the widen is value-
+    // preserving, so model the result as the low-limb param (the integer value).
+    let widens_u256 = all_instrs(g).iter().any(|i| callee_has(*i, "u256_val_from_be_bytes"));
+    if widens_u256 {
+        let nparams = g.get_params().len();
+        if nparams >= 2 {
+            let r = Some(Expr::Param(nparams - 1)); // low limb is the last param
+            memo.insert(key, r.clone());
+            return r;
+        }
+    }
     // find a `ret <val>` with a value operand.
     let mut result = None;
     for i in all_instrs(g) {
