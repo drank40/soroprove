@@ -2186,6 +2186,62 @@ fn emit_lean_pool(entries: &[PoolEntry]) {
     println!("\nend Pool");
 }
 
+/// Emit the constant-product NO-DRAIN proof (core Lean 4, no Mathlib) for the
+/// pool's recognized exchange entrypoints. The reserve-update STRUCTURE (dx in,
+/// `out` out between two reserves) is recovered from the SEP-41 transfer summary;
+/// the constant-product output bound is the one spec hypothesis (annotated).
+fn emit_lean_cpmm(swap_names: &[String], u256_ops: usize) {
+    println!("-- Auto-emitted by stellar-diver from lifted LLVM IR.");
+    println!("-- Constant-product NO-DRAIN for the pool's exchange entrypoint(s): {}.", swap_names.join(", "));
+    println!("-- RECOVERED from bytecode (SEP-41 transfer summary, any depth): each is an");
+    println!("--   exchange taking dx of the input token (user->pool) and returning `out` of");
+    println!("--   the output token (pool->user) between two reserves. The swap formula's");
+    println!("--   fee/product arithmetic is present ({u256_ops} u256 mul/div ops recovered).");
+    println!("-- MODELED (one spec hypothesis `hcp`): the output never exceeds the constant-");
+    println!("--   product amount, (x+dx)*out <= dx*y (fees only tighten it). Discharging hcp");
+    println!("--   from the exact fee formula is the remaining obligation.\n");
+    println!("namespace Pool\n");
+    println!("structure State where");
+    println!("  x  : Int   -- pool reserve of the input token");
+    println!("  y  : Int   -- pool reserve of the output token");
+    println!("  k0 : Int   -- initial product (the invariant target)\n");
+    println!("def Inv (s : State) : Prop := 0 ≤ s.x ∧ 0 ≤ s.y ∧ s.k0 ≤ s.x * s.y\n");
+    println!("-- one exchange: dx in (user->pool), out out (pool->user).");
+    println!("def swap (s : State) (dx out : Int) : State := {{ s with x := s.x + dx, y := s.y - out }}\n");
+    println!("-- NONLINEAR CORE: the constant-product bound makes the product non-decreasing.");
+    println!("theorem no_drain_step (s : State) (dx out : Int)");
+    println!("    (hdx : 0 ≤ dx) (houtlt : out ≤ s.y)");
+    println!("    (hcp : (s.x + dx) * out ≤ dx * s.y) (h : Inv s) : Inv (swap s dx out) := by");
+    println!("  have hx := h.1; have hk := h.2.2");
+    println!("  refine ⟨by simp only [swap]; omega, by simp only [swap]; omega, ?_⟩");
+    println!("  simp only [swap]");
+    println!("  have e1 : (s.x + dx) * (s.y - out) = (s.x + dx) * s.y - (s.x + dx) * out := by rw [Int.mul_sub]");
+    println!("  have e2 : (s.x + dx) * s.y = s.x * s.y + dx * s.y := by rw [Int.add_mul]");
+    println!("  have hp : s.x * s.y ≤ (s.x + dx) * (s.y - out) := by rw [e1, e2]; omega");
+    println!("  omega\n");
+    println!("-- every state reachable by any sequence of (formula-respecting) swaps.");
+    println!("inductive Reachable (p : State) : State → Prop where");
+    println!("  | refl : Reachable p p");
+    println!("  | step {{q : State}} {{dx out : Int}} :");
+    println!("      Reachable p q → 0 ≤ dx → out ≤ q.y → (q.x + dx) * out ≤ dx * q.y →");
+    println!("      Reachable p (swap q dx out)\n");
+    println!("-- NO-DRAIN: the invariant holds at every reachable state.");
+    println!("theorem no_drain (p : State) (h : Inv p) : ∀ q, Reachable p q → Inv q := by");
+    println!("  intro q r");
+    println!("  induction r with");
+    println!("  | refl => exact h");
+    println!("  | step _ hdx houtlt hcp ih => exact no_drain_step _ _ _ hdx houtlt hcp ih\n");
+    println!("theorem k0_const (p q : State) (r : Reachable p q) : q.k0 = p.k0 := by");
+    println!("  induction r with");
+    println!("  | refl => rfl");
+    println!("  | step _ _ _ _ ih => simpa only [swap] using ih\n");
+    println!("-- the product never drops below its initial value k0 -- the pool cannot be drained.");
+    println!("theorem product_floor (p q : State) (h : Inv p) (r : Reachable p q) : p.k0 ≤ q.x * q.y := by");
+    println!("  have hq := (no_drain p h q r).2.2");
+    println!("  rw [k0_const p q r] at hq; exact hq\n");
+    println!("end Pool");
+}
+
 /// Build the transition record for one entry: amount arg, recovered success
 /// guards, storage updates, SEP-41 direction, auth. Returns the slot durabilities
 /// it touches so the caller can assemble the shared state signature.
@@ -2270,8 +2326,8 @@ fn main() {
         args.next()
             .expect("usage: slice <file.ll> [--fn F] [--sink transfer|trap|error|error-ret|all] [--callee call] [--sym transfer|any]"),
     );
-    let (mut only_fn, mut callee, mut sym, mut sink_sel, mut raw, mut lean_sm, mut amm_dbg, mut lean_amm, mut expr_dbg, mut lean_pool) =
-        (None, "call".to_string(), Some("transfer".to_string()), "all".to_string(), false, false, false, false, false, false);
+    let (mut only_fn, mut callee, mut sym, mut sink_sel, mut raw, mut lean_sm, mut amm_dbg, mut lean_amm, mut expr_dbg, mut lean_pool, mut lean_cpmm) =
+        (None, "call".to_string(), Some("transfer".to_string()), "all".to_string(), false, false, false, false, false, false, false);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--fn" => only_fn = args.next(),
@@ -2283,6 +2339,7 @@ fn main() {
             "--amm-dbg" => amm_dbg = true,
             "--lean-amm" => lean_amm = true,
             "--lean-pool" => lean_pool = true,
+            "--lean-cpmm" => lean_cpmm = true,
             "--expr-dbg" => expr_dbg = true,
             other => eprintln!("ignoring arg {other}"),
         }
@@ -2304,12 +2361,27 @@ fn main() {
     let mut all_slots: BTreeSet<String> = BTreeSet::new();
     let mut amm_entries: Vec<(String, Vec<(&'static str, &'static str, bool)>)> = vec![];
     let mut pool_entries: Vec<PoolEntry> = vec![];
+    let mut swap_names: Vec<String> = vec![];
     for f in module.get_functions() {
         if f.count_basic_blocks() == 0 {
             continue;
         }
         let name = f.get_name().to_string_lossy().into_owned();
         if only_fn.as_ref().map(|w| &name != w).unwrap_or(false) {
+            continue;
+        }
+
+        if lean_cpmm {
+            if !is_entry(f) {
+                continue;
+            }
+            let mut memo = HashMap::new();
+            let facts = summarize(f, &module, &mut memo, 12);
+            let has_in = facts.iter().any(|t| t.from != ARef::Contract && t.to == ARef::Contract);
+            let has_out = facts.iter().any(|t| t.from == ARef::Contract && t.to != ARef::Contract);
+            if has_in && has_out {
+                swap_names.push(name);
+            }
             continue;
         }
 
@@ -2431,6 +2503,17 @@ fn main() {
     }
     if lean_pool {
         emit_lean_pool(&pool_entries);
+    }
+    if lean_cpmm {
+        let u256 = module
+            .get_functions()
+            .filter(|f| f.count_basic_blocks() > 0)
+            .flat_map(all_instrs)
+            .filter(|i| callee_has(*i, "u256_mul") || callee_has(*i, "u256_div"))
+            .count();
+        // keep the core exchanges (swap*), which the recognizer flags.
+        let swaps: Vec<String> = swap_names.iter().filter(|n| n.contains("swap")).cloned().collect();
+        emit_lean_cpmm(if swaps.is_empty() { &swap_names } else { &swaps }, u256);
     }
 }
 
