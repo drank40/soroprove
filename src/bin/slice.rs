@@ -2725,26 +2725,109 @@ fn abi_type_of(v: BasicValueEnum, args: &Args) -> String {
     "?".into()
 }
 
-/// A storage key's identity: a decoded symbol, else the key-builder's variant
-/// discriminant (`DataKey#<n>`), plus the ABI types of any key parameters.
-fn storage_key(key: BasicValueEnum, args: &Args) -> (String, Vec<String>) {
-    // look through the Val wrappers to the key-builder.
+/// The contract's `DataKey` builder: a function with a `switch` (the variant
+/// discriminant) whose cases build symbol vectors. One per contract.
+fn datakey_builder<'c>(module: &inkwell::module::Module<'c>) -> Option<FunctionValue<'c>> {
+    for f in module.get_functions() {
+        if f.count_basic_blocks() == 0 || f.get_params().len() < 2 {
+            continue;
+        }
+        let has_switch = all_instrs(f).iter().any(|i| i.get_opcode() == InstructionOpcode::Switch);
+        let has_symbol = all_instrs(f).iter().any(|i| callee_has(*i, "symbol_new_from_linear_memory"));
+        if has_switch && has_symbol {
+            return Some(f);
+        }
+    }
+    None
+}
+
+/// For the builder `kb`, which discriminants are *data* variants — i.e. their
+/// switch case actually uses the field parameter `%1` (stores it into the key
+/// vector). Returns (per-case usage, default-case usage). A used field ⇒ mapping.
+fn kb_field_usage<'c>(kb: FunctionValue<'c>) -> (BTreeMap<i64, bool>, bool) {
+    let mut cases: BTreeMap<i64, bool> = BTreeMap::new();
+    let mut dflt = false;
+    let Some(field) = kb.get_nth_param(1) else { return (cases, dflt) };
+    let Some(sw) = all_instrs(kb).into_iter().find(|i| i.get_opcode() == InstructionOpcode::Switch) else {
+        return (cases, dflt);
+    };
+    let cfg = Cfg::build(kb);
+    let bidx = |b: BasicBlock<'c>| cfg.blocks.iter().position(|x| *x == b);
+    // does `field` appear in any instruction reachable from block `start` (within kb)?
+    let uses_field_from = |start: usize| -> bool {
+        let mut seen = vec![false; cfg.blocks.len()];
+        let mut work = vec![start];
+        while let Some(b) = work.pop() {
+            if seen[b] {
+                continue;
+            }
+            seen[b] = true;
+            let mut it = cfg.blocks[b].get_first_instruction();
+            while let Some(i) = it {
+                for k in 0..i.get_num_operands() {
+                    if matches!(i.get_operand(k), Some(Operand::Value(v)) if v == field) {
+                        return true;
+                    }
+                }
+                it = i.get_next_instruction();
+            }
+            work.extend(cfg.succ[b].iter().copied());
+        }
+        false
+    };
+    // switch operands: 0=cond, 1=default block, then (value, block) pairs.
+    if let Some(Operand::Block(db)) = sw.get_operand(1) {
+        if let Some(d) = bidx(db) {
+            dflt = uses_field_from(d);
+        }
+    }
+    let n = sw.get_num_operands();
+    let mut k = 2;
+    while k + 1 < n {
+        let val = match sw.get_operand(k) {
+            Some(Operand::Value(BasicValueEnum::IntValue(c))) => c.get_sign_extended_constant(),
+            _ => None,
+        };
+        let blk = match sw.get_operand(k + 1) {
+            Some(Operand::Block(b)) => bidx(b),
+            _ => None,
+        };
+        if let (Some(v), Some(b)) = (val, blk) {
+            cases.insert(v, uses_field_from(b));
+        }
+        k += 2;
+    }
+    (cases, dflt)
+}
+
+/// Resolve a storage key to its `DataKey` discriminant and (if a data variant)
+/// the field argument — looking through Val wrappers, a direct builder call, or
+/// a forwarder helper that calls the builder with a constant discriminant.
+fn resolve_disc_field<'c>(
+    key: BasicValueEnum<'c>,
+    kb: FunctionValue<'c>,
+    module: &inkwell::module::Module<'c>,
+) -> Option<(i64, Option<BasicValueEnum<'c>>)> {
+    let kb_name = kb.get_name().to_string_lossy().into_owned();
     let mut cur = key;
-    while let Some(i) = as_instr(cur) {
-        let n = callee_name(i).unwrap_or_default();
-        // a directly-encoded small symbol key.
-        if n.contains("from_payload") {
-            if let Some(Operand::Value(BasicValueEnum::IntValue(c))) = i.get_operand(0) {
-                if c.is_const() {
-                    if let Some(k) = c.get_zero_extended_constant() {
-                        if (k & 0xff) == 14 {
-                            if let Some(s) = decode_symbol(k) {
-                                return (format!("{s}"), vec![]);
-                            }
+    for _ in 0..8 {
+        let i = as_instr(cur)?;
+        let n = callee_name(i)?;
+        if n == kb_name {
+            // direct builder call: first const operand = disc, the other = field.
+            let mut disc = None;
+            let mut field = None;
+            for k in 0..i.get_num_operands().saturating_sub(1) {
+                if let Some(Operand::Value(o)) = i.get_operand(k) {
+                    match o {
+                        BasicValueEnum::IntValue(c) if c.is_const() && disc.is_none() => {
+                            disc = c.get_sign_extended_constant();
                         }
+                        _ => field = Some(o),
                     }
                 }
             }
+            return disc.map(|d| (d, field));
         }
         if n.contains("from_payload") || n.contains("val.payload") {
             if let Some(Operand::Value(inner)) = i.get_operand(0) {
@@ -2752,44 +2835,145 @@ fn storage_key(key: BasicValueEnum, args: &Args) -> (String, Vec<String>) {
                 continue;
             }
         }
-        // the key-builder helper: first constant arg is the variant discriminant,
-        // address args are the key parameters.
-        if let Some(_) = callee_name(i).filter(|nm| nm.starts_with('f')) {
-            let mut disc = None;
-            let mut params = vec![];
-            for k in 0..i.get_num_operands().saturating_sub(1) {
-                if let Some(Operand::Value(o)) = i.get_operand(k) {
-                    if let BasicValueEnum::IntValue(c) = o {
-                        if c.is_const() && disc.is_none() {
-                            disc = c.get_sign_extended_constant();
-                            continue;
+        // a forwarder helper: find its internal call to the builder with a const disc.
+        if let Some(h) = module.get_function(&n) {
+            if h.count_basic_blocks() > 0 {
+                for hi in all_instrs(h) {
+                    if callee_name(hi).as_deref() == Some(kb_name.as_str()) {
+                        let mut disc = None;
+                        let mut fparam: Option<usize> = None;
+                        for k in 0..hi.get_num_operands().saturating_sub(1) {
+                            if let Some(Operand::Value(o)) = hi.get_operand(k) {
+                                match o {
+                                    BasicValueEnum::IntValue(c) if c.is_const() && disc.is_none() => {
+                                        disc = c.get_sign_extended_constant();
+                                    }
+                                    _ => fparam = param_index(o, h).or(fparam),
+                                }
+                            }
                         }
-                    }
-                    let t = abi_type_of(o, args);
-                    if t == "Address" || t == "Bytes" || t == "String" {
-                        params.push(t);
+                        if let Some(d) = disc {
+                            // map the builder's field param back to this call's arg.
+                            let field = fparam.and_then(|j| match i.get_operand(j as u32) {
+                                Some(Operand::Value(v)) => Some(v),
+                                _ => None,
+                            });
+                            return Some((d, field));
+                        }
                     }
                 }
             }
-            let id = disc.map(|d| format!("DataKey#{d}")).unwrap_or_else(|| "DataKey?".into());
-            return (id, params);
         }
         break;
+    }
+    None
+}
+
+/// The ABI type of helper `g`'s parameter `idx`, propagated from the args its
+/// callers pass (one or two levels), since internal helpers carry no spec type.
+fn param_type_via_callers<'c>(
+    g: FunctionValue<'c>,
+    idx: usize,
+    module: &inkwell::module::Module<'c>,
+    depth: u32,
+) -> String {
+    if depth == 0 {
+        return "?".into();
+    }
+    let gname = g.get_name().to_string_lossy().into_owned();
+    for f in module.get_functions() {
+        if f.count_basic_blocks() == 0 || f == g {
+            continue;
+        }
+        let fargs = arg_table(f);
+        for i in all_instrs(f) {
+            if callee_name(i).as_deref() != Some(gname.as_str()) {
+                continue;
+            }
+            if let Some(Operand::Value(a)) = i.get_operand(idx as u32) {
+                let t = abi_type_of(a, &fargs);
+                if t != "?" {
+                    return t;
+                }
+                if let Some(j) = param_index(a, f) {
+                    let t2 = param_type_via_callers(f, j, module, depth - 1);
+                    if t2 != "?" {
+                        return t2;
+                    }
+                }
+            }
+        }
+    }
+    "?".into()
+}
+
+/// A storage key's identity + the ABI types of its key parameters (for a mapping
+/// variant like `Shares(Address)`). Uses the `DataKey` builder's per-variant field
+/// usage to distinguish a unit key from a parameterized (mapping) key.
+fn storage_key<'c>(
+    key: BasicValueEnum<'c>,
+    g: FunctionValue<'c>,
+    args: &Args,
+    kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
+    module: &inkwell::module::Module<'c>,
+) -> (String, Vec<String>) {
+    // a directly-encoded small symbol key (decode the name).
+    if let Some(i) = as_instr(key).filter(|i| callee_name(*i).map(|n| n.contains("from_payload")).unwrap_or(false)) {
+        if let Some(Operand::Value(BasicValueEnum::IntValue(c))) = i.get_operand(0) {
+            if c.is_const() {
+                if let Some(k) = c.get_zero_extended_constant() {
+                    if (k & 0xff) == 14 {
+                        if let Some(s) = decode_symbol(k) {
+                            return (s, vec![]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some((kbf, usage)) = kb {
+        if let Some((disc, field)) = resolve_disc_field(key, kbf, module) {
+            let is_mapping = usage.0.get(&disc).copied().unwrap_or(usage.1);
+            let fields = if is_mapping {
+                let t = field
+                    .map(|fv| {
+                        let t0 = abi_type_of(fv, args);
+                        if t0 != "?" {
+                            t0
+                        } else if let Some(j) = param_index(fv, g) {
+                            param_type_via_callers(g, j, module, 4)
+                        } else {
+                            "?".into()
+                        }
+                    })
+                    .unwrap_or_else(|| "?".into());
+                vec![t]
+            } else {
+                vec![]
+            };
+            return (format!("DataKey#{disc}"), fields);
+        }
     }
     ("?".into(), vec![])
 }
 
 /// Collect the storage schema across all entrypoints: slot -> value type.
 fn emit_storage_schema<'c>(module: &inkwell::module::Module<'c>, path: &std::path::Path) {
-    // (durability, key-id) -> (value type, read?, written?, keyed?)
+    // (durability, key-id) -> (value type, access, mapping key types)
     #[derive(Default)]
-    struct Slot { vtype: String, read: bool, written: bool }
+    struct Slot { vtype: String, read: bool, written: bool, params: Vec<String> }
     let mut schema: BTreeMap<(String, String), Slot> = BTreeMap::new();
+    let mut fn_reads: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    // the DataKey builder + its per-variant field usage (computed once).
+    let kb = datakey_builder(module);
+    let usage = kb.map(kb_field_usage);
+    let kb_pair = kb.zip(usage.as_ref());
     for f in module.get_functions() {
         if f.count_basic_blocks() == 0 {
             continue;
         }
         let args = arg_table(f);
+        let mut read_here: Vec<(String, String)> = vec![];
         for i in all_instrs(f) {
             let Some(n) = callee_name(i) else { continue };
             let is_put = n.contains("put_contract_data");
@@ -2802,16 +2986,19 @@ fn emit_storage_schema<'c>(module: &inkwell::module::Module<'c>, path: &std::pat
                 Some(Operand::Value(x)) => durability(x),
                 _ => "?".into(),
             };
-            let (keyid, _params) = match i.get_operand(0) {
-                Some(Operand::Value(k)) => storage_key(k, &args),
+            let (keyid, params) = match i.get_operand(0) {
+                Some(Operand::Value(k)) => storage_key(k, f, &args, kb_pair, module),
                 _ => ("?".into(), vec![]),
             };
-            if dur == "?" && keyid.starts_with("DataKey?") {
+            if dur == "?" && keyid == "?" {
                 continue; // unclassifiable access
             }
-            let e = schema.entry((dur, keyid)).or_default();
+            let e = schema.entry((dur.clone(), keyid.clone())).or_default();
             if e.vtype.is_empty() {
                 e.vtype = "?".into();
+            }
+            if !params.is_empty() {
+                e.params = params; // mapping domain (e.g. [Address])
             }
             if is_put {
                 e.written = true;
@@ -2823,6 +3010,44 @@ fn emit_storage_schema<'c>(module: &inkwell::module::Module<'c>, path: &std::pat
                 }
             } else {
                 e.read = true;
+                read_here.push((dur, keyid));
+            }
+        }
+        read_here.sort();
+        read_here.dedup();
+        fn_reads.insert(f.get_name().to_string_lossy().into_owned(), read_here);
+    }
+
+    // a getter that reads exactly one key (directly or via a one-level helper)
+    // and has a known ABI return type pins that key's value type
+    // (e.g. balance_shares(user) -> i128, whose read is inside a helper).
+    for f in module.get_functions() {
+        if f.count_basic_blocks() == 0 {
+            continue;
+        }
+        let rt = f.get_string_attribute(AttributeLoc::Function, "spec.type")
+            .or_else(|| f.get_string_attribute(AttributeLoc::Return, "spec.type"))
+            .map(|a| a.get_string_value().to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if rt.is_empty() {
+            continue;
+        }
+        let fname = f.get_name().to_string_lossy().into_owned();
+        let mut keys: Vec<(String, String)> = fn_reads.get(&fname).cloned().unwrap_or_default();
+        for i in all_instrs(f) {
+            if let Some(cn) = callee_name(i) {
+                if let Some(ks) = fn_reads.get(&cn) {
+                    keys.extend(ks.iter().cloned());
+                }
+            }
+        }
+        keys.sort();
+        keys.dedup();
+        if keys.len() == 1 {
+            if let Some(e) = schema.get_mut(&keys[0]) {
+                if e.vtype == "?" {
+                    e.vtype = rt;
+                }
             }
         }
     }
@@ -2833,22 +3058,32 @@ fn emit_storage_schema<'c>(module: &inkwell::module::Module<'c>, path: &std::pat
         (true, false) => "read",
         _ => "—",
     };
+    // render a slot's type: a mapping `(K) -> V` when the key is parameterized.
+    let shape = |s: &Slot| {
+        if s.params.is_empty() {
+            s.vtype.clone()
+        } else {
+            format!("({}) -> {}", s.params.join(", "), s.vtype)
+        }
+    };
     // ---- Markdown ----
     let mut md = String::from("# Storage schema\n\n");
     md.push_str("Recovered from lifted bytecode: durability, key, value type, and access per\n");
     md.push_str("storage slot. Keys are shown by their `DataKey#<n>` variant discriminant where\n");
-    md.push_str("recovered (the variant *names* live in the wasm data section, not the IR); `?`\n");
-    md.push_str("marks a key encoding this pass does not decode.\n\n");
-    md.push_str("| Durability | Key | Value type | Access |\n|---|---|---|---|\n");
+    md.push_str("recovered (variant *names* live in the wasm data section, not the IR); a\n");
+    md.push_str("parameterized key is a mapping, shown as `(key) -> value`; `?` marks a key\n");
+    md.push_str("encoding this pass does not decode.\n\n");
+    md.push_str("| Durability | Key | Type | Access |\n|---|---|---|---|\n");
     for ((dur, key), s) in &schema {
-        md.push_str(&format!("| {dur} | {key} | {} | {} |\n", s.vtype, acc(s)));
+        md.push_str(&format!("| {dur} | {key} | {} | {} |\n", shape(s), acc(s)));
     }
     // ---- JSON ----
     let mut json = String::from("{\n  \"slots\": [\n");
     let n = schema.len();
     for (idx, ((dur, key), s)) in schema.iter().enumerate() {
         json.push_str(&format!(
-            "    {{ \"durability\": \"{dur}\", \"key\": \"{key}\", \"value_type\": \"{}\", \"access\": \"{}\" }}{}\n",
+            "    {{ \"durability\": \"{dur}\", \"key\": \"{key}\", \"key_params\": [{}], \"value_type\": \"{}\", \"access\": \"{}\" }}{}\n",
+            s.params.iter().map(|p| format!("\"{p}\"")).collect::<Vec<_>>().join(", "),
             s.vtype, acc(s),
             if idx + 1 < n { "," } else { "" }
         ));
