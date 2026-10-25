@@ -25,8 +25,8 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::context::Context;
 use inkwell::memory_buffer::MemoryBuffer;
 use inkwell::values::{
-    AnyValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, Operand,
-    PointerValue,
+    AnyValue, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, InstructionOpcode,
+    InstructionValue, Operand, PointerValue,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -2229,6 +2229,327 @@ fn party(r: ARef) -> &'static str {
     }
 }
 
+/// The Lean term for a transfer party, inside an entrypoint model: the external
+/// party is the caller `c`, the pool is `pool`, an unresolved one is left `0`.
+fn party_term(r: ARef) -> &'static str {
+    match r {
+        ARef::Contract => "pool",
+        ARef::Param(_) => "c",
+        ARef::Other => "0",
+    }
+}
+
+/// One entrypoint's recovered shape, for the relational Lean model.
+struct ModelEntry {
+    name: String,
+    args: Vec<(String, String)>,        // (spec.name, spec.type) of the ABI args
+    transfers: Vec<(String, String)>,   // (from term, to term) per traced SEP-41 transfer
+    tokens: Vec<String>,                // token ledger each transfer moves (by recovered order)
+    writes: Vec<(String, bool)>,        // (storage slot name, is_mapping) written
+    returns: bool,                      // the entrypoint returns a value
+}
+
+/// The storage slots an entrypoint touches, with real `DataKey` names:
+/// `(slot, mapping-key-types, written, read)` — found transitively through the
+/// helpers the entrypoint calls (puts/gets live in `put_reserve_a`,
+/// `mint_shares`, … not the entrypoint itself).
+fn entry_storage<'c>(
+    f: FunctionValue<'c>,
+    kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
+    module: &inkwell::module::Module<'c>,
+    segs: &[(u64, Vec<u8>)],
+) -> Vec<(String, Vec<String>, bool, bool)> {
+    let mut out: Vec<(String, Vec<String>, bool, bool)> = vec![];
+    let mut memo: HashMap<String, Vec<SFact>> = HashMap::new();
+    for sf in storage_summary(f, kb, module, segs, &mut memo, 12) {
+        if let KeyRef::Slot(name, params) = sf.key {
+            add_slot(&mut out, name, params, sf.put, !sf.put);
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Record a storage slot, OR-ing access flags and keeping any recovered params.
+fn add_slot(out: &mut Vec<(String, Vec<String>, bool, bool)>, name: String, params: Vec<String>, w: bool, r: bool) {
+    if let Some(e) = out.iter_mut().find(|(nm, _, _, _)| *nm == name) {
+        e.2 |= w;
+        e.3 |= r;
+        if e.1.is_empty() && !params.is_empty() {
+            e.1 = params;
+        }
+    } else {
+        out.push((name, params, w, r));
+    }
+}
+
+/// A storage access's key, relative to the function it was found in: a resolved
+/// slot, or "the key is my parameter #j" (the caller supplies the real key).
+#[derive(Clone)]
+enum KeyRef {
+    Slot(String, Vec<String>),
+    Param(usize),      // the key Val is my parameter #j
+    DiscParam(usize),  // the key is built from a DataKey discriminant in my parameter #j
+    Unknown,
+}
+
+/// If key `k` is a `DataKey` built by the builder with its discriminant taken
+/// from one of `f`'s parameters, that parameter's index (so the caller's
+/// constant discriminant names the slot).
+fn key_disc_param<'c>(
+    k: BasicValueEnum<'c>,
+    f: FunctionValue<'c>,
+    kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
+) -> Option<usize> {
+    let kb_name = kb?.0.get_name().to_string_lossy().into_owned();
+    let mut cur = k;
+    for _ in 0..8 {
+        let i = as_instr(cur)?;
+        let n = callee_name(i)?;
+        if n == kb_name {
+            // the builder's first operand is the discriminant.
+            return match i.get_operand(0) {
+                Some(Operand::Value(o)) => param_index(o, f),
+                _ => None,
+            };
+        }
+        if n.contains("from_payload") || n.contains("val.payload") {
+            if let Some(Operand::Value(inner)) = i.get_operand(0) {
+                cur = inner;
+                continue;
+            }
+        }
+        break;
+    }
+    None
+}
+
+#[derive(Clone)]
+struct SFact {
+    key: KeyRef,
+    put: bool,
+}
+
+/// How to resolve a key value to a `KeyRef` in function `f`: an inline-built
+/// `DataKey` resolves to its slot; a key that is just `f`'s parameter is left as
+/// `Param(j)` for the caller to fill in.
+fn key_ref<'c>(
+    k: BasicValueEnum<'c>,
+    f: FunctionValue<'c>,
+    args: &Args<'c>,
+    kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
+    module: &inkwell::module::Module<'c>,
+    segs: &[(u64, Vec<u8>)],
+) -> KeyRef {
+    let (name, params) = storage_key(k, f, args, kb, module, segs);
+    if name != "?" {
+        KeyRef::Slot(name, params)
+    } else if let Some(j) = key_disc_param(k, f, kb) {
+        KeyRef::DiscParam(j)
+    } else if let Some(j) = param_index(k, f) {
+        KeyRef::Param(j)
+    } else {
+        KeyRef::Unknown
+    }
+}
+
+/// Resolve a caller-supplied constant discriminant to its slot.
+fn disc_slot<'c>(
+    d: i64,
+    kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
+    module: &inkwell::module::Module<'c>,
+    segs: &[(u64, Vec<u8>)],
+) -> KeyRef {
+    if let Some((kbf, usage)) = kb {
+        if let Some(name) = datakey_name(kbf, d, module, segs) {
+            let mapping = usage.0.get(&d).copied().unwrap_or(usage.1);
+            return KeyRef::Slot(name, if mapping { vec!["Address".to_string()] } else { vec![] });
+        }
+    }
+    KeyRef::Unknown
+}
+
+/// Transitive storage-access summary of `f`, over `f`'s OWN parameters: each
+/// put/get, with its key resolved to a slot where possible. Descends into
+/// helpers and substitutes the caller's actual key at each hop (like
+/// `summarize` does for transfers), so a put whose key is a parameter deep in a
+/// setter helper is resolved from the discriminant the entrypoint passed.
+fn storage_summary<'c>(
+    f: FunctionValue<'c>,
+    kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
+    module: &inkwell::module::Module<'c>,
+    segs: &[(u64, Vec<u8>)],
+    memo: &mut HashMap<String, Vec<SFact>>,
+    depth: u32,
+) -> Vec<SFact> {
+    let name = f.get_name().to_string_lossy().into_owned();
+    if let Some(v) = memo.get(&name) {
+        return v.clone();
+    }
+    memo.insert(name.clone(), vec![]); // recursion guard
+    if depth == 0 {
+        return vec![];
+    }
+    let args = arg_table(f);
+    let mut facts = vec![];
+    for i in all_instrs(f) {
+        let Some(n) = callee_name(i) else { continue };
+        if n.contains("put_contract_data") || n.contains("get_contract_data") || n.contains("has_contract_data") {
+            let put = n.contains("put_contract_data");
+            let key = match i.get_operand(0) {
+                Some(Operand::Value(k)) => key_ref(k, f, &args, kb, module, segs),
+                _ => KeyRef::Unknown,
+            };
+            facts.push(SFact { key, put });
+            continue;
+        }
+        let Some(h) = module.get_function(&n) else { continue };
+        if h.count_basic_blocks() == 0 {
+            continue;
+        }
+        let hs = storage_summary(h, kb, module, segs, memo, depth - 1);
+        // map h's param-relative keys to f's terms via the call-site actuals.
+        for sf in hs {
+            let key = match sf.key {
+                KeyRef::Param(j) => match i.get_operand(j as u32) {
+                    Some(Operand::Value(a)) => key_ref(a, f, &args, kb, module, segs),
+                    _ => KeyRef::Unknown,
+                },
+                // the helper's key is a discriminant param: the caller passes a
+                // constant discriminant (names the slot) or forwards its own param.
+                KeyRef::DiscParam(j) => match i.get_operand(j as u32) {
+                    Some(Operand::Value(BasicValueEnum::IntValue(c))) if c.is_const() => {
+                        match c.get_sign_extended_constant() {
+                            Some(d) => disc_slot(d, kb, module, segs),
+                            None => KeyRef::Unknown,
+                        }
+                    }
+                    Some(Operand::Value(a)) => match param_index(a, f) {
+                        Some(jj) => KeyRef::DiscParam(jj),
+                        None => KeyRef::Unknown,
+                    },
+                    _ => KeyRef::Unknown,
+                },
+                other => other,
+            };
+            facts.push(SFact { key, put: sf.put });
+        }
+    }
+    memo.insert(name, facts.clone());
+    facts
+}
+
+/// Emit a relational abstraction of the contract: one `Step → Prop` per
+/// entrypoint, in the style of stellar-lean-playground's `SorobanAmm.lean`.
+/// RECOVERED exactly from the bytecode: the entrypoints + their ABI args, the
+/// SEP-41 transfer DIRECTIONS (traced transitively through fastcc helpers), and
+/// the storage slots each entrypoint writes/reads (real `DataKey` names from the
+/// data section). UNINTERPRETED (the nonlinear fee / share math the lifter marks
+/// opaque): transfer amounts and stored values — emitted as `opaque` Step-indexed
+/// terms, so the model is faithful about exactly what was and was not recovered.
+fn emit_lean_model(entries: &[ModelEntry]) {
+    let san = |s: &str| s.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect::<String>();
+    println!("-- Auto-emitted by stellar-diver: a relational abstraction of the contract,");
+    println!("-- one `Step → Prop` per entrypoint, in the style of SorobanAmm.lean.");
+    println!("-- RECOVERED from bytecode: entrypoints + ABI args, SEP-41 transfer directions");
+    println!("-- (traced through the fastcc helpers), and the storage slots each writes/reads");
+    println!("-- (real DataKey names). UNINTERPRETED (nonlinear fee/share math): transfer");
+    println!("-- amounts and stored values, shown as `opaque` Step-indexed terms.\n");
+    println!("namespace Contract\n");
+    println!("abbrev Addr := Int\n");
+    println!("inductive Key where");
+    println!("  | var   (name : String)");
+    println!("  | entry (map : String) (k : Addr)");
+    println!("  deriving DecidableEq\n");
+    println!("abbrev Storage := Key → Int");
+    println!("def Storage.set (s : Storage) (k : Key) (v : Int) : Storage := fun k' => if k' = k then v else s k'\n");
+    println!("structure Call where");
+    println!("  fn     : String");
+    println!("  caller : Addr");
+    println!("  arg    : String → Int\n");
+    println!("structure Step where");
+    println!("  call   : Call");
+    println!("  pre    : Storage");
+    println!("  post   : Storage");
+    println!("  writes : List Key");
+    println!("  ret    : Int\n");
+    println!("/-- the pool's own address (`e.current_contract_address()`). -/");
+    println!("opaque pool : Addr\n");
+    println!("/-- a token ledger `m`'s balance of `a`. -/");
+    println!("def bal (m : String) (s : Storage) (a : Addr) : Int := s (.entry m a)");
+    println!("/-- storage after token `m` moves `amt` from `src` to `dst`. -/");
+    println!("def xfer (m : String) (s : Storage) (src dst : Addr) (amt : Int) : Storage :=");
+    println!("  (s.set (.entry m src) (bal m s src - amt)).set (.entry m dst) (bal m s dst + amt)\n");
+
+    for e in entries {
+        let fn_id = san(&e.name);
+        // signature comment
+        let sig: Vec<String> = e.args.iter().map(|(n, t)| format!("{n}: {t}")).collect();
+        println!("/-- `{}({})`", e.name, sig.join(", "));
+        if e.transfers.is_empty() {
+            println!("    transfers: (none recovered)");
+        } else {
+            println!("    transfers (direction recovered; amount uninterpreted):");
+            for (k, (from, to)) in e.transfers.iter().enumerate() {
+                println!("      {}: {from} -> {to}", e.tokens[k]);
+            }
+        }
+        if !e.writes.is_empty() {
+            let ws: Vec<String> = e.writes.iter().map(|(s, _)| s.clone()).collect();
+            println!("    writes storage: {}", ws.join(", "));
+        }
+        println!("-/");
+        // opaque recovered-but-uninterpreted terms
+        for k in 0..e.transfers.len() {
+            println!("opaque {fn_id}_amt{k} : Step → Int");
+        }
+        for (slot, _) in &e.writes {
+            println!("opaque {fn_id}_v_{} : Step → Int", san(slot));
+        }
+        if e.returns {
+            println!("opaque {fn_id}_ret : Step → Int");
+        }
+        // the Step -> Prop model
+        println!("def {fn_id} : Step → Prop := fun st =>");
+        println!("  let c := st.call.caller");
+        // thread the transfers
+        let mut cur = "st.pre".to_string();
+        for (k, (from, to)) in e.transfers.iter().enumerate() {
+            let next = format!("s{}", k + 1);
+            println!(
+                "  let {next} := xfer \"{}\" {cur} {from} {to} ({fn_id}_amt{k} st)",
+                e.tokens[k]
+            );
+            cur = next;
+        }
+        // post: fold the recovered storage writes onto the post-transfer storage
+        let key_term = |slot: &str, mapping: bool| -> String {
+            if mapping {
+                format!(".entry \"{slot}\" c") // mapping keyed by the caller
+            } else {
+                format!(".var \"{slot}\"")
+            }
+        };
+        let mut post = cur.clone();
+        for (slot, mapping) in &e.writes {
+            post = format!("({post}.set ({}) ({fn_id}_v_{} st))", key_term(slot, *mapping), san(slot));
+        }
+        let writes_list: Vec<String> = e.writes.iter().map(|(s, m)| key_term(s, *m)).collect();
+        let ret = if e.returns { format!("{fn_id}_ret st") } else { "0".to_string() };
+        println!("  st.call.fn = \"{}\" ∧", e.name);
+        println!("  c ≠ pool ∧");
+        println!("  st.post = {post} ∧");
+        println!("  st.writes = [{}] ∧", writes_list.join(", "));
+        println!("  st.ret = {ret}\n");
+    }
+
+    // the contract as the list of its entrypoints (cf. SorobanAmm.contract).
+    let names: Vec<String> = entries.iter().map(|e| san(&e.name)).collect();
+    println!("/-- the contract's entry points (each a `Step → Prop`). -/");
+    println!("def entries : List (Step → Prop) := [{}]\n", names.join(", "));
+    println!("end Contract");
+}
+
 /// Emit a Lean token-conservation model for an AMM: every SEP-41 transfer (found
 /// transitively, any depth) moves an amount between `ext` (external parties),
 /// `pool` (the contract) and `other` (unresolved). The amounts are action inputs
@@ -2557,60 +2878,6 @@ fn emit_lean_cpmm_proved(recognized: &[(String, String, String, String)]) {
     println!("end Pool");
 }
 
-/// (legacy) assume-the-bound variant, kept unused.
-#[allow(dead_code)]
-fn emit_lean_cpmm(swap_names: &[String], u256_ops: usize) {
-    println!("-- Auto-emitted by stellar-diver from lifted LLVM IR.");
-    println!("-- Constant-product NO-DRAIN for the pool's exchange entrypoint(s): {}.", swap_names.join(", "));
-    println!("-- RECOVERED from bytecode (SEP-41 transfer summary, any depth): each is an");
-    println!("--   exchange taking dx of the input token (user->pool) and returning `out` of");
-    println!("--   the output token (pool->user) between two reserves. The swap formula's");
-    println!("--   fee/product arithmetic is present ({u256_ops} u256 mul/div ops recovered).");
-    println!("-- MODELED (one spec hypothesis `hcp`): the output never exceeds the constant-");
-    println!("--   product amount, (x+dx)*out <= dx*y (fees only tighten it). Discharging hcp");
-    println!("--   from the exact fee formula is the remaining obligation.\n");
-    println!("namespace Pool\n");
-    println!("structure State where");
-    println!("  x  : Int   -- pool reserve of the input token");
-    println!("  y  : Int   -- pool reserve of the output token");
-    println!("  k0 : Int   -- initial product (the invariant target)\n");
-    println!("def Inv (s : State) : Prop := 0 ≤ s.x ∧ 0 ≤ s.y ∧ s.k0 ≤ s.x * s.y\n");
-    println!("-- one exchange: dx in (user->pool), out out (pool->user).");
-    println!("def swap (s : State) (dx out : Int) : State := {{ s with x := s.x + dx, y := s.y - out }}\n");
-    println!("-- NONLINEAR CORE: the constant-product bound makes the product non-decreasing.");
-    println!("theorem no_drain_step (s : State) (dx out : Int)");
-    println!("    (hdx : 0 ≤ dx) (houtlt : out ≤ s.y)");
-    println!("    (hcp : (s.x + dx) * out ≤ dx * s.y) (h : Inv s) : Inv (swap s dx out) := by");
-    println!("  have hx := h.1; have hk := h.2.2");
-    println!("  refine ⟨by simp only [swap]; omega, by simp only [swap]; omega, ?_⟩");
-    println!("  simp only [swap]");
-    println!("  have e1 : (s.x + dx) * (s.y - out) = (s.x + dx) * s.y - (s.x + dx) * out := by rw [Int.mul_sub]");
-    println!("  have e2 : (s.x + dx) * s.y = s.x * s.y + dx * s.y := by rw [Int.add_mul]");
-    println!("  have hp : s.x * s.y ≤ (s.x + dx) * (s.y - out) := by rw [e1, e2]; omega");
-    println!("  omega\n");
-    println!("-- every state reachable by any sequence of (formula-respecting) swaps.");
-    println!("inductive Reachable (p : State) : State → Prop where");
-    println!("  | refl : Reachable p p");
-    println!("  | step {{q : State}} {{dx out : Int}} :");
-    println!("      Reachable p q → 0 ≤ dx → out ≤ q.y → (q.x + dx) * out ≤ dx * q.y →");
-    println!("      Reachable p (swap q dx out)\n");
-    println!("-- NO-DRAIN: the invariant holds at every reachable state.");
-    println!("theorem no_drain (p : State) (h : Inv p) : ∀ q, Reachable p q → Inv q := by");
-    println!("  intro q r");
-    println!("  induction r with");
-    println!("  | refl => exact h");
-    println!("  | step _ hdx houtlt hcp ih => exact no_drain_step _ _ _ hdx houtlt hcp ih\n");
-    println!("theorem k0_const (p q : State) (r : Reachable p q) : q.k0 = p.k0 := by");
-    println!("  induction r with");
-    println!("  | refl => rfl");
-    println!("  | step _ _ _ _ ih => simpa only [swap] using ih\n");
-    println!("-- the product never drops below its initial value k0 -- the pool cannot be drained.");
-    println!("theorem product_floor (p q : State) (h : Inv p) (r : Reachable p q) : p.k0 ≤ q.x * q.y := by");
-    println!("  have hq := (no_drain p h q r).2.2");
-    println!("  rw [k0_const p q r] at hq; exact hq\n");
-    println!("end Pool");
-}
-
 /// Build the transition record for one entry: amount arg, recovered success
 /// guards, storage updates, SEP-41 direction, auth. Returns the slot durabilities
 /// it touches so the caller can assemble the shared state signature.
@@ -2800,6 +3067,139 @@ fn kb_field_usage<'c>(kb: FunctionValue<'c>) -> (BTreeMap<i64, bool>, bool) {
     (cases, dflt)
 }
 
+/// Read-only data segments the front-end recorded as `soroban.rodata` metadata
+/// (each node is `"<base> <hex>"`), so we can resolve a symbol `(offset, len)`
+/// that is constant only at a builder call site back to the text sitting in the
+/// data segment. Empty when the front-end could not record rodata (e.g. a wasm
+/// whose memory is written, or an IR with no such metadata).
+fn rodata_segs(module: &inkwell::module::Module) -> Vec<(u64, Vec<u8>)> {
+    let mut segs = vec![];
+    for node in module.get_global_metadata("soroban.rodata") {
+        let Some(vals) = node.get_node_values() else { continue };
+        for v in vals {
+            let BasicMetadataValueEnum::MetadataValue(mv) = v else { continue };
+            let Some(raw) = mv.get_string_value() else { continue };
+            let s = String::from_utf8_lossy(raw);
+            let Some((base, hex)) = s.split_once(' ') else { continue };
+            let Ok(base) = base.parse::<u64>() else { continue };
+            let bytes: Option<Vec<u8>> = (0..hex.len() / 2)
+                .map(|j| u8::from_str_radix(&hex[2 * j..2 * j + 2], 16).ok())
+                .collect();
+            if let Some(bytes) = bytes {
+                segs.push((base, bytes));
+            }
+        }
+    }
+    segs
+}
+
+/// The text of a `[offset, offset+len)` slice of the recorded rodata.
+fn rodata_text(segs: &[(u64, Vec<u8>)], off: u64, len: u64) -> Option<String> {
+    for (base, bytes) in segs {
+        if off >= *base {
+            let s = (off - base) as usize;
+            if s + len as usize <= bytes.len() {
+                return Some(String::from_utf8_lossy(&bytes[s..s + len as usize]).into_owned());
+            }
+        }
+    }
+    None
+}
+
+/// A constant `(offset, len)` argument to a symbol builder: either a raw i64
+/// literal (the `f(dest, offset, len)` helper style) or a `%Val` made by
+/// `from_payload` of a packed u32 (`symbol_new_from_linear_memory(%Val, %Val)`).
+fn symbol_arg(i: InstructionValue, k: u32) -> Option<u64> {
+    let Some(Operand::Value(op)) = i.get_operand(k) else { return None };
+    if let BasicValueEnum::IntValue(v) = op {
+        return if v.is_const() { v.get_zero_extended_constant() } else { None };
+    }
+    let def = as_instr(op)?;
+    if callee_name(def)?.contains("from_payload") {
+        let Some(Operand::Value(BasicValueEnum::IntValue(c))) = def.get_operand(0) else { return None };
+        if !c.is_const() {
+            return None;
+        }
+        let raw = c.get_zero_extended_constant()?;
+        // positions/lengths cross the host boundary as U32Vals: tag 4, value in
+        // the top 32 bits.
+        return Some(if raw & 0xff == 4 { raw >> 32 } else { raw });
+    }
+    None
+}
+
+/// If `i` builds a `Symbol` from linear memory, its `(offset, len)` — directly
+/// via `symbol_new_from_linear_memory`, or via a helper (e.g. `f38`) that does,
+/// whose two constant args are the offset and length.
+fn symbol_off_len<'c>(i: InstructionValue<'c>, module: &inkwell::module::Module<'c>) -> Option<(u64, u64)> {
+    let cname = callee_name(i)?;
+    if cname.contains("symbol_new_from_linear_memory") {
+        return Some((symbol_arg(i, 0)?, symbol_arg(i, 1)?));
+    }
+    let h = module.get_function(&cname)?;
+    if h.count_basic_blocks() > 0 && all_instrs(h).iter().any(|x| callee_has(*x, "symbol_new_from_linear_memory")) {
+        let argc = i.get_num_operands().saturating_sub(1); // last operand is the callee
+        let consts: Vec<u64> = (0..argc).filter_map(|k| symbol_arg(i, k)).collect();
+        if consts.len() >= 2 {
+            return Some((consts[consts.len() - 2], consts[consts.len() - 1]));
+        }
+    }
+    None
+}
+
+/// The `DataKey` variant *name* for discriminant `disc`: the builder switches on
+/// `disc` and each case constructs the variant's `Symbol` from the rodata blob,
+/// so we walk to that case's block and read the symbol text.
+fn datakey_name<'c>(
+    kb: FunctionValue<'c>,
+    disc: i64,
+    module: &inkwell::module::Module<'c>,
+    segs: &[(u64, Vec<u8>)],
+) -> Option<String> {
+    let sw = all_instrs(kb).into_iter().find(|i| i.get_opcode() == InstructionOpcode::Switch)?;
+    let cfg = Cfg::build(kb);
+    let bidx = |b: BasicBlock<'c>| cfg.blocks.iter().position(|x| *x == b);
+    // the block for this discriminant: a matching explicit case, else the default.
+    let mut target: Option<usize> = None;
+    let n = sw.get_num_operands();
+    let mut k = 2; // switch operands: 0=cond, 1=default, then (value, block) pairs.
+    while k + 1 < n {
+        if let Some(Operand::Value(BasicValueEnum::IntValue(c))) = sw.get_operand(k) {
+            if c.get_sign_extended_constant() == Some(disc) {
+                if let Some(Operand::Block(b)) = sw.get_operand(k + 1) {
+                    target = bidx(b);
+                }
+            }
+        }
+        k += 2;
+    }
+    if target.is_none() {
+        if let Some(Operand::Block(db)) = sw.get_operand(1) {
+            target = bidx(db);
+        }
+    }
+    // the first symbol builder reachable from that block.
+    let mut seen = vec![false; cfg.blocks.len()];
+    let mut work = vec![target?];
+    while let Some(b) = work.pop() {
+        if seen[b] {
+            continue;
+        }
+        seen[b] = true;
+        let mut it = cfg.blocks[b].get_first_instruction();
+        while let Some(i) = it {
+            if let Some((off, len)) = symbol_off_len(i, module) {
+                if let Some(t) = rodata_text(segs, off, len) {
+                    return Some(t);
+                }
+            }
+            it = i.get_next_instruction();
+        }
+        work.extend(cfg.succ[b].iter().copied());
+    }
+    None
+}
+
 /// Resolve a storage key to its `DataKey` discriminant and (if a data variant)
 /// the field argument — looking through Val wrappers, a direct builder call, or
 /// a forwarder helper that calls the builder with a constant discriminant.
@@ -2916,6 +3316,7 @@ fn storage_key<'c>(
     args: &Args,
     kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
     module: &inkwell::module::Module<'c>,
+    segs: &[(u64, Vec<u8>)],
 ) -> (String, Vec<String>) {
     // a directly-encoded small symbol key (decode the name).
     if let Some(i) = as_instr(key).filter(|i| callee_name(*i).map(|n| n.contains("from_payload")).unwrap_or(false)) {
@@ -2951,7 +3352,10 @@ fn storage_key<'c>(
             } else {
                 vec![]
             };
-            return (format!("DataKey#{disc}"), fields);
+            // the real variant name from the data section, else the discriminant.
+            let name = datakey_name(kbf, disc, module, segs)
+                .unwrap_or_else(|| format!("DataKey#{disc}"));
+            return (name, fields);
         }
     }
     ("?".into(), vec![])
@@ -2968,6 +3372,7 @@ fn emit_storage_schema<'c>(module: &inkwell::module::Module<'c>, path: &std::pat
     let kb = datakey_builder(module);
     let usage = kb.map(kb_field_usage);
     let kb_pair = kb.zip(usage.as_ref());
+    let segs = rodata_segs(module);
     for f in module.get_functions() {
         if f.count_basic_blocks() == 0 {
             continue;
@@ -2987,7 +3392,7 @@ fn emit_storage_schema<'c>(module: &inkwell::module::Module<'c>, path: &std::pat
                 _ => "?".into(),
             };
             let (keyid, params) = match i.get_operand(0) {
-                Some(Operand::Value(k)) => storage_key(k, f, &args, kb_pair, module),
+                Some(Operand::Value(k)) => storage_key(k, f, &args, kb_pair, module, &segs),
                 _ => ("?".into(), vec![]),
             };
             if dur == "?" && keyid == "?" {
@@ -3069,10 +3474,11 @@ fn emit_storage_schema<'c>(module: &inkwell::module::Module<'c>, path: &std::pat
     // ---- Markdown ----
     let mut md = String::from("# Storage schema\n\n");
     md.push_str("Recovered from lifted bytecode: durability, key, value type, and access per\n");
-    md.push_str("storage slot. Keys are shown by their `DataKey#<n>` variant discriminant where\n");
-    md.push_str("recovered (variant *names* live in the wasm data section, not the IR); a\n");
-    md.push_str("parameterized key is a mapping, shown as `(key) -> value`; `?` marks a key\n");
-    md.push_str("encoding this pass does not decode.\n\n");
+    md.push_str("storage slot. Keys are shown by their `DataKey` variant name, recovered from\n");
+    md.push_str("the symbol the builder reads out of the data section (falling back to the\n");
+    md.push_str("`DataKey#<n>` discriminant when the name is not recoverable); a parameterized\n");
+    md.push_str("key is a mapping, shown as `(key) -> value`; `?` marks a key encoding this\n");
+    md.push_str("pass does not decode.\n\n");
     md.push_str("| Durability | Key | Type | Access |\n|---|---|---|---|\n");
     for ((dur, key), s) in &schema {
         md.push_str(&format!("| {dur} | {key} | {} | {} |\n", shape(s), acc(s)));
@@ -3100,14 +3506,35 @@ fn emit_storage_schema<'c>(module: &inkwell::module::Module<'c>, path: &std::pat
 
 // ======================= driver =======================
 
+const USAGE: &str = "usage: slice <file.ll> [--fn F] [--sink transfer|trap|error|error-ret|all] \
+[--callee call] [--sym transfer|any] [--lean sm|amm|pool|cpmm] [--storage-schema]";
+
+/// What each `--lean <mode>` emits. All read the lifted IR and print a complete,
+/// self-contained Lean 4 file (no Mathlib) to stdout; redirect to a `.lean` file.
+const LEAN_MODES: &str = "\
+--lean modes (each prints a self-contained Lean 4 file to stdout):
+  sm    per-storage-slot state machine: one `State` field per storage slot, one
+        step per entrypoint built from the recovered guards + updates.
+  amm   token-conservation: models SEP-41 transfers as moving value between
+        external / pool / other, and proves each entrypoint conserves the total.
+  pool  no-drain over recovered updates: tracked (arithmetic) slots never go
+        negative, proved from the recovered update expressions and guards.
+  cpmm  constant-product no-drain: for a recognized x*y pool, proves the product
+        never decreases across a swap (floor-division bound); withholds if the
+        swap shape is not recovered cleanly.
+  model relational abstraction (SorobanAmm.lean style): one `Step → Prop` per
+        entrypoint from the recovered transfers (directions) + real storage
+        slots; nonlinear amounts/values stay `opaque`. The faithful contract shape.";
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let path = PathBuf::from(
         args.next()
-            .expect("usage: slice <file.ll> [--fn F] [--sink transfer|trap|error|error-ret|all] [--callee call] [--sym transfer|any]"),
+            .expect(USAGE),
     );
     let (mut only_fn, mut callee, mut sym, mut sink_sel, mut raw, mut lean_sm, mut amm_dbg, mut lean_amm, mut expr_dbg, mut lean_pool, mut lean_cpmm, mut storage_schema) =
         (None, "call".to_string(), Some("transfer".to_string()), "all".to_string(), false, false, false, false, false, false, false, false);
+    let mut lean_model = false;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--fn" => only_fn = args.next(),
@@ -3115,12 +3542,20 @@ fn main() {
             "--sym" => sym = args.next(),
             "--sink" => sink_sel = args.next().unwrap(),
             "--raw" => raw = true,
-            "--lean-sm" => lean_sm = true,
-            "--amm-dbg" => amm_dbg = true,
-            "--lean-amm" => lean_amm = true,
-            "--lean-pool" => lean_pool = true,
-            "--lean-cpmm" => lean_cpmm = true,
+            // one front door for Lean emission: --lean <mode>. See LEAN_MODES.
+            "--lean" => match args.next().as_deref() {
+                Some("sm") => lean_sm = true,
+                Some("amm") => lean_amm = true,
+                Some("pool") => lean_pool = true,
+                Some("cpmm") => lean_cpmm = true,
+                Some("model") => lean_model = true,
+                other => {
+                    eprintln!("--lean expects a mode: sm | amm | pool | cpmm | model (got {other:?})\n{LEAN_MODES}");
+                    std::process::exit(2);
+                }
+            },
             "--storage-schema" => storage_schema = true,
+            "--amm-dbg" => amm_dbg = true,
             "--expr-dbg" => expr_dbg = true,
             other => eprintln!("ignoring arg {other}"),
         }
@@ -3148,6 +3583,12 @@ fn main() {
     let mut amm_entries: Vec<(String, Vec<(&'static str, &'static str, bool)>)> = vec![];
     let mut pool_entries: Vec<PoolEntry> = vec![];
     let mut cpmm_hits: Vec<(String, String, String, String)> = vec![];
+    let mut model_entries: Vec<ModelEntry> = vec![];
+    // the DataKey builder + rodata, for resolving real storage-slot names (model).
+    let m_kb = datakey_builder(&module);
+    let m_usage = m_kb.map(kb_field_usage);
+    let m_kb_pair = m_kb.zip(m_usage.as_ref());
+    let m_segs = rodata_segs(&module);
     for f in module.get_functions() {
         if f.count_basic_blocks() == 0 {
             continue;
@@ -3167,6 +3608,42 @@ fn main() {
             if let Some((xd, yd, dxn)) = recognize_cpmm(&writes, &fargs) {
                 cpmm_hits.push((name, xd, yd, dxn));
             }
+            continue;
+        }
+
+        if lean_model {
+            if !is_entry(f) {
+                continue;
+            }
+            let fargs = arg_table(f);
+            let args: Vec<(String, String)> = fargs
+                .iter()
+                .filter(|(_, _, t)| !t.is_empty())
+                .map(|(_, n, t)| (n.clone(), t.clone()))
+                .collect();
+            let mut memo = HashMap::new();
+            let facts = summarize(f, &module, &mut memo, 12);
+            let transfers: Vec<(String, String)> = facts
+                .iter()
+                .map(|tf| (party_term(tf.from).to_string(), party_term(tf.to).to_string()))
+                .collect();
+            // token ledgers by recovered transfer order (A first, then B).
+            let tokens: Vec<String> = (0..facts.len())
+                .map(|k| if k % 2 == 0 { "A.Balance".into() } else { "B.Balance".into() })
+                .collect();
+            let stores = entry_storage(f, m_kb_pair, &module, &m_segs);
+            let writes: Vec<(String, bool)> = stores
+                .iter()
+                .filter(|(_, _, w, _)| *w)
+                .map(|(n, p, _, _)| (n.clone(), !p.is_empty()))
+                .collect();
+            let returns = f
+                .get_string_attribute(AttributeLoc::Function, "spec.type")
+                .or_else(|| f.get_string_attribute(AttributeLoc::Return, "spec.type"))
+                .map(|a| a.get_string_value().to_string_lossy().into_owned())
+                .map(|s| !s.is_empty() && s != "void")
+                .unwrap_or(false);
+            model_entries.push(ModelEntry { name, args, transfers, tokens, writes, returns });
             continue;
         }
 
@@ -3285,6 +3762,9 @@ fn main() {
     }
     if lean_amm {
         emit_lean_amm(&amm_entries);
+    }
+    if lean_model {
+        emit_lean_model(&model_entries);
     }
     if lean_pool {
         emit_lean_pool(&pool_entries);
