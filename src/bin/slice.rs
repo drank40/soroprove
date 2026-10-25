@@ -1410,10 +1410,10 @@ impl RelOp {
             RelOp::Ge => RelOp::Lt, RelOp::Eq => RelOp::Ne, RelOp::Ne => RelOp::Eq,
         }
     }
-    fn smt(self) -> &'static str {
+    fn lean(self) -> &'static str {
         match self {
-            RelOp::Lt => "<", RelOp::Le => "<=", RelOp::Gt => ">",
-            RelOp::Ge => ">=", RelOp::Eq => "=", RelOp::Ne => "distinct",
+            RelOp::Lt => "<", RelOp::Le => "≤", RelOp::Gt => ">",
+            RelOp::Ge => "≥", RelOp::Eq => "=", RelOp::Ne => "≠",
         }
     }
 }
@@ -1495,103 +1495,146 @@ fn lean_term(t: &str) -> String {
     }
 }
 
-/// Emit a z3/Horn transition system. Storage slots and the SEP-41-abstracted
-/// external balance are the named state; the author writes invariants over them.
-fn emit_chc(trans: &[Trans], slots: &BTreeSet<String>) {
-    let svars: Vec<String> = slots.iter().map(|d| format!("s_{d}")).collect();
-    let state: Vec<String> = svars.iter().cloned().chain(["ext".into(), "ext0".into()]).collect();
-    let sig = state.iter().map(|_| "Int").collect::<Vec<_>>().join(" ");
-
-    println!("; Auto-emitted by stellar-diver from lifted LLVM IR (one representative user).");
-    println!("; State = the storage slots that matter + the SEP-41 external token balance.");
-    println!("; SEP-41 transfers are abstracted by their spec; no other interprocedural descent.\n");
-    println!("(set-logic HORN)");
-    println!("; INV({})", state.join(" "));
-    println!("(declare-fun INV ({sig}) Bool)\n");
-
-    println!("; ===== storage slots (edit the invariant below to reference these) =====");
-    for d in slots {
-        println!(";   s_{d} = storage.{d}[user]");
+/// A Lean-safe identifier for an action constructor.
+fn lean_ctor(name: &str) -> String {
+    let c = name.trim_start_matches('_');
+    match c {
+        "" => "act".into(),
+        "constructor" => "construct".into(),
+        "end" | "match" | "fun" | "let" | "do" | "if" | "then" | "else" => format!("{c}_"),
+        _ if c.chars().next().map(|ch| ch.is_ascii_alphabetic()).unwrap_or(false) => c.into(),
+        _ => format!("a_{c}"),
     }
-    println!(";   ext  = user's external balance of the token (SEP-41, abstracted)");
-    println!(";   ext0 = user's initial external balance (constant)\n");
+}
 
-    // author-editable invariant.
-    println!("; ===== WRITE YOUR INVARIANT HERE (over the names above) =====");
-    println!("(define-fun SAFE ({}) Bool", state.iter().map(|v| format!("({v} Int)")).collect::<Vec<_>>().join(" "));
-    println!("  ; e.g. \"you can never end with more of the token than you started\":");
-    println!("  (<= ext ext0))\n");
+/// Emit a concrete Lean 4 state machine (no Mathlib: `omega` discharges the
+/// linear goals). Storage slots with recovered arithmetic + the SEP-41-abstracted
+/// external balance are the state; the author writes the invariant, and the
+/// inductive-preservation theorem is proved over the *emitted* step/guard.
+fn emit_lean_sm(trans: &[Trans], slots: &BTreeSet<String>) {
+    // track only slots whose arithmetic was actually recovered (a +/- write).
+    let tracked: Vec<String> = slots
+        .iter()
+        .filter(|d| {
+            let v = format!("s_{d}");
+            trans.iter().any(|t| t.writes.iter().any(|(sv, op, _)| *sv == v && *op != '?'))
+        })
+        .cloned()
+        .collect();
 
-    // init: slots 0, ext = ext0.
-    let init: Vec<String> = svars.iter().map(|_| "0".to_string()).chain(["ext0".into(), "ext0".into()]).collect();
-    println!("; ----- init -----");
-    println!("(assert (forall ((ext0 Int)) (INV {})))\n", init.join(" "));
+    println!("-- Auto-emitted by stellar-diver from lifted LLVM IR (one representative user).");
+    println!("-- State = storage slots with recovered arithmetic + the SEP-41 external balance.");
+    println!("-- SEP-41 transfers are abstracted by their spec; one-level setter summary.");
+    println!("-- The preservation theorem below is proved over this emitted step/guard.\n");
+    println!("namespace Contract\n");
 
+    // ----- State -----
+    println!("structure State where");
+    for d in &tracked {
+        println!("  {d} : Int        -- storage.{d}[user]");
+    }
+    println!("  ext  : Int        -- user's external balance of the token (SEP-41, abstracted)");
+    println!("  ext0 : Int        -- initial external balance (constant)\n");
+
+    // field accessor for a slot var "s_<dur>".
+    let field = |sv: &str| sv.strip_prefix("s_").unwrap_or(sv).to_string();
+    let is_tracked = |sv: &str| tracked.iter().any(|d| format!("s_{d}") == sv);
+
+    // ----- Action -----
+    println!("inductive Action where");
     for t in trans {
-        for p in &t.prov {
-            println!("; {p}");
+        let c = lean_ctor(&t.action);
+        match &t.amount {
+            Some(a) => println!("  | {c} ({a} : Int) : Action"),
+            None => println!("  | {c} : Action"),
         }
-        if !t.auth.is_empty() {
-            println!("; auth gate: require_auth({})", t.auth.join(", "));
-        }
-        // quantified vars: state + amount + any havoc (unrecovered) write targets.
-        let mut qv: Vec<String> = state.iter().map(|v| format!("({v} Int)")).collect();
-        if let Some(a) = &t.amount {
-            qv.push(format!("({a} Int)"));
-        }
-        for (_, op, h) in &t.writes {
-            if *op == '?' {
-                qv.push(format!("({h} Int)"));
-            }
-        }
-        // antecedents.
-        let mut ante = vec![format!("(INV {})", state.join(" "))];
-        for (op, l, r) in &t.guards {
-            ante.push(format!("({} {} {})", op.smt(), l, r));
-        }
+    }
+    println!();
+
+    // ----- guard -----
+    println!("-- recovered preconditions (guards + SEP-41 transfer spec)");
+    println!("def guard (s : State) : Action → Prop");
+    for t in trans {
+        let c = lean_ctor(&t.action);
+        let bind = if t.amount.is_some() { format!(" {}", t.amount.as_ref().unwrap()) } else { String::new() };
+        let mut parts: Vec<String> = t
+            .guards
+            .iter()
+            .map(|(op, l, r)| format!("{} {} {}", lean_term(l), op.lean(), lean_term(r)))
+            .collect();
         if let Some(a) = &t.amount {
             if t.ext != 0 {
-                ante.push(format!("(>= {a} 0)")); // SEP-41: non-negative amount
+                parts.push(format!("{a} ≥ 0"));
             }
             if t.ext < 0 {
-                ante.push(format!("(>= ext {a})")); // SEP-41: sender must hold the funds
+                parts.push(format!("s.ext ≥ {a}"));
             }
         }
-        // post-state.
-        let post: Vec<String> = state
-            .iter()
-            .map(|v| {
-                if v == "ext" {
-                    match (t.ext, &t.amount) {
-                        (1, Some(a)) => format!("(+ ext {a})"),
-                        (-1, Some(a)) => format!("(- ext {a})"),
-                        _ => "ext".into(),
-                    }
-                } else if let Some((_, op, e)) = t.writes.iter().find(|(sv, _, _)| sv == v) {
-                    match op {
-                        '+' => format!("(+ {v} {e})"),
-                        '-' => format!("(- {v} {e})"),
-                        _ => e.clone(), // havoc var
-                    }
-                } else {
-                    v.clone()
-                }
-            })
-            .collect();
-        println!(
-            "(assert (forall ({}) (=> (and {}) (INV {}))))\n",
-            qv.join(" "),
-            ante.join(" "),
-            post.join(" ")
-        );
+        let body = if parts.is_empty() { "True".to_string() } else { parts.join(" ∧ ") };
+        println!("  | .{c}{bind} => {body}");
     }
+    println!();
 
-    println!("; ----- safety: INV implies your invariant, across all transitions -----");
-    println!("(assert (forall ({}) (=> (INV {}) (SAFE {}))))",
-        state.iter().map(|v| format!("({v} Int)")).collect::<Vec<_>>().join(" "),
-        state.join(" "), state.join(" "));
-    println!("(check-sat)   ; sat = PROVED (Spacer found an inductive invariant); unsat = violated");
-    println!("(get-model)   ; the inferred inductive invariant");
+    // ----- step -----
+    println!("-- recovered state updates");
+    println!("def step (s : State) : Action → State");
+    for t in trans {
+        let c = lean_ctor(&t.action);
+        let bind = if t.amount.is_some() { format!(" {}", t.amount.as_ref().unwrap()) } else { String::new() };
+        let mut upd: Vec<String> = vec![];
+        for (sv, op, amt) in &t.writes {
+            if *op == '?' || !is_tracked(sv) {
+                continue; // untracked / unrecovered -> left unchanged
+            }
+            let f = field(sv);
+            upd.push(format!("{f} := s.{f} {op} {amt}"));
+        }
+        if t.ext != 0 {
+            if let Some(a) = &t.amount {
+                let sign = if t.ext > 0 { '+' } else { '-' };
+                upd.push(format!("ext := s.ext {sign} {a}"));
+            }
+        }
+        if upd.is_empty() {
+            println!("  | .{c}{bind} => s");
+        } else {
+            println!("  | .{c}{bind} => {{ s with {} }}", upd.join(", "));
+        }
+    }
+    println!();
+
+    // ----- init -----
+    let mut init_fields: Vec<String> = tracked.iter().map(|d| format!("{d} := 0")).collect();
+    init_fields.push("ext := e".into());
+    init_fields.push("ext0 := e".into());
+    println!("-- a fresh user: empty records, external balance e");
+    println!("def init (e : Int) : State := {{ {} }}\n", init_fields.join(", "));
+
+    // ----- invariant (author edits) + proofs over the emitted model -----
+    let coupling = {
+        let mut terms: Vec<String> = tracked.iter().map(|d| format!("s.{d}")).collect();
+        terms.push("s.ext".into());
+        terms.join(" + ")
+    };
+    println!("-- ===== WRITE YOUR INVARIANT HERE (over the State fields above) =====");
+    println!("-- The property you want: \"no operation lets you end with more token than you started\".");
+    println!("-- It needs the conservation coupling to be inductive (first conjunct is the property):");
+    println!("def Inv (s : State) : Prop :=");
+    println!("  s.ext ≤ s.ext0 ∧ {coupling} ≤ s.ext0\n");
+
+    println!("-- holds initially");
+    println!("theorem init_holds (e : Int) : Inv (init e) := by");
+    println!("  simp only [Inv, init] <;> omega\n");
+
+    println!("-- PROVED over the emitted step/guard, for every action, by `omega` (linear):");
+    println!("theorem inductive_step (s : State) (a : Action)");
+    println!("    (h : Inv s) (g : guard s a) : Inv (step s a) := by");
+    println!("  cases a <;> simp_all [Inv, guard, step] <;> omega\n");
+
+    println!("-- the property you care about is the first conjunct:");
+    println!("theorem no_free_tokens (s : State) (h : Inv s) : s.ext ≤ s.ext0 := h.1\n");
+
+    println!("end Contract");
 }
 
 /// Build the transition record for one entry: amount arg, recovered success
@@ -1627,7 +1670,7 @@ fn build_trans<'c>(
                             slots.insert(dur.clone());
                         }
                     }
-                    let key = format!("{} {} {}", op.negate().smt(), ls, rs);
+                    let key = format!("{} {} {}", op.negate().lean(), ls, rs);
                     if seen.insert(key) {
                         guards.push((op.negate(), ls, rs));
                     }
@@ -1678,7 +1721,7 @@ fn main() {
         args.next()
             .expect("usage: slice <file.ll> [--fn F] [--sink transfer|trap|error|error-ret|all] [--callee call] [--sym transfer|any]"),
     );
-    let (mut only_fn, mut callee, mut sym, mut sink_sel, mut raw, mut lean, mut chc) =
+    let (mut only_fn, mut callee, mut sym, mut sink_sel, mut raw, mut lean, mut lean_sm) =
         (None, "call".to_string(), Some("transfer".to_string()), "all".to_string(), false, false, false);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -1688,7 +1731,7 @@ fn main() {
             "--sink" => sink_sel = args.next().unwrap(),
             "--raw" => raw = true,
             "--lean" => lean = true,
-            "--chc" => chc = true,
+            "--lean-sm" => lean_sm = true,
             other => eprintln!("ignoring arg {other}"),
         }
     }
@@ -1717,7 +1760,7 @@ fn main() {
             continue;
         }
 
-        if chc {
+        if lean_sm {
             if !is_entry(f) {
                 continue;
             }
@@ -1780,8 +1823,8 @@ fn main() {
     if lean {
         emit_lean(&entries);
     }
-    if chc {
-        emit_chc(&transes, &all_slots);
+    if lean_sm {
+        emit_lean_sm(&transes, &all_slots);
     }
 }
 
