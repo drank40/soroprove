@@ -2249,6 +2249,8 @@ struct ModelEntry {
     returns: bool,                      // the entrypoint returns a value
     auth: Option<String>,               // the arg whose `require_auth()` gates the call
     inv: bool,                          // guards a trap with a constant-product (x*y) check
+    guards: Vec<String>,                // all recovered trap (panic) guards, as relations
+    gdecls: Vec<String>,                // opaque Step-terms the guards name
 }
 
 /// The arg whose `require_auth()` the entrypoint calls — the signer gate. The
@@ -2391,6 +2393,204 @@ fn has_product_invariant_trap(f: FunctionValue) -> bool {
         }
     }
     false
+}
+
+// ===================== generic guard recovery =====================
+
+/// The relation a branch condition encodes, as the two compared values: a plain
+/// `icmp`, or the i128/i256 limb-compare idiom `select (icmp eq hi) cmplo cmphi`.
+fn gate_vals(cond: BasicValueEnum) -> Option<(RelOp, BasicValueEnum, BasicValueEnum)> {
+    let i = as_instr(cond)?;
+    if i.get_opcode() == InstructionOpcode::Select {
+        let hv = match i.get_operand(2) { Some(Operand::Value(v)) => v, _ => return None };
+        let hi = as_instr(hv)?;
+        if hi.get_opcode() != InstructionOpcode::ICmp {
+            return None;
+        }
+        let a = match hi.get_operand(0) { Some(Operand::Value(v)) => v, _ => return None };
+        let b = match hi.get_operand(1) { Some(Operand::Value(v)) => v, _ => return None };
+        return Some((RelOp::Lt, a, b)); // the idiom denotes a magnitude `<`
+    }
+    if i.get_opcode() == InstructionOpcode::ICmp {
+        use inkwell::IntPredicate::*;
+        let op = match i.get_icmp_predicate()? {
+            SLT | ULT => RelOp::Lt, SLE | ULE => RelOp::Le, SGT | UGT => RelOp::Gt,
+            SGE | UGE => RelOp::Ge, EQ => RelOp::Eq, NE => RelOp::Ne,
+        };
+        let a = match i.get_operand(0) { Some(Operand::Value(v)) => v, _ => return None };
+        let b = match i.get_operand(1) { Some(Operand::Value(v)) => v, _ => return None };
+        return Some((op, a, b));
+    }
+    None
+}
+
+/// Does `h` (transitively) read contract storage — i.e. is it a getter?
+fn fn_gets<'c>(h: FunctionValue<'c>, module: &inkwell::module::Module<'c>, memo: &mut HashMap<String, bool>) -> bool {
+    let name = h.get_name().to_string_lossy().into_owned();
+    if let Some(&b) = memo.get(&name) {
+        return b;
+    }
+    memo.insert(name.clone(), false); // recursion guard
+    let mut r = false;
+    for i in all_instrs(h) {
+        let Some(n) = callee_name(i) else { continue };
+        if n.contains("get_contract_data") || n.contains("has_contract_data") {
+            r = true;
+            break;
+        }
+        if let Some(g) = module.get_function(&n) {
+            if g.count_basic_blocks() > 0 && g != h && fn_gets(g, module, memo) {
+                r = true;
+                break;
+            }
+        }
+    }
+    memo.insert(name, r);
+    r
+}
+
+/// One side of a recovered guard, resolved to a model term.
+enum MTerm {
+    Arg(String, bool),   // a call argument (name, is-address)
+    Slot(String, bool),  // a prior storage read (DataKey name, is-mapping)
+    Pool,                // the pool's own address
+    Const(i64),          // a literal
+    Opaque,              // a value the pass does not interpret
+}
+impl MTerm {
+    /// A named entity (argument or storage slot), i.e. a contract-level quantity
+    /// — as opposed to a constant or an uninterpreted computed value.
+    fn named(&self) -> bool {
+        matches!(self, MTerm::Arg(..) | MTerm::Slot(..))
+    }
+    fn render(&self, oc: &mut usize, decls: &mut Vec<String>, fnid: &str) -> String {
+        match self {
+            MTerm::Arg(n, true) => format!("st.call.argA \"{n}\""),
+            MTerm::Arg(n, false) => format!("st.call.arg \"{n}\""),
+            MTerm::Slot(n, true) => format!("st.pre (.entry \"{n}\" c)"),
+            MTerm::Slot(n, false) => format!("st.pre (.var \"{n}\")"),
+            MTerm::Pool => "pool".to_string(),
+            MTerm::Const(k) => k.to_string(),
+            MTerm::Opaque => {
+                *oc += 1;
+                let name = format!("{fnid}_g{oc}");
+                decls.push(name.clone());
+                format!("{name} st")
+            }
+        }
+    }
+}
+
+/// Resolve a guard operand to a model term: an argument, a prior storage read
+/// (real `DataKey` name), the pool, a constant, or an uninterpreted value.
+fn mterm<'c>(
+    v: BasicValueEnum<'c>,
+    f: FunctionValue<'c>,
+    args: &Args<'c>,
+    module: &inkwell::module::Module<'c>,
+    kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
+    segs: &[(u64, Vec<u8>)],
+    gets: &mut HashMap<String, bool>,
+) -> MTerm {
+    if let Some((_, n, t)) = args.iter().find(|(pv, _, _)| *pv == v) {
+        return MTerm::Arg(n.clone(), t == "Address");
+    }
+    if let BasicValueEnum::IntValue(c) = v {
+        if c.is_const() {
+            if let Some(k) = c.get_sign_extended_constant() {
+                return MTerm::Const(k);
+            }
+        }
+    }
+    if let Some(i) = as_instr(v) {
+        let nm = callee_name(i).unwrap_or_default();
+        if nm.contains("get_current_contract_address") {
+            return MTerm::Pool;
+        }
+        if nm.contains("from_payload") || nm.contains("val.payload") || nm.contains("obj_to_i128") {
+            if let Some(Operand::Value(o)) = i.get_operand(0) {
+                return mterm(o, f, args, module, kb, segs, gets);
+            }
+        }
+        if nm.contains("get_contract_data") || nm.contains("has_contract_data") {
+            if let Some(Operand::Value(k)) = i.get_operand(0) {
+                let (name, params) = storage_key(k, f, args, kb, module, segs);
+                if name != "?" {
+                    return MTerm::Slot(name, !params.is_empty());
+                }
+            }
+        }
+        // a getter helper called with a constant DataKey discriminant.
+        if let Some(h) = module.get_function(&nm) {
+            if h.count_basic_blocks() > 0 && fn_gets(h, module, gets) {
+                for k in 0..i.get_num_operands().saturating_sub(1) {
+                    if let Some(Operand::Value(BasicValueEnum::IntValue(c))) = i.get_operand(k) {
+                        if c.is_const() {
+                            if let (Some(d), Some(kbv)) = (c.get_sign_extended_constant(), kb) {
+                                if let KeyRef::Slot(name, params) = disc_slot(d, Some(kbv), module, segs) {
+                                    return MTerm::Slot(name, !params.is_empty());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    MTerm::Opaque
+}
+
+/// The MEANINGFUL trap (panic) guards of `f`, generically: every branch that
+/// gates a panic, recovered as a relation over resolved model terms, keeping
+/// only those that constrain a contract-level quantity — i.e. at least one side
+/// is an argument or a storage slot. This drops the low-level plumbing (Val tag
+/// checks `= 77`, i128 sign/overflow checks `= -1` / `> 2^62`, and the
+/// uninterpreted i128-arithmetic internals) that every entrypoint is full of.
+/// Returns (rendered guards, opaque Step-term declarations).
+fn entry_guards<'c>(
+    f: FunctionValue<'c>,
+    module: &inkwell::module::Module<'c>,
+    kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
+    segs: &[(u64, Vec<u8>)],
+) -> (Vec<String>, Vec<String>) {
+    let cfg = Cfg::build(f);
+    let ipdom = ipostdoms(&cfg);
+    let cd = control_deps(&cfg, &ipdom);
+    let args = arg_table(f);
+    let fnid = {
+        let c = f.get_name().to_string_lossy().into_owned();
+        c.chars().map(|ch| if ch.is_alphanumeric() { ch } else { '_' }).collect::<String>()
+    };
+    let (mut gets, mut oc, mut decls, mut out, mut seen) =
+        (HashMap::new(), 0usize, vec![], vec![], HashSet::new());
+    for s in find_sinks(&cfg, &[SinkKind::Trap], "call", None) {
+        let slice = backward_slice(&cfg, &cd, &s.vals, &[s.instr]);
+        for (_, cond) in classify(&slice, s.instr).guards {
+            let mut leaves = vec![];
+            bool_leaves(cond, 8, &mut leaves);
+            for leaf in leaves {
+                let Some((op, l, r)) = gate_vals(leaf) else { continue };
+                let (lt, rt) = (
+                    mterm(l, f, &args, module, kb, segs, &mut gets),
+                    mterm(r, f, &args, module, kb, segs, &mut gets),
+                );
+                // keep only guards that constrain a named contract quantity.
+                if !lt.named() && !rt.named() {
+                    continue;
+                }
+                let g = format!(
+                    "{} {} {}",
+                    lt.render(&mut oc, &mut decls, &fnid),
+                    op.lean(),
+                    rt.render(&mut oc, &mut decls, &fnid),
+                );
+                if seen.insert(g.clone()) {
+                    out.push(g);
+                }
+            }
+        }
+    }
+    (out, decls)
 }
 
 /// The storage slots an entrypoint touches, with real `DataKey` names:
@@ -2597,8 +2797,12 @@ fn emit_lean_model(entries: &[ModelEntry]) {
     println!("-- one `Step → Prop` per entrypoint, in the style of SorobanAmm.lean.");
     println!("-- RECOVERED from bytecode: entrypoints + ABI args, SEP-41 transfer directions");
     println!("-- (traced through the fastcc helpers), and the storage slots each writes/reads");
-    println!("-- (real DataKey names). UNINTERPRETED (nonlinear fee/share math): transfer");
-    println!("-- amounts and stored values, shown as `opaque` Step-indexed terms.\n");
+    println!("-- (real DataKey names). GUARDS: every entrypoint's auth gate (require_auth) and");
+    println!("-- its panic conditions are recovered generically; a gate is shown as a relation");
+    println!("-- when a side resolves to an argument or storage slot, plus the constant-product");
+    println!("-- trap when present. UNINTERPRETED (nonlinear fee/share math): transfer amounts,");
+    println!("-- stored values, and gate operands that round-trip through the i128 shadow stack");
+    println!("-- (naming those needs frame-memory analysis), shown as `opaque` Step terms.\n");
     println!("namespace Contract\n");
     println!("abbrev Addr := Int\n");
     println!("inductive Key where");
@@ -2650,17 +2854,22 @@ fn emit_lean_model(entries: &[ModelEntry]) {
             let ws: Vec<String> = e.writes.iter().map(|(s, _)| s.clone()).collect();
             println!("    writes storage: {}", ws.join(", "));
         }
-        // the recovered transition guards (auth + prior-storage conditions).
-        if e.auth.is_some() || e.inv {
-            println!("    guards (must hold to transition):");
+        // the recovered transition guards: auth, then every trap (panic) gate.
+        if e.auth.is_some() || !e.guards.is_empty() {
+            println!("    guards (recovered panic/gate conditions):");
             if let Some(a) = &e.auth {
                 println!("      auth: caller signed as `{a}` (require_auth)");
             }
-            if e.inv {
-                println!("      constant-product: invProduct(pre) ≤ invProduct(post)  [recovered trap]");
+            for g in &e.guards {
+                println!("      gate: {g}");
             }
         }
         println!("-/");
+        // opaque Step-terms the recovered guards name (computed values the pass
+        // does not interpret: fee terms, products, derived amounts).
+        for d in &e.gdecls {
+            println!("opaque {d} : Step → Int");
+        }
         // opaque recovered-but-uninterpreted terms
         for k in 0..e.transfers.len() {
             println!("opaque {fn_id}_amt{k} : Step → Int");
@@ -3839,7 +4048,10 @@ fn main() {
                 .unwrap_or(false);
             let auth = entry_auth(f);
             let inv = has_product_invariant_trap(f);
-            model_entries.push(ModelEntry { name, args, transfers, tokens, writes, returns, auth, inv });
+            let (guards, gdecls) = entry_guards(f, &module, m_kb_pair, &m_segs);
+            model_entries.push(ModelEntry {
+                name, args, transfers, tokens, writes, returns, auth, inv, guards, gdecls,
+            });
             continue;
         }
 
