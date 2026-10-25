@@ -1577,12 +1577,12 @@ fn emit_lean_sm(trans: &[Trans], slots: &BTreeSet<String>) {
 // ================= faithful symbolic value translation (general) =================
 
 /// A recovered value expression over a function's parameters and storage.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum Expr {
     Param(usize),             // a parameter of the function being analyzed
     Slot(String, usize),      // a storage read: durability + key arity
     Const(i64),
-    Bin(char, Box<Expr>, Box<Expr>), // +, -, *, /, % on recognized (host) arithmetic
+    Bin(char, Box<Expr>, Box<Expr>), // +, -, *, /, % on recognized arithmetic
     Opaque(String, Vec<Expr>),       // an unrecognized op, as an uninterpreted fn of its inputs
 }
 
@@ -1616,9 +1616,47 @@ fn is_wrapper(name: &str) -> bool {
         || name.contains("obj_from_i64")
 }
 
-/// Recover the symbolic value of `v` inside function `g`, inlining `fastcc`
-/// helpers (their return expression, param-substituted). SOUND: anything not
-/// recognized becomes an uninterpreted function of its recovered inputs.
+/// Base identity + byte offset of a pointer (chasing geps to the alloca).
+fn ptr_base_off(p: BasicValueEnum) -> (String, i64) {
+    if let Some(i) = as_instr(p) {
+        if i.get_opcode() == InstructionOpcode::GetElementPtr {
+            if let Some(Operand::Value(base)) = i.get_operand(0) {
+                let (b, o) = ptr_base_off(base);
+                return (b, o + gep_off(p));
+            }
+        }
+    }
+    (fmt(p), 0)
+}
+
+/// The value stored to `ptr` in `g`, but ONLY when that slot has a single store
+/// (a unique definition). Reused frame slots have many stores and are left opaque
+/// rather than forwarded to an arbitrary one — this keeps the abstraction sound
+/// and prevents blow-up on large functions.
+fn forward_load<'c>(ptr: BasicValueEnum<'c>, g: FunctionValue<'c>) -> Option<BasicValueEnum<'c>> {
+    let target = ptr_base_off(ptr);
+    let mut found = None;
+    let mut count = 0usize;
+    for i in all_instrs(g) {
+        if i.get_opcode() != InstructionOpcode::Store {
+            continue;
+        }
+        let (Some(Operand::Value(sval)), Some(Operand::Value(sptr))) =
+            (i.get_operand(0), i.get_operand(1)) else { continue };
+        if sptr == ptr || ptr_base_off(sptr) == target {
+            found = Some(sval);
+            count += 1;
+        }
+    }
+    if count == 1 { found } else { None }
+}
+
+/// Recover the symbolic value of `v` inside `g`, NORMALIZING the Soroban i128/u128
+/// limb representation: Vals are decoded to their mathematical integer, the small
+/// (shift+tag) and object forms collapse, spilled values forward from their store,
+/// carry/sign bookkeeping is dropped, and fastcc helpers are inlined. Models
+/// i128/u128 as unbounded Int (sound while the contract's range checks hold).
+/// Anything unrecognized becomes an uninterpreted function of its recovered inputs.
 fn value_expr<'c>(
     v: BasicValueEnum<'c>,
     g: FunctionValue<'c>,
@@ -1626,13 +1664,14 @@ fn value_expr<'c>(
     memo: &mut HashMap<String, Option<Expr>>,
     depth: u32,
 ) -> Expr {
+    use InstructionOpcode::*;
     if depth == 0 {
         return Expr::Opaque("deep".into(), vec![]);
     }
     if let Some(i) = param_index(v, g) {
         return Expr::Param(i);
     }
-    if let Some(BasicValueEnum::IntValue(c)) = Some(v) {
+    if let BasicValueEnum::IntValue(c) = v {
         if c.is_const() {
             if let Some(k) = c.get_sign_extended_constant() {
                 return Expr::Const(k);
@@ -1640,63 +1679,135 @@ fn value_expr<'c>(
         }
     }
     let Some(ins) = as_instr(v) else { return Expr::Opaque("arg".into(), vec![]) };
-    let name = callee_name(ins).unwrap_or_default();
+    let o = |k: u32| match ins.get_operand(k) { Some(Operand::Value(x)) => Some(x), _ => None };
 
-    if name.contains("get_contract_data") {
-        if let Src::Store { dur, params } = store_src(ins, &arg_table(g)) {
-            return Expr::Slot(dur, params.len());
+    // ---- named calls: storage / host arithmetic / wrappers / helpers ----
+    if let Some(name) = callee_name(ins) {
+        if name.contains("get_contract_data") {
+            if let Src::Store { dur, params } = store_src(ins, &arg_table(g)) {
+                return Expr::Slot(dur, params.len());
+            }
+        }
+        if let Some(opc) = host_op(&name) {
+            let a = o(0).map(|x| value_expr(x, g, module, memo, depth - 1)).unwrap_or(Expr::Opaque("?".into(), vec![]));
+            let b = o(1).map(|x| value_expr(x, g, module, memo, depth - 1)).unwrap_or(Expr::Opaque("?".into(), vec![]));
+            return Expr::Bin(opc, Box::new(a), Box::new(b));
+        }
+        if is_wrapper(&name) {
+            if let Some(x) = o(0) {
+                return value_expr(x, g, module, memo, depth - 1);
+            }
+        }
+        if name.contains("obj_from_") && name.contains("_pieces") {
+            if let Some(lo) = o(1) {
+                return value_expr(lo, g, module, memo, depth - 1); // low limb carries the value
+            }
+        }
+        if let Some(h) = module.get_function(&name) {
+            if h.count_basic_blocks() > 0 {
+                if let Some(re) = ret_expr(h, module, memo, depth - 1) {
+                    let actuals: Vec<Expr> = (0..ins.get_num_operands().saturating_sub(1))
+                        .map(|k| o(k).map(|x| value_expr(x, g, module, memo, depth - 1)).unwrap_or(Expr::Opaque("?".into(), vec![])))
+                        .collect();
+                    return subst(&re, &actuals);
+                }
+            }
         }
     }
-    if let Some(op) = host_op(&name) {
-        // binary host arithmetic: first two Val operands.
-        let a = match ins.get_operand(0) { Some(Operand::Value(x)) => value_expr(x, g, module, memo, depth - 1), _ => Expr::Opaque("?".into(), vec![]) };
-        let b = match ins.get_operand(1) { Some(Operand::Value(x)) => value_expr(x, g, module, memo, depth - 1), _ => Expr::Opaque("?".into(), vec![]) };
-        return Expr::Bin(op, Box::new(a), Box::new(b));
-    }
-    if is_wrapper(&name) {
-        if let Some(Operand::Value(inner)) = ins.get_operand(0) {
-            return value_expr(inner, g, module, memo, depth - 1);
+
+    // ---- i128/u128 encode/decode + arithmetic normalization ----
+    match ins.get_opcode() {
+        // small-form ENCODE: or(shl(V, 8), tag) == V
+        Or => {
+            if let Some(sh) = o(0).and_then(as_instr) {
+                if sh.get_opcode() == Shl {
+                    let v8 = match sh.get_operand(1) {
+                        Some(Operand::Value(BasicValueEnum::IntValue(a))) => a.get_zero_extended_constant(),
+                        _ => None,
+                    };
+                    if v8 == Some(8) {
+                        if let Some(Operand::Value(val)) = sh.get_operand(0) {
+                            return value_expr(val, g, module, memo, depth - 1);
+                        }
+                    }
+                }
+            }
         }
-    }
-    // obj_from_*_pieces(hi, lo): if both limbs are hi/lo of the SAME value, pass it through.
-    if name.contains("obj_from_") && name.contains("_pieces") {
-        let unwrap_limb = |k: u32| -> Option<BasicValueEnum<'c>> {
-            match ins.get_operand(k) {
-                Some(Operand::Value(x)) => as_instr(x).and_then(|xi| {
-                    if callee_name(xi).map(|n| n.contains("obj_to_")).unwrap_or(false) {
-                        match xi.get_operand(0) { Some(Operand::Value(w)) => Some(w), _ => None }
-                    } else { None }
-                }),
+        // small-form DECODE: (ashr|lshr)(payload, 8) == value
+        AShr | LShr => {
+            let amt = o(1).and_then(|x| match x {
+                BasicValueEnum::IntValue(a) => a.get_zero_extended_constant(),
                 _ => None,
-            }
-        };
-        if let (Some(hw), Some(lw)) = (unwrap_limb(0), unwrap_limb(1)) {
-            if hw == lw {
-                return value_expr(hw, g, module, memo, depth - 1);
-            }
-        }
-    }
-    // an internal fastcc helper: inline its return expression, substituting args.
-    if let Some(h) = module.get_function(&name) {
-        if h.count_basic_blocks() > 0 {
-            if let Some(re) = ret_expr(h, module, memo, depth - 1) {
-                let actuals: Vec<Expr> = (0..ins.get_num_operands().saturating_sub(1))
-                    .map(|k| match ins.get_operand(k) {
-                        Some(Operand::Value(x)) => value_expr(x, g, module, memo, depth - 1),
-                        _ => Expr::Opaque("?".into(), vec![]),
-                    })
-                    .collect();
-                return subst(&re, &actuals);
+            });
+            if amt == Some(8) {
+                if let Some(x) = o(0) {
+                    return value_expr(x, g, module, memo, depth - 1);
+                }
             }
         }
+        // value arithmetic (low-limb add/sub/mul/div == value, modulo range).
+        Add | Sub | Mul | UDiv | SDiv | URem | SRem => {
+            let opc = match ins.get_opcode() {
+                Add => '+', Sub => '-', Mul => '*', UDiv | SDiv => '/', _ => '%',
+            };
+            // drop a carry/sign addend: X ± sext/zext/trunc(..) == X
+            if matches!(opc, '+' | '-') {
+                if let Some(bi) = o(1).and_then(as_instr) {
+                    if matches!(bi.get_opcode(), SExt | ZExt | Trunc) {
+                        if let Some(x) = o(0) {
+                            return value_expr(x, g, module, memo, depth - 1);
+                        }
+                    }
+                }
+            }
+            let a = o(0).map(|x| value_expr(x, g, module, memo, depth - 1)).unwrap_or(Expr::Opaque("?".into(), vec![]));
+            let b = o(1).map(|x| value_expr(x, g, module, memo, depth - 1)).unwrap_or(Expr::Opaque("?".into(), vec![]));
+            return Expr::Bin(opc, Box::new(a), Box::new(b));
+        }
+        // extension / truncation is limb bookkeeping -> the value passes through.
+        SExt | ZExt | Trunc => {
+            if let Some(x) = o(0) {
+                return value_expr(x, g, module, memo, depth - 1);
+            }
+        }
+        // phi: collapse when all incoming values denote the same value.
+        Phi => {
+            let mut branches = vec![];
+            for k in 0..ins.get_num_operands() {
+                if let Some(Operand::Value(x)) = ins.get_operand(k) {
+                    if x.is_int_value() {
+                        branches.push(value_expr(x, g, module, memo, depth - 1));
+                    }
+                }
+            }
+            // collapse when the non-zero branches all agree (the 0 is the
+            // storage-absent default, which the Lean model reads as 0 anyway).
+            let nonzero: Vec<&Expr> = branches.iter().filter(|b| **b != Expr::Const(0)).collect();
+            if let Some(first) = nonzero.first() {
+                if nonzero.iter().all(|b| *b == *first) {
+                    return (*first).clone();
+                }
+            } else if !branches.is_empty() {
+                return Expr::Const(0);
+            }
+            return Expr::Opaque("phi".into(), branches);
+        }
+        // spilled value: forward from the store that wrote this slot.
+        Load => {
+            if let Some(ptr) = o(0) {
+                if let Some(stored) = forward_load(ptr, g) {
+                    return value_expr(stored, g, module, memo, depth - 1);
+                }
+            }
+        }
+        _ => {}
     }
-    // unrecognized: uninterpreted function of its recovered value operands.
-    let label = if name.is_empty() { format!("{:?}", ins.get_opcode()) } else { name };
+
+    // ---- unrecognized: uninterpreted function of recovered inputs ----
+    let label = callee_name(ins).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("{:?}", ins.get_opcode()));
     let inputs: Vec<Expr> = (0..ins.get_num_operands())
         .filter_map(|k| match ins.get_operand(k) {
-            Some(Operand::Value(x)) if x.is_int_value() || x.is_pointer_value() => {
-                Some(value_expr(x, g, module, memo, depth - 1))
-            }
+            Some(Operand::Value(x)) if x.is_int_value() => Some(value_expr(x, g, module, memo, depth - 1)),
             _ => None,
         })
         .collect();
