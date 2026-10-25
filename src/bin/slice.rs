@@ -2247,6 +2247,150 @@ struct ModelEntry {
     tokens: Vec<String>,                // token ledger each transfer moves (by recovered order)
     writes: Vec<(String, bool)>,        // (storage slot name, is_mapping) written
     returns: bool,                      // the entrypoint returns a value
+    auth: Option<String>,               // the arg whose `require_auth()` gates the call
+    inv: bool,                          // guards a trap with a constant-product (x*y) check
+}
+
+/// The arg whose `require_auth()` the entrypoint calls — the signer gate. The
+/// `to.require_auth()` at the top of each entrypoint means the caller must be
+/// that address, which is how we justify binding transfers to the caller.
+fn entry_auth(f: FunctionValue) -> Option<String> {
+    let args = arg_table(f);
+    for i in all_instrs(f) {
+        if callee_name(i).map_or(false, |n| n.contains("require_auth")) {
+            if let Some(Operand::Value(v)) = i.get_operand(0) {
+                if let Some(Src::Arg(n)) = src_of(v, &args) {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Does `f` contain a trap (`soroban.trap` / `unreachable`)?
+fn f_has_trap(f: FunctionValue) -> bool {
+    all_instrs(f).iter().any(|i| {
+        i.get_opcode() == InstructionOpcode::Unreachable
+            || callee_name(*i).map_or(false, |n| n.contains("trap"))
+    })
+}
+
+/// Does `v` trace (through the transparent Val wrappers, selects and arithmetic,
+/// but NOT through a memory load) to one of `f`'s parameters? Used to tell a
+/// guard that compares against an argument (slippage/amount checks) from one
+/// that compares two internally-computed values (the constant-product check).
+fn derives_from_arg(v: BasicValueEnum, f: FunctionValue, depth: u32) -> bool {
+    if depth == 0 {
+        return false;
+    }
+    if param_index(v, f).is_some() {
+        return true;
+    }
+    let Some(i) = as_instr(v) else { return false };
+    if i.get_opcode() == InstructionOpcode::Load {
+        return false; // a frame load severs the arg connection
+    }
+    (0..i.get_num_operands()).any(|k| match i.get_operand(k) {
+        Some(Operand::Value(o)) => derives_from_arg(o, f, depth - 1),
+        _ => false,
+    })
+}
+
+/// Is `v` a constant integer?
+fn is_const_int(v: BasicValueEnum) -> bool {
+    matches!(v, BasicValueEnum::IntValue(c) if c.is_const())
+}
+
+/// Does block `b`, or a shallow successor, contain a trap?
+fn blk_traps(b: BasicBlock, depth: u32) -> bool {
+    let mut it = b.get_first_instruction();
+    while let Some(i) = it {
+        if i.get_opcode() == InstructionOpcode::Unreachable
+            || callee_name(i).map_or(false, |n| n.contains("trap"))
+        {
+            return true;
+        }
+        it = i.get_next_instruction();
+    }
+    if depth == 0 {
+        return false;
+    }
+    match b.get_terminator() {
+        Some(t) => (0..t.get_num_operands()).any(|k| match t.get_operand(k) {
+            Some(Operand::Block(nb)) => blk_traps(nb, depth - 1),
+            _ => false,
+        }),
+        None => false,
+    }
+}
+
+/// Is the i1 `cmp` the condition of a branch one of whose targets reaches a
+/// trap — i.e. `cmp` gates a panic (a guard), not just any branch?
+fn gates_trap_br(cmp: InstructionValue, f: FunctionValue) -> bool {
+    for i in all_instrs(f) {
+        if i.get_opcode() != InstructionOpcode::Br {
+            continue;
+        }
+        if as_instr(match i.get_operand(0) { Some(Operand::Value(c)) => c, _ => continue }) != Some(cmp) {
+            continue;
+        }
+        // a conditional branch whose condition is `cmp`: does a target trap?
+        let traps = (1..i.get_num_operands()).any(|k| match i.get_operand(k) {
+            Some(Operand::Block(b)) => blk_traps(b, 1),
+            _ => false,
+        });
+        if traps {
+            return true;
+        }
+    }
+    false
+}
+
+/// Does `f` guard a trap with a constant-product check — a comparison of two
+/// internally-computed values (the two `inv_a*inv_b` products) feeding a panic?
+/// Every OTHER trap guard compares a computed value against an argument
+/// (slippage, amount, insufficient-shares) or a constant (sign checks), so
+/// "both sides computed, neither an arg nor a constant, gating a trap" pins the
+/// `new_inv_a*new_inv_b < old_inv_a*old_inv_b` panic — the invariant the
+/// contract enforces on itself, without reconstructing the formula.
+fn has_product_invariant_trap(f: FunctionValue) -> bool {
+    if !f_has_trap(f) {
+        return false;
+    }
+    for i in all_instrs(f) {
+        if !gates_trap_br(i, f) {
+            continue;
+        }
+        // the invariant is a WIDE (i128/i256) comparison of the two products,
+        // which lifts as the select-compare idiom `select (icmp eq hi) cmplo cmphi`
+        // — we read its hi-limb icmp. A plain i64 icmp (e.g. inside the isqrt
+        // share math) is not the constant-product check.
+        let ci = match i.get_opcode() {
+            InstructionOpcode::Select => match i.get_operand(2) {
+                Some(Operand::Value(hv)) => match as_instr(hv).filter(|x| x.get_opcode() == InstructionOpcode::ICmp) {
+                    Some(hi) => hi,
+                    None => continue,
+                },
+                _ => continue,
+            },
+            _ => continue,
+        };
+        // an ORDERING comparison (`new < old`), not equality — that rules out
+        // i128-multiply overflow/sign checks (`hi == lo>>63`), which also compare
+        // two computed values but are not the constant-product invariant.
+        use inkwell::IntPredicate::*;
+        if !matches!(ci.get_icmp_predicate(), Some(ULT | ULE | UGT | UGE | SLT | SLE | SGT | SGE)) {
+            continue;
+        }
+        if let (Some(Operand::Value(av)), Some(Operand::Value(bv))) = (ci.get_operand(0), ci.get_operand(1)) {
+            let computed = |x: BasicValueEnum| !is_const_int(x) && !derives_from_arg(x, f, 24);
+            if computed(av) && computed(bv) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// The storage slots an entrypoint touches, with real `DataKey` names:
@@ -2466,7 +2610,8 @@ fn emit_lean_model(entries: &[ModelEntry]) {
     println!("structure Call where");
     println!("  fn     : String");
     println!("  caller : Addr");
-    println!("  arg    : String → Int\n");
+    println!("  arg    : String → Int   -- numeric args by name");
+    println!("  argA   : String → Addr  -- address args by name\n");
     println!("structure Step where");
     println!("  call   : Call");
     println!("  pre    : Storage");
@@ -2480,6 +2625,13 @@ fn emit_lean_model(entries: &[ModelEntry]) {
     println!("/-- storage after token `m` moves `amt` from `src` to `dst`. -/");
     println!("def xfer (m : String) (s : Storage) (src dst : Addr) (amt : Int) : Storage :=");
     println!("  (s.set (.entry m src) (bal m s src - amt)).set (.entry m dst) (bal m s dst + amt)\n");
+    // the fee-adjusted constant-product invariant the contract checks on itself
+    // (new_inv_a*new_inv_b). Opaque: we recover that it is CHECKED, not its formula.
+    if entries.iter().any(|e| e.inv) {
+        println!("/-- the fee-adjusted constant-product invariant value `new_inv_a*new_inv_b`,");
+        println!("    the quantity the contract's `constant product` panic compares. -/");
+        println!("opaque invProduct : Storage → Int\n");
+    }
 
     for e in entries {
         let fn_id = san(&e.name);
@@ -2497,6 +2649,16 @@ fn emit_lean_model(entries: &[ModelEntry]) {
         if !e.writes.is_empty() {
             let ws: Vec<String> = e.writes.iter().map(|(s, _)| s.clone()).collect();
             println!("    writes storage: {}", ws.join(", "));
+        }
+        // the recovered transition guards (auth + prior-storage conditions).
+        if e.auth.is_some() || e.inv {
+            println!("    guards (must hold to transition):");
+            if let Some(a) = &e.auth {
+                println!("      auth: caller signed as `{a}` (require_auth)");
+            }
+            if e.inv {
+                println!("      constant-product: invProduct(pre) ≤ invProduct(post)  [recovered trap]");
+            }
         }
         println!("-/");
         // opaque recovered-but-uninterpreted terms
@@ -2538,15 +2700,47 @@ fn emit_lean_model(entries: &[ModelEntry]) {
         let ret = if e.returns { format!("{fn_id}_ret st") } else { "0".to_string() };
         println!("  st.call.fn = \"{}\" ∧", e.name);
         println!("  c ≠ pool ∧");
+        // recovered transition guards: auth, then the constant-product check.
+        if let Some(a) = &e.auth {
+            println!("  c = st.call.argA \"{a}\" ∧   -- require_auth");
+        }
+        if e.inv {
+            println!("  invProduct st.pre ≤ invProduct st.post ∧   -- constant-product trap");
+        }
         println!("  st.post = {post} ∧");
         println!("  st.writes = [{}] ∧", writes_list.join(", "));
         println!("  st.ret = {ret}\n");
+
+        // the recovered constant-product guard is itself a value invariant:
+        // emit the one-step monotonicity theorem, projected out of the def.
+        if e.inv {
+            let before = 2 + if e.auth.is_some() { 1 } else { 0 }; // fn, c≠pool, [auth]
+            let path = ".2".repeat(before) + ".1"; // invProduct is the next conjunct
+            println!("-- VALUE INVARIANT: a `{}` never decreases the constant product.", e.name);
+            println!("theorem {fn_id}_keeps_product (st : Step) (h : {fn_id} st) :");
+            println!("    invProduct st.pre ≤ invProduct st.post := h{path}\n");
+        }
     }
 
     // the contract as the list of its entrypoints (cf. SorobanAmm.contract).
     let names: Vec<String> = entries.iter().map(|e| san(&e.name)).collect();
     println!("/-- the contract's entry points (each a `Step → Prop`). -/");
     println!("def entries : List (Step → Prop) := [{}]\n", names.join(", "));
+
+    // inductive no-drain: the invariant never falls below its start across any
+    // sequence of the invariant-guarded entrypoint's calls.
+    if let Some(e) = entries.iter().find(|e| e.inv) {
+        let fn_id = san(&e.name);
+        println!("-- VALUE INVARIANT (inductive): across any sequence of `{}` calls the", e.name);
+        println!("-- constant product never falls below its start -- no draining by swapping.");
+        println!("inductive Reach : Storage → Storage → Prop where");
+        println!("  | refl (s) : Reach s s");
+        println!("  | step {{s}} (st : Step) : Reach s st.pre → {fn_id} st → Reach s st.post\n");
+        println!("theorem no_drain (s t : Storage) (r : Reach s t) : invProduct s ≤ invProduct t := by");
+        println!("  induction r with");
+        println!("  | refl => omega");
+        println!("  | step st _ h ih => have hp := {fn_id}_keeps_product st h; omega\n");
+    }
     println!("end Contract");
 }
 
@@ -3643,7 +3837,9 @@ fn main() {
                 .map(|a| a.get_string_value().to_string_lossy().into_owned())
                 .map(|s| !s.is_empty() && s != "void")
                 .unwrap_or(false);
-            model_entries.push(ModelEntry { name, args, transfers, tokens, writes, returns });
+            let auth = entry_auth(f);
+            let inv = has_product_invariant_trap(f);
+            model_entries.push(ModelEntry { name, args, transfers, tokens, writes, returns, auth, inv });
             continue;
         }
 
