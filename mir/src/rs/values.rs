@@ -1,5 +1,5 @@
 //! Values: locals, places, constants and rvalues as Rust; Val payloads, tags, enums.
-use rustc_middle::mir::interpret::{GlobalAlloc, Scalar};
+use rustc_middle::mir::interpret::{GlobalAlloc, Scalar, alloc_range};
 use rustc_middle::mir::*;
 use rustc_middle::ty::{self};
 
@@ -85,6 +85,23 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         s
     }
 
+    /// Evaluate a constant whose value lives in an allocation (`ConstValue::Indirect`)
+    /// and, for a scalar-sized type, read the scalar back out. Returns `None` for a
+    /// genuine aggregate (which the caller then reports as before).
+    fn eval_indirect_scalar(&self, c: &ConstOperand<'tcx>) -> Option<Scalar> {
+        let tcx = self.tcx;
+        let te = ty::TypingEnv::fully_monomorphized();
+        match c.const_.eval(tcx, te, c.span).ok()? {
+            ConstValue::Scalar(s) => Some(s),
+            ConstValue::Indirect { alloc_id, offset } => {
+                let size = tcx.layout_of(te.as_query_input(c.const_.ty())).ok()?.size;
+                let GlobalAlloc::Memory(mem) = tcx.global_alloc(alloc_id) else { return None };
+                mem.inner().read_scalar(&tcx, alloc_range(offset, size), false).ok()
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn konst(&self, c: &ConstOperand<'tcx>) -> R<String> {
         let tcx = self.tcx;
         let ty = c.const_.ty();
@@ -94,7 +111,16 @@ impl<'a, 'tcx> Fn_<'a, 'tcx> {
         if ty.is_unit() {
             return Ok("()".into());
         }
-        let Some(scalar) = c.const_.try_to_scalar() else { return Err(format!("non-scalar constant {:?}", c.const_)) };
+        let scalar = match c.const_.try_to_scalar() {
+            Some(s) => s,
+            // A scalar-sized constant materialized in an allocation (e.g. a `Val` that was
+            // promoted to a static) is `Indirect`, not an immediate scalar. Evaluate it and
+            // read the scalar out of its allocation rather than aborting the whole file.
+            None => match self.eval_indirect_scalar(c) {
+                Some(s) => s,
+                None => return Err(format!("non-scalar constant {:?}", c.const_)),
+            },
+        };
         Ok(match scalar {
             Scalar::Int(i) => {
                 let bits = i.to_bits(i.size());

@@ -1,0 +1,12 @@
+[package]
+name = "dfx_poc"
+version = "0.0.0"
+edition = "2021"
+[lib]
+crate-type = ["rlib"]
+[dependencies]
+soroban-sdk = "=25.3.0"
+[dev-dependencies]
+soroban-sdk = { version = "=25.3.0", features = ["testutils"] }
+[profile.dev]
+overflow-checks = true

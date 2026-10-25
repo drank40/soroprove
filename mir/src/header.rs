@@ -137,9 +137,31 @@ pub fn rs_ty(t: BasicTypeEnum) -> Result<&'static str, String> {
             w => return Err(format!("i{w} has no Rust type here")),
         },
         BasicTypeEnum::StructType(s) if s.get_name().map(|n| n.to_bytes() == b"Val").unwrap_or(false) => "Val",
+        // LLVM's `*.with.overflow` intrinsics return an anonymous `{ iN, i1 }`
+        // (result, overflow-bit); model it as the Rust tuple `(uN, bool)`.
+        BasicTypeEnum::StructType(s) if overflow_pair_width(s).is_some() => match overflow_pair_width(s).unwrap() {
+            8 => "(u8, bool)",
+            16 => "(u16, bool)",
+            32 => "(u32, bool)",
+            64 => "(u64, bool)",
+            _ => "(u128, bool)",
+        },
         BasicTypeEnum::PointerType(_) => "*mut u8",
         other => return Err(format!("no Rust type for {other:?}")),
     })
+}
+
+/// If `s` is an `{ iN, i1 }` overflow pair, return N; else None.
+pub fn overflow_pair_width(s: inkwell::types::StructType) -> Option<u32> {
+    let f = s.get_field_types();
+    if f.len() != 2 {
+        return None;
+    }
+    let (BasicTypeEnum::IntType(a), BasicTypeEnum::IntType(b)) = (f[0], f[1]) else { return None };
+    if b.get_bit_width() != 1 {
+        return None;
+    }
+    matches!(a.get_bit_width(), 8 | 16 | 32 | 64 | 128).then(|| a.get_bit_width())
 }
 
 pub(crate) fn pty_str(t: infer::PTy) -> &'static str {

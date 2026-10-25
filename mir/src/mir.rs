@@ -103,6 +103,18 @@ impl<'tcx> Env<'tcx> {
                 w => return Err(format!("i{w} has no MIR type here")),
             },
             BasicTypeEnum::StructType(s) if s.get_name().map(|n| n.to_bytes() == b"Val").unwrap_or(false) => self.val,
+            // `*.with.overflow` result `{ iN, i1 }` -> the tuple `(uN, bool)`.
+            BasicTypeEnum::StructType(s) if crate::header::overflow_pair_width(s).is_some() => {
+                let n = crate::header::overflow_pair_width(s).unwrap();
+                let elem = match n {
+                    8 => tcx.types.u8,
+                    16 => tcx.types.u16,
+                    32 => tcx.types.u32,
+                    64 => tcx.types.u64,
+                    _ => tcx.types.u128,
+                };
+                Ty::new_tup(tcx, &[elem, tcx.types.bool])
+            }
             BasicTypeEnum::PointerType(_) => self.u8p,
             other => return Err(format!("no MIR type for {other:?}")),
         })
