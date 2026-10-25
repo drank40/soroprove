@@ -1629,12 +1629,41 @@ fn ptr_base_off(p: BasicValueEnum) -> (String, i64) {
     (fmt(p), 0)
 }
 
-/// The value stored to `ptr` in `g`, but ONLY when that slot has a single store
-/// (a unique definition). Reused frame slots have many stores and are left opaque
-/// rather than forwarded to an arbitrary one — this keeps the abstraction sound
-/// and prevents blow-up on large functions.
-fn forward_load<'c>(ptr: BasicValueEnum<'c>, g: FunctionValue<'c>) -> Option<BasicValueEnum<'c>> {
+/// The value feeding a `load`, via store-forwarding. First the reaching
+/// definition within the load's own basic block (the latest preceding store to
+/// the same slot) — this resolves the common spill-then-reload pattern even when
+/// the frame slot is reused elsewhere. Failing that, a whole-function UNIQUE
+/// store (a single definition). Both are sound; neither blows up.
+fn forward_load<'c>(load: InstructionValue<'c>, g: FunctionValue<'c>) -> Option<BasicValueEnum<'c>> {
+    let ptr = match load.get_operand(0) {
+        Some(Operand::Value(p)) => p,
+        _ => return None,
+    };
     let target = ptr_base_off(ptr);
+    // (1) latest store to this slot earlier in the load's own block.
+    if let Some(blk) = load.get_parent() {
+        let mut latest = None;
+        let mut it = blk.get_first_instruction();
+        while let Some(i) = it {
+            if i == load {
+                break;
+            }
+            if i.get_opcode() == InstructionOpcode::Store {
+                if let (Some(Operand::Value(sval)), Some(Operand::Value(sptr))) =
+                    (i.get_operand(0), i.get_operand(1))
+                {
+                    if sptr == ptr || ptr_base_off(sptr) == target {
+                        latest = Some(sval);
+                    }
+                }
+            }
+            it = i.get_next_instruction();
+        }
+        if latest.is_some() {
+            return latest;
+        }
+    }
+    // (2) whole-function unique store.
     let mut found = None;
     let mut count = 0usize;
     for i in all_instrs(g) {
@@ -1794,10 +1823,8 @@ fn value_expr<'c>(
         }
         // spilled value: forward from the store that wrote this slot.
         Load => {
-            if let Some(ptr) = o(0) {
-                if let Some(stored) = forward_load(ptr, g) {
-                    return value_expr(stored, g, module, memo, depth - 1);
-                }
+            if let Some(stored) = forward_load(ins, g) {
+                return value_expr(stored, g, module, memo, depth - 1);
             }
         }
         _ => {}
