@@ -28,7 +28,7 @@ use inkwell::values::{
     AnyValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, Operand,
     PointerValue,
 };
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 // ======================= value helpers =======================
@@ -2687,6 +2687,182 @@ fn build_trans<'c>(
     (Trans { action: name, amount, guards, writes, ext: dir, auth, prov }, slots)
 }
 
+// ======================= storage-schema export =======================
+
+/// The ABI type of a stored/read Val: an arg's spec type, or the Val tag.
+fn abi_type_of(v: BasicValueEnum, args: &Args) -> String {
+    if let Some((_, _, t)) = args.iter().find(|(pv, _, _)| *pv == v) {
+        if !t.is_empty() {
+            return t.clone();
+        }
+    }
+    if let Some(i) = as_instr(v) {
+        let n = callee_name(i).unwrap_or_default();
+        if n.contains("from_payload") {
+            if let Some(Operand::Value(BasicValueEnum::IntValue(c))) = i.get_operand(0) {
+                if c.is_const() {
+                    if let Some(k) = c.get_zero_extended_constant() {
+                        return tag_name(k & 0xff).into();
+                    }
+                }
+            }
+            if let Some(Operand::Value(inner)) = i.get_operand(0) {
+                return abi_type_of(inner, args);
+            }
+        }
+        if n.contains("val.payload") {
+            if let Some(Operand::Value(inner)) = i.get_operand(0) {
+                return abi_type_of(inner, args);
+            }
+        }
+        if n.contains("obj_from_i128") || n.contains("obj_to_i128") {
+            return "i128".into();
+        }
+        if n.contains("obj_from_u128") || n.contains("obj_to_u128") {
+            return "u128".into();
+        }
+    }
+    "?".into()
+}
+
+/// A storage key's identity: a decoded symbol, else the key-builder's variant
+/// discriminant (`DataKey#<n>`), plus the ABI types of any key parameters.
+fn storage_key(key: BasicValueEnum, args: &Args) -> (String, Vec<String>) {
+    // look through the Val wrappers to the key-builder.
+    let mut cur = key;
+    while let Some(i) = as_instr(cur) {
+        let n = callee_name(i).unwrap_or_default();
+        // a directly-encoded small symbol key.
+        if n.contains("from_payload") {
+            if let Some(Operand::Value(BasicValueEnum::IntValue(c))) = i.get_operand(0) {
+                if c.is_const() {
+                    if let Some(k) = c.get_zero_extended_constant() {
+                        if (k & 0xff) == 14 {
+                            if let Some(s) = decode_symbol(k) {
+                                return (format!("{s}"), vec![]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if n.contains("from_payload") || n.contains("val.payload") {
+            if let Some(Operand::Value(inner)) = i.get_operand(0) {
+                cur = inner;
+                continue;
+            }
+        }
+        // the key-builder helper: first constant arg is the variant discriminant,
+        // address args are the key parameters.
+        if let Some(_) = callee_name(i).filter(|nm| nm.starts_with('f')) {
+            let mut disc = None;
+            let mut params = vec![];
+            for k in 0..i.get_num_operands().saturating_sub(1) {
+                if let Some(Operand::Value(o)) = i.get_operand(k) {
+                    if let BasicValueEnum::IntValue(c) = o {
+                        if c.is_const() && disc.is_none() {
+                            disc = c.get_sign_extended_constant();
+                            continue;
+                        }
+                    }
+                    let t = abi_type_of(o, args);
+                    if t == "Address" || t == "Bytes" || t == "String" {
+                        params.push(t);
+                    }
+                }
+            }
+            let id = disc.map(|d| format!("DataKey#{d}")).unwrap_or_else(|| "DataKey?".into());
+            return (id, params);
+        }
+        break;
+    }
+    ("?".into(), vec![])
+}
+
+/// Collect the storage schema across all entrypoints: slot -> value type.
+fn emit_storage_schema<'c>(module: &inkwell::module::Module<'c>, path: &std::path::Path) {
+    // (durability, key-id) -> (value type, read?, written?, keyed?)
+    #[derive(Default)]
+    struct Slot { vtype: String, read: bool, written: bool }
+    let mut schema: BTreeMap<(String, String), Slot> = BTreeMap::new();
+    for f in module.get_functions() {
+        if f.count_basic_blocks() == 0 {
+            continue;
+        }
+        let args = arg_table(f);
+        for i in all_instrs(f) {
+            let Some(n) = callee_name(i) else { continue };
+            let is_put = n.contains("put_contract_data");
+            let is_get = n.contains("get_contract_data") || n.contains("has_contract_data");
+            if !is_put && !is_get {
+                continue;
+            }
+            // put(key, val, dur): dur = op2; get/has(key, dur): dur = op1.
+            let dur = match i.get_operand(if is_put { 2 } else { 1 }) {
+                Some(Operand::Value(x)) => durability(x),
+                _ => "?".into(),
+            };
+            let (keyid, _params) = match i.get_operand(0) {
+                Some(Operand::Value(k)) => storage_key(k, &args),
+                _ => ("?".into(), vec![]),
+            };
+            if dur == "?" && keyid.starts_with("DataKey?") {
+                continue; // unclassifiable access
+            }
+            let e = schema.entry((dur, keyid)).or_default();
+            if e.vtype.is_empty() {
+                e.vtype = "?".into();
+            }
+            if is_put {
+                e.written = true;
+                if let Some(Operand::Value(v)) = i.get_operand(1) {
+                    let t = abi_type_of(v, &args);
+                    if e.vtype == "?" && t != "?" {
+                        e.vtype = t;
+                    }
+                }
+            } else {
+                e.read = true;
+            }
+        }
+    }
+
+    let acc = |s: &Slot| match (s.read, s.written) {
+        (true, true) => "read/write",
+        (false, true) => "write",
+        (true, false) => "read",
+        _ => "—",
+    };
+    // ---- Markdown ----
+    let mut md = String::from("# Storage schema\n\n");
+    md.push_str("Recovered from lifted bytecode: durability, key, value type, and access per\n");
+    md.push_str("storage slot. Keys are shown by their `DataKey#<n>` variant discriminant where\n");
+    md.push_str("recovered (the variant *names* live in the wasm data section, not the IR); `?`\n");
+    md.push_str("marks a key encoding this pass does not decode.\n\n");
+    md.push_str("| Durability | Key | Value type | Access |\n|---|---|---|---|\n");
+    for ((dur, key), s) in &schema {
+        md.push_str(&format!("| {dur} | {key} | {} | {} |\n", s.vtype, acc(s)));
+    }
+    // ---- JSON ----
+    let mut json = String::from("{\n  \"slots\": [\n");
+    let n = schema.len();
+    for (idx, ((dur, key), s)) in schema.iter().enumerate() {
+        json.push_str(&format!(
+            "    {{ \"durability\": \"{dur}\", \"key\": \"{key}\", \"value_type\": \"{}\", \"access\": \"{}\" }}{}\n",
+            s.vtype, acc(s),
+            if idx + 1 < n { "," } else { "" }
+        ));
+    }
+    json.push_str("  ]\n}\n");
+
+    let md_path = path.with_extension("storage.md");
+    let json_path = path.with_extension("storage.json");
+    let _ = std::fs::write(&md_path, &md);
+    let _ = std::fs::write(&json_path, &json);
+    print!("{md}");
+    println!("\nwrote {} and {}", md_path.display(), json_path.display());
+}
+
 // ======================= driver =======================
 
 fn main() {
@@ -2695,8 +2871,8 @@ fn main() {
         args.next()
             .expect("usage: slice <file.ll> [--fn F] [--sink transfer|trap|error|error-ret|all] [--callee call] [--sym transfer|any]"),
     );
-    let (mut only_fn, mut callee, mut sym, mut sink_sel, mut raw, mut lean_sm, mut amm_dbg, mut lean_amm, mut expr_dbg, mut lean_pool, mut lean_cpmm) =
-        (None, "call".to_string(), Some("transfer".to_string()), "all".to_string(), false, false, false, false, false, false, false);
+    let (mut only_fn, mut callee, mut sym, mut sink_sel, mut raw, mut lean_sm, mut amm_dbg, mut lean_amm, mut expr_dbg, mut lean_pool, mut lean_cpmm, mut storage_schema) =
+        (None, "call".to_string(), Some("transfer".to_string()), "all".to_string(), false, false, false, false, false, false, false, false);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--fn" => only_fn = args.next(),
@@ -2709,6 +2885,7 @@ fn main() {
             "--lean-amm" => lean_amm = true,
             "--lean-pool" => lean_pool = true,
             "--lean-cpmm" => lean_cpmm = true,
+            "--storage-schema" => storage_schema = true,
             "--expr-dbg" => expr_dbg = true,
             other => eprintln!("ignoring arg {other}"),
         }
@@ -2725,6 +2902,11 @@ fn main() {
     let ctx = Context::create();
     let buf = MemoryBuffer::create_from_file(&path).expect("read .ll");
     let module = ctx.create_module_from_ir(buf).expect("parse .ll");
+
+    if storage_schema {
+        emit_storage_schema(&module, &path);
+        return;
+    }
 
     let mut transes: Vec<Trans> = vec![];
     let mut all_slots: BTreeSet<String> = BTreeSet::new();
