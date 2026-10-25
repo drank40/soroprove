@@ -1583,6 +1583,7 @@ enum Expr {
     Slot(String, usize),      // a storage read: durability + key arity
     Const(i64),
     Bin(char, Box<Expr>, Box<Expr>), // +, -, *, /, % on recognized arithmetic
+    VecGet(Box<Expr>, Box<Expr>),    // vec_get(handle, index): a symbolic array read
     Opaque(String, Vec<Expr>),       // an unrecognized op, as an uninterpreted fn of its inputs
 }
 
@@ -1732,6 +1733,12 @@ fn value_expr<'c>(
                 return value_expr(lo, g, module, memo, depth - 1); // low limb carries the value
             }
         }
+        // vec_get(handle, index): a symbolic array read -> reserve[index].
+        if name.contains("vec_get") {
+            let h = o(0).map(|x| value_expr(x, g, module, memo, depth - 1)).unwrap_or(Expr::Opaque("?".into(), vec![]));
+            let idx = o(1).map(|x| value_expr(x, g, module, memo, depth - 1)).unwrap_or(Expr::Opaque("?".into(), vec![]));
+            return Expr::VecGet(Box::new(h), Box::new(idx));
+        }
         if let Some(h) = module.get_function(&name) {
             if h.count_basic_blocks() > 0 {
                 if let Some(re) = ret_expr(h, module, memo, depth - 1) {
@@ -1875,6 +1882,7 @@ fn subst(e: &Expr, actuals: &[Expr]) -> Expr {
     match e {
         Expr::Param(i) => actuals.get(*i).cloned().unwrap_or(Expr::Opaque("arg".into(), vec![])),
         Expr::Bin(op, a, b) => Expr::Bin(*op, Box::new(subst(a, actuals)), Box::new(subst(b, actuals))),
+        Expr::VecGet(h, i) => Expr::VecGet(Box::new(subst(h, actuals)), Box::new(subst(i, actuals))),
         Expr::Opaque(l, xs) => Expr::Opaque(l.clone(), xs.iter().map(|x| subst(x, actuals)).collect()),
         other => other.clone(),
     }
@@ -1974,6 +1982,7 @@ fn limb_of(e: &Expr) -> Option<&Expr> {
 fn simplify(e: Expr) -> Expr {
     let e = match e {
         Expr::Bin(op, a, b) => Expr::Bin(op, Box::new(simplify(*a)), Box::new(simplify(*b))),
+        Expr::VecGet(h, i) => Expr::VecGet(Box::new(simplify(*h)), Box::new(simplify(*i))),
         Expr::Opaque(l, xs) => Expr::Opaque(l, xs.into_iter().map(simplify).collect()),
         x => x,
     };
@@ -2010,6 +2019,7 @@ fn render_expr(e: &Expr, args: &Args) -> String {
         Expr::Slot(dur, ar) => format!("storage.{dur}/{ar}"),
         Expr::Const(k) => k.to_string(),
         Expr::Bin(op, a, b) => format!("({} {} {})", render_expr(a, args), op, render_expr(b, args)),
+        Expr::VecGet(h, i) => format!("{}[{}]", render_expr(h, args), render_expr(i, args)),
         Expr::Opaque(l, xs) if xs.is_empty() => l.clone(),
         Expr::Opaque(l, xs) => {
             let inner: Vec<String> = xs.iter().map(|x| render_expr(x, args)).collect();
@@ -2022,6 +2032,7 @@ fn render_expr(e: &Expr, args: &Args) -> String {
 fn expr_ops(e: &Expr) -> usize {
     match e {
         Expr::Bin(_, a, b) => 1 + expr_ops(a) + expr_ops(b),
+        Expr::VecGet(h, i) => expr_ops(h) + expr_ops(i),
         Expr::Opaque(_, xs) => xs.iter().map(expr_ops).sum(),
         _ => 0,
     }
@@ -2157,6 +2168,7 @@ fn lean_of_expr(e: &Expr, args: &Args) -> Option<String> {
             let b = lean_of_expr(b, args)?;
             Some(format!("({a} {op} {b})"))
         }
+        Expr::VecGet(_, _) => None, // handled by the array-aware CPMM recognizer
         Expr::Opaque(_, _) => None,
     }
 }
