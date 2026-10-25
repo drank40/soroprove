@@ -1606,6 +1606,8 @@ fn host_op(name: &str) -> Option<char> {
 }
 
 /// Is this callee a transparent Val/int wrapper we look straight through?
+/// Includes the value-preserving u128<->u256 conversions (byte (de)serialization),
+/// so the operands of a u256 multiply/divide resolve to the underlying integer.
 fn is_wrapper(name: &str) -> bool {
     name.contains("from_payload")
         || name.contains("val.payload")
@@ -1615,6 +1617,10 @@ fn is_wrapper(name: &str) -> bool {
         || name.contains("obj_to_i64")
         || name.contains("obj_from_u64")
         || name.contains("obj_from_i64")
+        || name.contains("u256_val_from_be_bytes")
+        || name.contains("u256_val_to_be_bytes")
+        || name.contains("obj_to_u256")
+        || name.contains("obj_to_i256")
 }
 
 /// Base identity + byte offset of a pointer, chasing geps to the alloca and
@@ -1870,8 +1876,12 @@ fn value_expr<'c>(
             }
         }
         if name.contains("obj_from_") && name.contains("_pieces") {
-            if let Some(lo) = o(1) {
-                return value_expr(lo, g, module, memo, depth - 1); // low limb carries the value
+            // the lowest limb (last operand) carries the value's low 64 bits.
+            let n = ins.get_num_operands();
+            if n >= 1 {
+                if let Some(Operand::Value(lo)) = ins.get_operand(n - 1) {
+                    return value_expr(lo, g, module, memo, depth - 1);
+                }
             }
         }
         // vec_get(handle, index): a symbolic array read -> reserve[index].
