@@ -1617,33 +1617,91 @@ fn is_wrapper(name: &str) -> bool {
         || name.contains("obj_from_i64")
 }
 
-/// Base identity + byte offset of a pointer (chasing geps to the alloca).
+/// Base identity + byte offset of a pointer, chasing geps to the alloca and
+/// through `inttoptr` of a `ptrtoint(alloca) (+ const)` address (the wasm shadow
+/// stack reconstructs frame pointers that way). Only CONSTANT offsets are
+/// tracked; a dynamic offset yields an opaque base (so it won't alias-match).
 fn ptr_base_off(p: BasicValueEnum) -> (String, i64) {
     if let Some(i) = as_instr(p) {
-        if i.get_opcode() == InstructionOpcode::GetElementPtr {
-            if let Some(Operand::Value(base)) = i.get_operand(0) {
-                let (b, o) = ptr_base_off(base);
-                return (b, o + gep_off(p));
+        match i.get_opcode() {
+            InstructionOpcode::GetElementPtr => {
+                if let Some(Operand::Value(base)) = i.get_operand(0) {
+                    let (b, o) = ptr_base_off(base);
+                    return (b, o + gep_off(p));
+                }
             }
+            InstructionOpcode::IntToPtr => {
+                if let Some(Operand::Value(addr)) = i.get_operand(0) {
+                    return addr_base_off(addr);
+                }
+            }
+            _ => {}
         }
     }
     (fmt(p), 0)
+}
+
+/// Base + constant offset of an i64 ADDRESS value (shadow-stack arithmetic).
+fn addr_base_off(a: BasicValueEnum) -> (String, i64) {
+    if let Some(i) = as_instr(a) {
+        match i.get_opcode() {
+            InstructionOpcode::Add => {
+                if let (Some(Operand::Value(x)), Some(Operand::Value(BasicValueEnum::IntValue(c)))) =
+                    (i.get_operand(0), i.get_operand(1))
+                {
+                    if let Some(k) = c.get_sign_extended_constant() {
+                        let (b, o) = addr_base_off(x);
+                        return (b, o + k);
+                    }
+                }
+            }
+            InstructionOpcode::ZExt | InstructionOpcode::SExt | InstructionOpcode::Trunc => {
+                if let Some(Operand::Value(x)) = i.get_operand(0) {
+                    return addr_base_off(x);
+                }
+            }
+            InstructionOpcode::PtrToInt => {
+                if let Some(Operand::Value(p)) = i.get_operand(0) {
+                    return ptr_base_off(p);
+                }
+            }
+            _ => {}
+        }
+    }
+    (fmt(a), 0)
 }
 
 /// Does this pointer bottom out at an `alloca` (through geps)? Only then can we
 /// compare it precisely; anything else (inttoptr of an i64 address, unknown) is
 /// opaque and a store through it may-aliases every slot.
 fn ptr_is_clean(p: BasicValueEnum) -> bool {
-    let mut cur = p;
-    loop {
-        match as_instr(cur) {
-            Some(i) if i.get_opcode() == InstructionOpcode::Alloca => return true,
-            Some(i) if i.get_opcode() == InstructionOpcode::GetElementPtr => match i.get_operand(0) {
-                Some(Operand::Value(b)) => cur = b,
-                _ => return false,
-            },
-            _ => return false,
+    match as_instr(p) {
+        Some(i) if i.get_opcode() == InstructionOpcode::Alloca => true,
+        Some(i) if i.get_opcode() == InstructionOpcode::GetElementPtr => {
+            matches!(i.get_operand(0), Some(Operand::Value(b)) if ptr_is_clean(b))
         }
+        Some(i) if i.get_opcode() == InstructionOpcode::IntToPtr => {
+            matches!(i.get_operand(0), Some(Operand::Value(a)) if addr_is_clean(a))
+        }
+        _ => false,
+    }
+}
+
+/// An i64 address is clean iff it is `ptrtoint(clean ptr)` plus constant offsets.
+fn addr_is_clean(a: BasicValueEnum) -> bool {
+    match as_instr(a) {
+        Some(i) if i.get_opcode() == InstructionOpcode::PtrToInt => {
+            matches!(i.get_operand(0), Some(Operand::Value(p)) if ptr_is_clean(p))
+        }
+        Some(i) if matches!(i.get_opcode(), InstructionOpcode::ZExt | InstructionOpcode::SExt | InstructionOpcode::Trunc) => {
+            matches!(i.get_operand(0), Some(Operand::Value(x)) if addr_is_clean(x))
+        }
+        Some(i) if i.get_opcode() == InstructionOpcode::Add => {
+            // base + constant only (a dynamic offset is not clean)
+            matches!(i.get_operand(1), Some(Operand::Value(BasicValueEnum::IntValue(c))) if c.get_sign_extended_constant().is_some())
+                && matches!(i.get_operand(0), Some(Operand::Value(x)) if addr_is_clean(x))
+        }
+        _ => false,
     }
 }
 
