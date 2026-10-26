@@ -112,6 +112,8 @@ def show_tail_diver(C, name):
                       for v, _, _ in C["vars"])
     reads = [f'("{m}", fun (s : Storage) a => toString (getOr0 s ({m} a)))' for m in D["maps"]]
     reads += [f'("{b}", fun (s : Storage) a => toString (bal (s {t}) s a))' for b, t in D["ledgers"].items()]
+    reads += [f'("{f}", fun (s : Storage) a => toString (s ({f} a)))' for f in D.get("fields", [])]
+    reads += [f'("{b}", fun (s : Storage) a => toString (bal (c.argA "{x}") s a))' for b, x in D.get("argLedgers", {}).items()]
     args = ", ".join(f'("{a}", toString (c.arg "{a}"))' for a, _ in C["amounts"])
     fixed = ", ".join(['("pool", c.self)'] + [f'("{a}", c.argA "{a}")' for a in D["addrArgs"]])
     return f"""
@@ -305,9 +307,13 @@ VERDICT: refuted.
 
 CEX_DIVER = """  and, when it is false, give the call that breaks it, so the user can see it:
     def {name}_cex : Step := {{ call := {{ fn := "...", caller := 1, self := 2, arg := fun n => if n = "..." then 5 else 0,
-                                     argA := fun _ => 1, signers := [1], env := fun _ => 0 }},
+                                     argA := fun n => if n = "a" then 3 else if n = "b" then 4 else 5,
+                                     signers := [1], env := fun _ => 0 }},
                              pre := fun k => ..., post := fun k => ..., writes := [...], ret := 0 }}
     theorem {name}_cex_breaks : (∃ e ∈ entries, e {name}_cex) ∧ ¬ (({pred}) {name}_cex) := ...
+  Make it minimal, so the user sees what breaks the claim: give every address argument, the
+  caller and the contract their own distinct address, and every number 0, except the ones the
+  counterexample needs (equal addresses, nonzero amounts). Then each coincidence left is a cause.
 """
 
 

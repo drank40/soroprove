@@ -111,39 +111,74 @@
   function cexView(job) {
     const c = job.cex, C = job.C;
     if (!c) return '';
+    // a stellar-diver model: only the called entry point's own arguments.
+    const own = C.diver?.entryArgs?.[c.fn];
+    const fixed = own ? c.fixed.filter(([n]) => n === 'pool' || own.addrs.includes(n)) : c.fixed;
+    const shown = own ? c.args.filter(([n]) => own.amounts.includes(n)) : c.args;
     const roles = new Map();
     const role = (a, r) => roles.set(a, [...(roles.get(a) || []), r]);
     role(c.caller, 'caller');
-    for (const [n, a] of c.fixed) role(a, n);
+    for (const [n, a] of fixed) role(a, n);
     if (c.to !== c.caller && (C.who.includes('recipient'))) role(c.to, 'recipient');
-    const addr = (a) => `<span class="addr">#${a}${roles.has(a) ? ` <small>${esc(roles.get(a).join(', '))}</small>` : ''}</span>`;
-    const val = (v) => v === null ? '<span class="unset">unset</span>'
-      : v.startsWith('@') ? addr(Number(v.slice(1))) : `<b>${esc(Number(v).toLocaleString('en-US'))}</b>`;
-    const iface = (k) => {
-      const s = C.storage?.[k];
-      if (s) return `<small>${esc(s[1])} · ${esc(s[0])}</small>`;
-      const v = C.vars.find(([n]) => n === k);
-      return `<small>${v ? (v[1] === 'Int' ? 'number' : 'address') : 'map'}</small>`;
-    };
-    const words = (k) => (C.vars.find(([n]) => n === k)?.[2] || C.maps.find(([n]) => n === k)?.[1] || '');
     const rows = [];
     for (const [k, b, a] of c.vars)
-      rows.push({ key: `<b>${esc(k)}</b>`, k, b, a });
-    for (const [m, who, b, a] of c.maps)
-      if (b !== null || a !== null) rows.push({ key: `<b>${esc(m)}</b>[${addr(who)}]`, k: m, b, a });
-    const table = rows.map((r) => `<tr class="${r.b === r.a ? '' : 'chg'}"><td>${r.key}<br>${iface(r.k)}</td>
-      <td>${val(r.b)}</td><td class="arrow">${r.b === r.a ? '=' : '→'}</td><td>${val(r.a)}</td></tr>`).join('');
-    const args = c.args.map(([n, v]) => `<span class="arg">${esc(n)} = <b>${esc(Number(v).toLocaleString('en-US'))}</b></span>`).join(', ');
-    const tip = rows.map((r) => `${r.k}: ${words(r.k)}`).filter((s) => !s.endsWith(': ')).join('\n');
-    return `<div class="cex">
-      <div class="cex-title">Counterexample: a call the contract accepts, after which the claim is false</div>
-      <div class="cex-call"><span class="fn">${esc(c.fn || '(call)')}</span>(${args})
-        <span class="by">${c.signers ? `called by ${addr(c.caller)}, signed by ${c.signers.map((a) => addr(Number(a))).join(', ') || 'nobody'}` : `signed by ${addr(c.caller)}`}</span>${c.ret !== null ? ` <span class="by">returns ${val(c.ret)}</span>` : ''}</div>
-      ${c.holders.length ? `<div class="cex-holders">sums (<code>.total</code>) run over the holders list: ${c.holders.map((a) => addr(Number(a))).join(', ')}</div>` : ''}
-      <table class="cex-store" title="${esc(tip)}"><thead><tr><th>storage</th><th>before</th><th></th><th>after</th></tr></thead>
-        <tbody>${table || '<tr><td colspan="4" class="unset">no storage set</td></tr>'}</tbody></table>
-      <div class="cex-claim">Claim: <i>${esc(job.reading || job.stmt)}</i></div>
-    </div>`;
+      rows.push({ k, b, a });
+    // a ledger read through a token argument: one row per (token, holder), however many
+    // arguments name that token.
+    const argTok = (m) => { const x = C.diver?.argLedgers?.[m]; return x === undefined ? null : c.fixed.find(([n]) => n === x)?.[1]; };
+    const seen = new Map();
+    for (const [m, who, b, a] of c.maps) {
+      if (b === null && a === null) continue;
+      const tok = argTok(m);
+      if (tok !== null && tok !== undefined) {
+        const id = `${tok}/${who}`;
+        if (seen.has(id)) { seen.get(id).names.push(m); continue; }
+        const r = { names: [m], who, k: m, b, a };
+        seen.set(id, r); rows.push(r);
+        continue;
+      }
+      rows.push({ k: m, who, b, a });
+    }
+    // a stellar-diver model names dozens of keys: keep the rows that change, and the exact
+    // (key, address) pairs the claim reads: `KEY (argA "x")`, `KEY (pool st)`, `bal (argA "t") s w`.
+    let hidden = 0;
+    if (C.kind === 'diver') {
+      const stmt = job.stmt || '';
+      const at = (w) => w === 'pool st' ? fixed.find(([n]) => n === 'pool')?.[1]
+        : fixed.find(([n]) => n === w.match(/argA "(\w+)"/)?.[1])?.[1];
+      const pairs = new Set();
+      for (const m of stmt.matchAll(/\(([A-Za-z_][\w.]*) \((st\.call\.argA "\w+"|pool st)\)\)/g)) pairs.add(`${m[1]}/${at(m[2])}`);
+      for (const m of stmt.matchAll(/bal \(st\.call\.argA "(\w+)"\) \S+ \((st\.call\.argA "\w+"|pool st)\)/g)) {
+        for (const [b, x] of Object.entries(C.diver.argLedgers || {})) if (x === m[1]) pairs.add(`${b}/${at(m[2])}`);
+      }
+      const vars = new Set([...stmt.matchAll(/\(st\.(?:pre|post) ([A-Za-z_]\w*)\)/g)].map((m) => m[1]));
+      const reads = (r) => r.who === undefined ? vars.has(r.k) : (r.names || [r.k]).some((m) => pairs.has(`${m}/${r.who}`));
+      const keep = rows.filter((r) => r.b !== r.a || reads(r));
+      hidden = rows.length - keep.length;
+      rows.splice(0, rows.length, ...keep);
+    }
+    // Scratch-style: a stack of blocks, one per fact of the call.
+    const pill = (t, cls = '') => `<span class="sp ${cls}">${t}</span>`;
+    const num = (v) => v === null ? pill('unset', 'num unset') : v.startsWith('@') ? who(Number(v.slice(1))) : pill(esc(Number(v).toLocaleString('en-US')), 'num');
+    const who = (a) => pill(`#${a}${roles.has(a) ? ` ${esc(roles.get(a).join(', '))}` : ''}`, 'addr');
+    const label = (r) => r.who === undefined ? pill(esc(r.k), 'key')
+      : `${pill(esc((r.names || [r.k]).join(' = ')), 'key')} of ${who(r.who)}`;
+    const blocks = [];
+    blocks.push(`<div class="sb hat">when ${pill(esc(c.fn || 'a call'), 'fn')} is called</div>`);
+    if (shown.length) blocks.push(`<div class="sb args">with ${shown.map(([n, v]) => `${esc(n)} ${num(v)}`).join(' ')}</div>`);
+    const signers = c.signers ? [...new Set(c.signers.map(Number))] : [c.caller];
+    blocks.push(`<div class="sb who">called by ${who(c.caller)} · signed by ${signers.map(who).join(' ') || 'nobody'}</div>`);
+    for (const [a, rs] of [...roles.entries()].filter(([, rs]) => rs.length > 1))
+      blocks.push(`<div class="sb op">${rs.map((r) => pill(esc(r), 'addr')).join(' = ')} <small>both #${a}</small></div>`);
+    if (c.holders.length) blocks.push(`<div class="sb who">sums run over ${c.holders.map((a) => who(Number(a))).join(' ')}</div>`);
+    for (const r of rows)
+      blocks.push(r.b === r.a
+        ? `<div class="sb store same">${label(r)} stays ${num(r.b)}</div>`
+        : `<div class="sb store">change ${label(r)} from ${num(r.b)} to ${num(r.a)}</div>`);
+    if (!rows.length) blocks.push(`<div class="sb store same">no storage set</div>`);
+    if (hidden) blocks.push(`<div class="sb note">${hidden} other entries unchanged</div>`);
+    blocks.push(`<div class="sb cap" title="${esc(job.reading || job.stmt)}">the claim is false</div>`);
+    return `<div class="cex"><div class="stack">${blocks.join('')}</div></div>`;
   }
 
   function card(job) {
