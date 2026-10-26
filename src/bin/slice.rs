@@ -971,10 +971,16 @@ fn effect_footprint<'c>(
 
 /// Is this a public contract entry (its params carry ABI spec names)?
 fn is_entry(f: FunctionValue) -> bool {
+    // an ABI-described export: named params, or (a zero-arg export like
+    // `increment()`) an exported function with a body.
     f.get_params()
         .iter()
         .enumerate()
         .any(|(i, _)| f.get_string_attribute(AttributeLoc::Param(i as u32), "spec.name").is_some())
+        || (f.count_basic_blocks() > 0
+            && f.get_linkage() != inkwell::module::Linkage::Internal
+            && (f.get_string_attribute(AttributeLoc::Function, "spec.type").is_some()
+                || f.get_string_attribute(AttributeLoc::Return, "spec.type").is_some()))
 }
 
 // ================= transitive transfer / arithmetic recovery =================
@@ -1738,6 +1744,30 @@ fn block_rd<'c>(b: BasicBlock<'c>, stop: Option<InstructionValue<'c>>, ptr: Basi
                 cur = Some(None);
             }
         }
+        // a call handed a pointer into the same frame region may write the slot
+        // through it (i128 results / getters return via out-pointer). Clobber iff
+        // the callee writes at our offset through that pointer (or we can't tell).
+        if i.get_opcode() == InstructionOpcode::Call {
+            let callee = inkwell::values::CallSiteValue::try_from(i).ok().and_then(|cs| cs.get_called_fn_value());
+            let nargs = i.get_num_operands().saturating_sub(1);
+            for k in 0..nargs {
+                if let Some(Operand::Value(a)) = i.get_operand(k) {
+                    let (base, o) = if a.is_pointer_value() { ptr_base_off(a) } else { addr_base_off(a) };
+                    if base != target.0 || o > target.1 {
+                        continue;
+                    }
+                    let delta = target.1 - o;
+                    let writes = callee.and_then(|h| callee_write_offsets(h, k as usize, 3));
+                    let hit = match writes {
+                        Some(ws) => ws.iter().any(|&(w, sz)| w < delta + 8 && delta < w + sz),
+                        None => true,
+                    };
+                    if hit {
+                        cur = Some(None);
+                    }
+                }
+            }
+        }
         it = i.get_next_instruction();
     }
     cur
@@ -1841,6 +1871,263 @@ fn value_expr<'c>(
     memo: &mut HashMap<String, Option<Expr>>,
     depth: u32,
 ) -> Expr {
+    if !rich() {
+        return value_expr_raw(v, g, module, memo, depth);
+    }
+    // rich mode explores callees through out-pointers: memoize by LLVM value
+    // identity (unique per function) with a cycle guard, or it is exponential.
+    use inkwell::values::AsValueRef;
+    let key = v.as_value_ref() as usize;
+    if let Some(e) = RICH_MEMO.with(|m| m.borrow().get(&key).cloned()) {
+        return e;
+    }
+    RICH_MEMO.with(|m| m.borrow_mut().insert(key, Expr::Opaque("cyc".into(), vec![])));
+    let mut e = fold_rich(simplify(value_expr_raw(v, g, module, memo, depth)));
+    // shared subterms are cloned at every use, so trees can grow exponentially;
+    // a guard operand worth naming is small — collapse anything huge.
+    if expr_size(&e, 400) >= 400 {
+        e = Expr::Opaque("big".into(), vec![]);
+    }
+    RICH_MEMO.with(|m| m.borrow_mut().insert(key, e.clone()));
+    e
+}
+
+/// Fold the i128 / Soroban lowering idioms back into source-level values. Applied
+/// at every reconstructed node (children are already folded):
+/// - hi-limb phi `phi(x, AShr(x,63) [, 0 | arg])` → `x` (sign-extended hi limb,
+///   with the storage-absent default);
+/// - Soroban bool decode `Select(And(b,255)==1, 1, Select(And(b,255)==0, 0, 2))`
+///   → `@bool(b)`, and `And(@bool b, 1) == 0` → `@isfalse(b)`;
+fn fold_rich(e: Expr) -> Expr {
+    fn is_op(x: &Expr, l: &str) -> bool { matches!(x, Expr::Opaque(n, _) if n == l) }
+    let args_of = |x: &Expr| -> Vec<Expr> { if let Expr::Opaque(_, xs) = x { xs.clone() } else { vec![] } };
+    match &e {
+        Expr::Opaque(l, xs) if l == "phi" => {
+            let arms: Vec<&Expr> = xs
+                .iter()
+                .filter(|a| !matches!(a, Expr::Const(0)) && !matches!(a, Expr::Opaque(n, v) if n == "arg" && v.is_empty()))
+                .collect();
+            let is_sext_of = |a: &Expr, x: &Expr| {
+                matches!(a, Expr::Opaque(n, v) if n == "AShr" && v.len() == 2 && v[0] == *x && v[1] == Expr::Const(63))
+            };
+            if let Some(x) = arms.iter().find(|a| !matches!(a, Expr::Opaque(n, _) if n == "AShr")) {
+                if arms.iter().all(|a| *a == *x || is_sext_of(a, x)) {
+                    return (*x).clone();
+                }
+            }
+            e
+        }
+        Expr::Opaque(l, xs) if l == "Select" && xs.len() == 3 && xs[1] == xs[2] => xs[1].clone(),
+        // `to_muxed.address()`: the muxed case extracts the address, the plain
+        // case is the address itself — either way, the address of the argument.
+        Expr::Opaque(l, xs) if l == "Select" && xs.len() == 3
+            && (matches!(&xs[1], Expr::Opaque(a, v) if a == "@addrof" && v.len() == 1 && v[0] == xs[2])
+                || matches!(&xs[2], Expr::Opaque(a, v) if a == "@addrof" && v.len() == 1 && v[0] == xs[1])) =>
+        {
+            Expr::Opaque("@addrof".into(), vec![if matches!(&xs[1], Expr::Opaque(a, _) if a == "@addrof") { xs[2].clone() } else { xs[1].clone() }])
+        }
+        Expr::Opaque(l, xs) if l == "Select" && xs.len() == 3 => {
+            let (c, t, f) = (&xs[0], &xs[1], &xs[2]);
+            // bool decode
+            let and255 = |x: &Expr| -> Option<Expr> {
+                let a = args_of(x);
+                (is_op(x, "And") && a.len() == 2 && a[1] == Expr::Const(255)).then(|| a[0].clone())
+            };
+            let eq_tag = |x: &Expr, k: i64| -> Option<Expr> {
+                let a = args_of(x);
+                if is_op(x, "ICmp_EQ") && a.len() == 2 && a[1] == Expr::Const(k) { and255(&a[0]) } else { None }
+            };
+            if *t == Expr::Const(1) {
+                if let (Some(b), Expr::Opaque(fl, fx)) = (eq_tag(c, 1), f) {
+                    if fl == "Select" && fx.len() == 3 && fx[1] == Expr::Const(0) && fx[2] == Expr::Const(2) {
+                        if eq_tag(&fx[0], 0).as_ref() == Some(&b) {
+                            return Expr::Opaque("@bool".into(), vec![b]);
+                        }
+                    }
+                }
+            }
+            // the i128 compare idiom as a value: select(hi==, lo-cmp, hi-cmp) -> cmp(a, b)
+            if is_op(c, "ICmp_EQ") && is_op(f, "ICmp_SLT") || is_op(f, "ICmp_SGT") || is_op(f, "ICmp_SLE") || is_op(f, "ICmp_SGE") {
+                let (ce, fe, te) = (args_of(c), args_of(f), args_of(t));
+                if is_op(c, "ICmp_EQ") && ce.len() == 2 && fe.len() == 2 && te.len() == 2
+                    && ((ce[0] == fe[0] && ce[1] == fe[1]) || (ce[0] == fe[1] && ce[1] == fe[0]))
+                {
+                    // the value relation: the lo-limb compare's operands (the lo limb
+                    // carries the value — the hi limb of a constant is 0) with its
+                    // direction, made signed.
+                    if let Expr::Opaque(tn, _) = t {
+                        if let Some(sfx) = tn.strip_prefix("ICmp_U") {
+                            return Expr::Opaque(format!("ICmp_S{sfx}"), te);
+                        }
+                    }
+                    return f.clone();
+                }
+            }
+            // i128 signed division via sign-magnitude: Select(a^b > -1, |a|/|b|, neg).
+            // Only when the quotient is literally |a| op |b| of the XOR'd operands.
+            let unabs = |x: &Expr| -> Option<Expr> {
+                let a = args_of(x);
+                if is_op(x, "Select") && a.len() == 3 {
+                    let ca = args_of(&a[0]);
+                    if is_op(&a[0], "ICmp_SGT") && ca.len() == 2 && ca[1] == Expr::Const(-1) && ca[0] == a[1]
+                        && a[2] == Expr::Bin('-', Box::new(Expr::Const(0)), Box::new(a[1].clone()))
+                    {
+                        return Some(a[1].clone());
+                    }
+                }
+                None
+            };
+            let ca = args_of(c);
+            if is_op(c, "ICmp_SGT") && ca.len() == 2 && ca[1] == Expr::Const(-1) && is_op(&ca[0], "Xor") {
+                let xa = args_of(&ca[0]);
+                if let (Expr::Bin(o @ ('/' | '%'), qa, qb), 2) = (t, xa.len()) {
+                    if let (Some(ua), Some(ub)) = (unabs(qa), unabs(qb)) {
+                        if (xa[0] == ua && xa[1] == ub) || (xa[0] == ub && xa[1] == ua) {
+                            return Expr::Bin(*o, Box::new(ua), Box::new(ub));
+                        }
+                    }
+                }
+            }
+            e
+        }
+        // address arithmetic: @addr(b, o) + k  ->  @addr(b, o + k)
+        Expr::Bin('+', a, b) => match (addr_of(a), b.as_ref()) {
+            (Some((base, o)), Expr::Const(k)) => Expr::Opaque(format!("@addr:{base}"), vec![Expr::Const(o + k)]),
+            _ => e,
+        },
+        Expr::Opaque(l, xs) if l == "ICmp_EQ" && xs.len() == 2 && xs[1] == Expr::Const(0) => {
+            let a = args_of(&xs[0]);
+            if is_op(&xs[0], "And") && a.len() == 2 && a[1] == Expr::Const(1) && is_op(&a[0], "@bool") {
+                return Expr::Opaque("@isfalse".into(), args_of(&a[0]));
+            }
+            e
+        }
+        _ => e,
+    }
+}
+
+/// A phi as an if-else chain over the conditions that pick each incoming arm:
+/// the non-guard conditional branches that SPLIT the paths into the join (the
+/// join is reachable from both of their edges); an arm's condition is the edge
+/// that leads to its incoming block. The last arm is the `else`.
+fn phi_gated<'c>(
+    phi: InstructionValue<'c>,
+    g: FunctionValue<'c>,
+    module: &inkwell::module::Module<'c>,
+    memo: &mut HashMap<String, Option<Expr>>,
+    depth: u32,
+) -> Option<Expr> {
+    let pv = inkwell::values::PhiValue::try_from(phi).ok()?;
+    let cfg = Cfg::build(g);
+    let ij = cfg.bidx(phi.get_parent()?)?;
+    let mut arms: Vec<(BasicValueEnum<'c>, usize)> = vec![];
+    for k in 0..pv.count_incoming() {
+        let (v, b) = pv.get_incoming(k)?;
+        if let BasicValueEnum::IntValue(c) = v {
+            if c.is_undef() || c.is_poison() {
+                continue;
+            }
+        }
+        arms.push((v, cfg.bidx(b)?));
+    }
+    if arms.len() < 2 {
+        return None;
+    }
+    // the splitting branches.
+    let mut splits: Vec<(usize, BasicValueEnum<'c>, usize, usize)> = vec![]; // (D, cond, F, T)
+    for d in 0..cfg.blocks.len() {
+        let Some(t) = cfg.blocks[d].get_terminator() else { continue };
+        if t.get_opcode() != InstructionOpcode::Br || cfg.succ[d].len() != 2 {
+            continue;
+        }
+        let Some(Operand::Value(c)) = t.get_operand(0) else { continue };
+        if !is_bool(c) {
+            continue;
+        }
+        let (fb, tb) = (cfg.succ[d][0], cfg.succ[d][1]);
+        if forces_trap(cfg.blocks[fb], 6) || forces_trap(cfg.blocks[tb], 6) {
+            continue;
+        }
+        let r = |x: usize| x == ij || reaches(x, ij, &cfg);
+        if r(fb) && r(tb) {
+            splits.push((d, c, fb, tb));
+        }
+    }
+    // each arm's condition: the edge of each split that leads to its block.
+    let mut conds: Vec<Vec<Expr>> = vec![];
+    for (_, b) in &arms {
+        let mut cs = vec![];
+        for (d, c, fb, tb) in &splits {
+            let pol = if *b == *d {
+                // the arm comes straight from the split: the edge into the join.
+                if *tb == ij && *fb != ij { Some(true) } else if *fb == ij && *tb != ij { Some(false) } else { None }
+            } else {
+                let rt = *tb == *b || reaches(*tb, *b, &cfg);
+                let rf = *fb == *b || reaches(*fb, *b, &cfg);
+                match (rt, rf) { (true, false) => Some(true), (false, true) => Some(false), _ => None }
+            };
+            if let Some(p) = pol {
+                let ce = fold_rich(simplify(value_expr(*c, g, module, memo, depth)));
+                cs.push(if p { ce } else { Expr::Opaque("@not".into(), vec![ce]) });
+            }
+        }
+        conds.push(cs);
+    }
+    // every arm but the last needs a distinguishing condition.
+    if conds[..conds.len() - 1].iter().any(|c| c.is_empty()) {
+        return None;
+    }
+    let mut acc = value_expr(arms.last()?.0, g, module, memo, depth);
+    for k in (0..arms.len() - 1).rev() {
+        let v = value_expr(arms[k].0, g, module, memo, depth);
+        if v == acc {
+            continue;
+        }
+        let c = if conds[k].len() == 1 { conds[k][0].clone() } else { Expr::Opaque("@and".into(), conds[k].clone()) };
+        acc = Expr::Opaque("Select".into(), vec![c, v, acc]);
+    }
+    Some(acc)
+}
+
+/// `@addr:base(off)` as a (base, off) memory target.
+fn addr_of(e: &Expr) -> Option<(String, i64)> {
+    match e {
+        Expr::Opaque(l, xs) if l.starts_with("@addr:") && xs.len() == 1 => match xs[0] {
+            Expr::Const(o) => Some((l["@addr:".len()..].to_string(), o)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Node count of `e`, stopping once it reaches `cap`.
+fn expr_size(e: &Expr, cap: usize) -> usize {
+    fn go(e: &Expr, n: &mut usize, cap: usize) {
+        if *n >= cap {
+            return;
+        }
+        *n += 1;
+        match e {
+            Expr::Bin(_, a, b) | Expr::VecGet(a, b) => {
+                go(a, n, cap);
+                go(b, n, cap);
+            }
+            Expr::Opaque(_, xs) => xs.iter().for_each(|x| go(x, n, cap)),
+            _ => {}
+        }
+    }
+    let mut n = 0;
+    go(e, &mut n, cap);
+    n
+}
+
+fn value_expr_raw<'c>(
+    v: BasicValueEnum<'c>,
+    g: FunctionValue<'c>,
+    module: &inkwell::module::Module<'c>,
+    memo: &mut HashMap<String, Option<Expr>>,
+    depth: u32,
+) -> Expr {
     use InstructionOpcode::*;
     if depth == 0 {
         return Expr::Opaque("deep".into(), vec![]);
@@ -1860,6 +2147,55 @@ fn value_expr<'c>(
 
     // ---- named calls: storage / host arithmetic / wrappers / helpers ----
     if let Some(name) = callee_name(ins) {
+        // rich mode: keep the storage KEY so the slot can be named after
+        // substitution (a getter helper's key is built from its discriminant
+        // param; the caller's constant names it).
+        if rich() && (name.contains("get_contract_data") || name.contains("has_contract_data")) {
+            let dur = match o(1) { Some(d) => durability(d), None => "?".into() };
+            let key = o(0).map(|x| key_expr(x, g, module, memo, depth - 1)).unwrap_or(Expr::Opaque("?".into(), vec![]));
+            let mut slot = Expr::Opaque(format!("@slot:{dur}"), vec![key]);
+            if let Some(site) = entry_site(g, ins) {
+                slot = annotate_at(&slot, site);
+            }
+            return if name.contains("has_contract_data") { Expr::Opaque("@has".into(), vec![slot]) } else { slot };
+        }
+        // rich mode: a Vec built from linear memory, as its element values
+        // (e.g. the `[current_contract_address]` argument of `balance`).
+        if rich() && name.contains("vec_new_from_linear_memory") {
+            let els: Vec<Expr> = linmem_vals_ordered(v)
+                .into_iter()
+                .map(|x| value_expr(x, g, module, memo, depth - 1))
+                .collect();
+            return Expr::Opaque("@vec".into(), els);
+        }
+        // rich mode: a cross-contract call `call(contract, fn_symbol, args_vec)`.
+        if rich() && name == "call.call" {
+            let a = |k: u32, memo: &mut HashMap<String, Option<Expr>>| {
+                o(k).map(|x| value_expr(x, g, module, memo, depth - 1)).unwrap_or(Expr::Opaque("?".into(), vec![]))
+            };
+            let (c0, c1, c2) = (a(0, memo), a(1, memo), a(2, memo));
+            if let Expr::Const(sym) = c1 {
+                if let Some(fname) = decode_symbol(sym as u64) {
+                    let e = Expr::Opaque(format!("@call:{fname}"), vec![c0, c2]);
+                    return match entry_site(g, ins) { Some(site) => annotate_at(&e, site), None => e };
+                }
+            }
+            return Expr::Opaque("@call".into(), vec![c0, c1, c2]);
+        }
+        if rich() && name.contains("symbol_new_from_linear_memory") {
+            if let Some((off, len)) = symbol_off_len(ins, module) {
+                if let Some(t) = rodata_text(&rodata_segs(module), off, len) {
+                    return Expr::Opaque(format!("@sym:{t}"), vec![]);
+                }
+            }
+        }
+        if rich() && name.contains("get_address_from_muxed_address") {
+            let x = o(0).map(|x| value_expr(x, g, module, memo, depth - 1)).unwrap_or(Expr::Opaque("?".into(), vec![]));
+            return Expr::Opaque("@addrof".into(), vec![x]);
+        }
+        if rich() && name.contains("get_current_contract_address") {
+            return Expr::Opaque("@pool".into(), vec![]);
+        }
         if name.contains("get_contract_data") {
             if let Src::Store { dur, params } = store_src(ins, &arg_table(g)) {
                 return Expr::Slot(dur, params.len());
@@ -1876,10 +2212,11 @@ fn value_expr<'c>(
             }
         }
         if name.contains("obj_from_") && name.contains("_pieces") {
-            // the lowest limb (last operand) carries the value's low 64 bits.
+            // the lowest limb (the last ARGUMENT — the final operand of a call is
+            // the callee itself) carries the value's low 64 bits.
             let n = ins.get_num_operands();
-            if n >= 1 {
-                if let Some(Operand::Value(lo)) = ins.get_operand(n - 1) {
+            if n >= 2 {
+                if let Some(Operand::Value(lo)) = ins.get_operand(n - 2) {
                     return value_expr(lo, g, module, memo, depth - 1);
                 }
             }
@@ -1951,11 +2288,55 @@ fn value_expr<'c>(
             let b = o(1).map(|x| value_expr(x, g, module, memo, depth - 1)).unwrap_or(Expr::Opaque("?".into(), vec![]));
             return Expr::Bin(opc, Box::new(a), Box::new(b));
         }
+        // rich mode: the address of a frame slot, symbolically.
+        PtrToInt if rich() => {
+            if let Some(p) = o(0) {
+                if ptr_is_clean(p) {
+                    let (b, off) = ptr_base_off(p);
+                    return Expr::Opaque(format!("@addr:{b}"), vec![Expr::Const(off)]);
+                }
+            }
+        }
         // extension / truncation is limb bookkeeping -> the value passes through.
         SExt | ZExt | Trunc => {
             if let Some(x) = o(0) {
                 return value_expr(x, g, module, memo, depth - 1);
             }
+        }
+        // rich mode: a phi at a control-flow join, as the value of the arm taken —
+        // `Select(c, vT, vF)` / an if-else chain over the branches that split the
+        // paths into the join. Lowering idioms (hi-limb sign phis, undef arms of an
+        // Option, identical arms) fold first.
+        Phi if rich() => {
+            let n = ins.get_num_operands();
+            let mut arms: Vec<Expr> = vec![];
+            for k in 0..n {
+                if let Some(Operand::Value(x)) = ins.get_operand(k) {
+                    if let BasicValueEnum::IntValue(c) = x {
+                        if c.is_undef() || c.is_poison() {
+                            continue; // the absent case of an Option
+                        }
+                    }
+                    arms.push(value_expr(x, g, module, memo, depth - 1));
+                }
+            }
+            if arms.is_empty() {
+                return Expr::Opaque("undef".into(), vec![]);
+            }
+            if arms.iter().all(|a| *a == arms[0]) {
+                return arms.swap_remove(0);
+            }
+            // the i128 hi-limb pattern `phi(x, AShr(x, 63) [, 0])` folds to x; any
+            // other phi is a real choice (`if buy_a { out } else { 0 }`): gate it.
+            let has_sext = arms.iter().any(|a| matches!(a, Expr::Opaque(n, v) if n == "AShr" && v.get(1) == Some(&Expr::Const(63))));
+            let folded = fold_rich(Expr::Opaque("phi".into(), arms.clone()));
+            if has_sext && !matches!(&folded, Expr::Opaque(l, _) if l == "phi") {
+                return folded;
+            }
+            if let Some(sel) = phi_gated(ins, g, module, memo, depth - 1) {
+                return sel;
+            }
+            return folded;
         }
         // phi: collapse when all incoming values denote the same value.
         Phi => {
@@ -1984,12 +2365,51 @@ fn value_expr<'c>(
             if let Some(stored) = forward_load(ins, g) {
                 return value_expr(stored, g, module, memo, depth - 1);
             }
+            // rich mode: the slot was written by a CALLEE through an out-pointer
+            // (i128 results, storage getters, token balance calls).
+            if rich() {
+                if let Some(e) = outparam_load(ins, g, module, memo, depth - 1) {
+                    return e;
+                }
+                // a read through one of OUR pointer params: the caller resolves it.
+                if let Some(Operand::Value(p)) = ins.get_operand(0) {
+                    let (b, off) = ptr_base_off(p);
+                    if let Some(j) = (0..g.count_params()).find(|&q| g.get_nth_param(q).map(fmt) == Some(b.clone())) {
+                        return Expr::Opaque("@deref".into(), vec![Expr::Param(j as usize), Expr::Const(off)]);
+                    }
+                    // a read through a COMPUTED pointer (e.g. a by-reference closure
+                    // capture: the env holds the address): resolve the address, then
+                    // the memory there; or defer to the call site.
+                    if let Some(itp) = as_instr(p).filter(|x| x.get_opcode() == IntToPtr) {
+                        if let Some(Operand::Value(a)) = itp.get_operand(0) {
+                            let ae = fold_rich(value_expr(a, g, module, memo, depth - 1));
+                            if let Some(t) = addr_of(&ae) {
+                                let cfg = Cfg::build(g);
+                                if let Some(blk) = ins.get_parent().and_then(|bb| cfg.bidx(bb)) {
+                                    let mut seen = MemCtx::default();
+                                    if let Some(v) = mem_before(ins.get_previous_instruction(), blk, &t, g, &cfg, module, memo, depth - 1, &mut seen) {
+                                        return v;
+                                    }
+                                }
+                            }
+                            if expr_size(&ae, 16) < 16 {
+                                return Expr::Opaque("@load".into(), vec![ae]);
+                            }
+                        }
+                    }
+                }
+            }
         }
         _ => {}
     }
 
     // ---- unrecognized: uninterpreted function of recovered inputs ----
-    let label = callee_name(ins).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("{:?}", ins.get_opcode()));
+    let label = callee_name(ins).filter(|n| !n.is_empty()).unwrap_or_else(|| {
+        match (rich(), ins.get_opcode(), ins.get_icmp_predicate()) {
+            (true, ICmp, Some(p)) => format!("ICmp_{p:?}"),
+            (_, op, _) => format!("{op:?}"),
+        }
+    });
     let inputs: Vec<Expr> = (0..ins.get_num_operands())
         .filter_map(|k| match ins.get_operand(k) {
             Some(Operand::Value(x)) if x.is_int_value() => Some(value_expr(x, g, module, memo, depth - 1)),
@@ -2039,6 +2459,836 @@ fn ret_expr<'c>(
     }
     memo.insert(key, result.clone());
     result
+}
+
+thread_local! {
+    /// Rich reconstruction (used by `--lean model`): keep storage keys and resolve
+    /// loads of callee-written out-pointer slots. Off by default so the other
+    /// emitters and the tests see the established `value_expr` behaviour.
+    static RICH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static RICH_MEMO: std::cell::RefCell<HashMap<usize, Expr>> = std::cell::RefCell::new(HashMap::new());
+}
+fn rich() -> bool {
+    RICH.with(|r| r.get())
+}
+fn with_rich<T>(f: impl FnOnce() -> T) -> T {
+    let prev = RICH.with(|r| r.replace(true));
+    let out = f();
+    RICH.with(|r| r.set(prev));
+    if !prev {
+        RICH_MEMO.with(|m| m.borrow_mut().clear());
+    }
+    out
+}
+
+/// A load whose slot was written by a callee through an out-pointer (or by a
+/// store the sound forwarding couldn't prove): resolve the memory at the load's
+/// address just before the load. See `mem_before`.
+fn outparam_load<'c>(
+    load: InstructionValue<'c>,
+    g: FunctionValue<'c>,
+    module: &inkwell::module::Module<'c>,
+    memo: &mut HashMap<String, Option<Expr>>,
+    depth: u32,
+) -> Option<Expr> {
+    let Some(Operand::Value(ptr)) = load.get_operand(0) else { return None };
+    let target = ptr_base_off(ptr);
+    let cfg = Cfg::build(g);
+    let blk = cfg.bidx(load.get_parent()?)?;
+    let mut seen = MemCtx::default();
+    mem_before(load.get_previous_instruction(), blk, &target, g, &cfg, module, memo, depth, &mut seen)
+}
+
+/// The value in memory at `target` (frame base, offset) just before `start` (or
+/// at the end of block `blk` when `start` is None): the nearest preceding write —
+/// a store to it, or a call that writes it through a pointer we handed it (the
+/// callee's stored value, reconstructed over its params and substituted with the
+/// call's actuals). At a join, each predecessor is resolved and they must agree
+/// (else a `phi`). Loops / unknown writes give None.
+#[allow(clippy::too_many_arguments)]
+fn mem_before<'c>(
+    start: Option<InstructionValue<'c>>,
+    blk: usize,
+    target: &(String, i64),
+    g: FunctionValue<'c>,
+    cfg: &Cfg<'c>,
+    module: &inkwell::module::Module<'c>,
+    memo: &mut HashMap<String, Option<Expr>>,
+    depth: u32,
+    seen: &mut MemCtx,
+) -> Option<Expr> {
+    if depth == 0 {
+        return None;
+    }
+    let mut cur = start;
+    while let Some(i) = cur {
+        cur = i.get_previous_instruction();
+        match i.get_opcode() {
+            InstructionOpcode::Store => {
+                if let (Some(Operand::Value(sv)), Some(Operand::Value(sp))) = (i.get_operand(0), i.get_operand(1)) {
+                    if ptr_base_off(sp) == *target {
+                        return Some(value_expr(sv, g, module, memo, depth));
+                    }
+                }
+            }
+            InstructionOpcode::Call => {
+                let Some(cn) = callee_name(i) else { continue };
+                // memset(dst, byte, len) / memcpy(dst, src, len) covering our slot.
+                if cn.starts_with("llvm.memset") || cn.starts_with("llvm.memcpy") || cn.starts_with("llvm.memmove") {
+                    if let (Some(Operand::Value(dst)), Some(Operand::Value(x)), Some(Operand::Value(BasicValueEnum::IntValue(len)))) =
+                        (i.get_operand(0), i.get_operand(1), i.get_operand(2))
+                    {
+                        let (b, o) = ptr_base_off(dst);
+                        if b == target.0 && o <= target.1 {
+                            let n = len.get_zero_extended_constant().map(|n| n as i64);
+                            match n {
+                                Some(n) if target.1 < o + n => {
+                                    if cn.starts_with("llvm.memset") {
+                                        return match x {
+                                            BasicValueEnum::IntValue(c) if c.get_zero_extended_constant() == Some(0) => Some(Expr::Const(0)),
+                                            _ => None,
+                                        };
+                                    }
+                                    // memcpy: the source at the same displacement.
+                                    let (sb, so) = ptr_base_off(x);
+                                    let blk_here = i.get_parent().and_then(|bb| cfg.bidx(bb))?;
+                                    let mut seen2 = MemCtx::default();
+                                    return mem_before(i.get_previous_instruction(), blk_here, &(sb, so + (target.1 - o)), g, cfg, module, memo, depth - 1, &mut seen2);
+                                }
+                                Some(_) => continue, // doesn't cover our slot
+                                None => return None, // unknown length
+                            }
+                        }
+                    }
+                    continue;
+                }
+                let Some(h) = module.get_function(&cn) else { continue };
+                if h.count_basic_blocks() == 0 {
+                    continue;
+                }
+                let nargs = i.get_num_operands().saturating_sub(1);
+                for k in 0..nargs {
+                    let Some(Operand::Value(a)) = i.get_operand(k) else { continue };
+                    let (b, o) = if a.is_pointer_value() { ptr_base_off(a) } else { addr_base_off(a) };
+                    if b != target.0 || o > target.1 {
+                        continue;
+                    }
+                    let delta = target.1 - o;
+                    // only a callee that writes this offset through the pointer.
+                    match callee_write_offsets(h, k as usize, 3) {
+                        Some(ws) if !ws.iter().any(|&(w, sz)| w < delta + 8 && delta < w + sz) => continue,
+                        _ => {}
+                    }
+                    if let Some(e) = arith_out(i, h, k, delta, g, module, memo, depth) {
+                        return Some(e);
+                    }
+                    let e = callee_store_at(h, k as usize, delta, module, memo, depth, 3)?;
+                    return Some(subst_call(&e, i, g, cfg, module, memo, depth));
+                }
+            }
+            _ => {}
+        }
+    }
+    // reached the block start: resolve from the predecessors (each block's
+    // end-state cached, so diamonds don't re-walk; a cycle gives None).
+    if let Some(r) = seen.done.get(&blk) {
+        return r.clone();
+    }
+    if !seen.active.insert(blk) {
+        return None; // loop
+    }
+    let preds: Vec<usize> = (0..cfg.succ.len()).filter(|&u| cfg.succ[u].contains(&blk)).collect();
+    let mut vals: Vec<Expr> = vec![];
+    let mut ok = !preds.is_empty();
+    for p in preds {
+        let e = match seen.done.get(&(p + 1_000_000)) {
+            Some(r) => r.clone(),
+            None => {
+                let r = mem_before(cfg.blocks[p].get_last_instruction(), p, target, g, cfg, module, memo, depth, seen);
+                seen.done.insert(p + 1_000_000, r.clone());
+                r
+            }
+        };
+        match e {
+            Some(e) => {
+                if !vals.contains(&e) {
+                    vals.push(e);
+                }
+            }
+            None => {
+                ok = false;
+                break;
+            }
+        }
+    }
+    seen.active.remove(&blk);
+    let r = if !ok {
+        None
+    } else {
+        match vals.len() {
+            0 => None,
+            1 => vals.pop(),
+            _ => Some(Expr::Opaque("phi".into(), vals)),
+        }
+    };
+    seen.done.insert(blk, r.clone());
+    r
+}
+
+/// Walk state for `mem_before`: blocks in progress (cycle guard) and resolved
+/// block end-states.
+#[derive(Default)]
+struct MemCtx {
+    active: HashSet<usize>,
+    done: HashMap<usize, Option<Expr>>,
+}
+
+/// Substitute a callee-relative expression at call site `call`: callee reads
+/// through a pointer param (`@deref(Param j, off)`) are resolved against the
+/// caller's memory at the call; the remaining params become the call's actuals.
+#[allow(clippy::too_many_arguments)]
+fn subst_call<'c>(
+    e: &Expr,
+    call: InstructionValue<'c>,
+    g: FunctionValue<'c>,
+    cfg: &Cfg<'c>,
+    module: &inkwell::module::Module<'c>,
+    memo: &mut HashMap<String, Option<Expr>>,
+    depth: u32,
+) -> Expr {
+    fn derefs<'c>(
+        e: &Expr,
+        call: InstructionValue<'c>,
+        g: FunctionValue<'c>,
+        cfg: &Cfg<'c>,
+        module: &inkwell::module::Module<'c>,
+        memo: &mut HashMap<String, Option<Expr>>,
+        depth: u32,
+    ) -> Expr {
+        match e {
+            Expr::Opaque(l, xs) if l == "@deref" && xs.len() == 2 => {
+                if let (Expr::Param(j), Expr::Const(off)) = (&xs[0], &xs[1]) {
+                    if let Some(Operand::Value(a)) = call.get_operand(*j as u32) {
+                        let (b, o) = if a.is_pointer_value() { ptr_base_off(a) } else { addr_base_off(a) };
+                        // the pointer is itself our param: keep propagating outward.
+                        if let Some(pj) = (0..g.count_params()).find(|&q| g.get_nth_param(q).map(fmt) == Some(b.clone())) {
+                            return Expr::Opaque("@deref".into(), vec![Expr::Param(pj as usize), Expr::Const(o + off)]);
+                        }
+                        let blk = call.get_parent().and_then(|bb| cfg.bidx(bb));
+                        if let Some(blk) = blk {
+                            let mut seen = MemCtx::default();
+                            if let Some(v) = mem_before(call.get_previous_instruction(), blk, &(b, o + off), g, cfg, module, memo, depth, &mut seen) {
+                                return v;
+                            }
+                        }
+                    }
+                }
+                Expr::Opaque("Load".into(), vec![])
+            }
+            Expr::Opaque(l, xs) if l == "@load" && xs.len() == 1 => {
+                let a = fold_rich(derefs(&xs[0], call, g, cfg, module, memo, depth));
+                if let (Some(t), Some(blk)) = (addr_of(&a), call.get_parent().and_then(|bb| cfg.bidx(bb))) {
+                    let mut seen = MemCtx::default();
+                    if let Some(v) = mem_before(call.get_previous_instruction(), blk, &t, g, cfg, module, memo, depth, &mut seen) {
+                        return v;
+                    }
+                }
+                Expr::Opaque("@load".into(), vec![a])
+            }
+            Expr::Bin(op, a, b) => fold_rich(Expr::Bin(*op, Box::new(derefs(a, call, g, cfg, module, memo, depth)), Box::new(derefs(b, call, g, cfg, module, memo, depth)))),
+            Expr::VecGet(a, b) => Expr::VecGet(Box::new(derefs(a, call, g, cfg, module, memo, depth)), Box::new(derefs(b, call, g, cfg, module, memo, depth))),
+            Expr::Opaque(l, xs) => Expr::Opaque(l.clone(), xs.iter().map(|x| derefs(x, call, g, cfg, module, memo, depth)).collect()),
+            other => other.clone(),
+        }
+    }
+    let e = derefs(e, call, g, cfg, module, memo, depth);
+    let nargs = call.get_num_operands().saturating_sub(1);
+    let actuals: Vec<Expr> = (0..nargs)
+        .map(|j| match call.get_operand(j) {
+            Some(Operand::Value(x)) => value_expr(x, g, module, memo, depth),
+            _ => Expr::Opaque("?".into(), vec![]),
+        })
+        .collect();
+    let r = fold_rich(subst(&e, &actuals));
+    match entry_site(g, call) {
+        Some(site) => annotate_at(&r, site),
+        None => r,
+    }
+}
+
+/// A rustc/compiler-rt i128 arithmetic routine, `f(out, a_lo, a_hi, b_lo, b_hi
+/// [, overflow_out])` writing `a op b` to `*out`, recognized by structure: pure
+/// (no calls but LLVM intrinsics), all-integer params, and `udiv`/`urem` ⇒ the
+/// division routine (`__divti3`), else `mul` ⇒ the (checked) multiply.
+fn i128_arith_helper(h: FunctionValue) -> Option<char> {
+    let n = h.count_params();
+    if !(n == 5 || n == 6) || !h.get_params().iter().all(|p| p.is_int_value()) {
+        return None;
+    }
+    let ins = all_instrs(h);
+    let pure = ins.iter().all(|i| {
+        i.get_opcode() != InstructionOpcode::Call || callee_name(*i).map_or(false, |c| c.starts_with("llvm."))
+    });
+    if !pure {
+        return None;
+    }
+    let has = |op| ins.iter().any(|i| i.get_opcode() == op);
+    if has(InstructionOpcode::UDiv) || has(InstructionOpcode::URem) {
+        Some('/')
+    } else if has(InstructionOpcode::Mul) {
+        Some('*')
+    } else {
+        None
+    }
+}
+
+/// An out-pointer load from an i128 arithmetic helper call: the result limbs
+/// (offset 0 = lo, 8 = hi) both denote `a op b`, with each operand's value
+/// carried by its lo limb.
+#[allow(clippy::too_many_arguments)]
+fn arith_out<'c>(
+    call: InstructionValue<'c>,
+    h: FunctionValue<'c>,
+    k: u32,
+    delta: i64,
+    g: FunctionValue<'c>,
+    module: &inkwell::module::Module<'c>,
+    memo: &mut HashMap<String, Option<Expr>>,
+    depth: u32,
+) -> Option<Expr> {
+    let op = i128_arith_helper(h)?;
+    if k != 0 || !(delta == 0 || delta == 8) {
+        return None;
+    }
+    let arg = |j: u32, memo: &mut HashMap<String, Option<Expr>>| match call.get_operand(j) {
+        Some(Operand::Value(x)) => value_expr(x, g, module, memo, depth),
+        _ => Expr::Opaque("?".into(), vec![]),
+    };
+    let a = arg(1, memo);
+    let b = arg(3, memo);
+    Some(Expr::Bin(op, Box::new(a), Box::new(b)))
+}
+
+/// Does `f` build a Symbol from linear memory — directly, or via a helper that
+/// does (the SDK's `Symbol::new` / small-symbol packing helper)?
+fn builds_symbol(f: FunctionValue) -> bool {
+    all_instrs(f).iter().any(|i| {
+        callee_has(*i, "symbol_new_from_linear_memory")
+            || inkwell::values::CallSiteValue::try_from(*i).ok().and_then(|cs| cs.get_called_fn_value()).map_or(false, |h| {
+                h.count_basic_blocks() > 0 && all_instrs(h).iter().any(|j| callee_has(*j, "symbol_new_from_linear_memory"))
+            })
+    })
+}
+
+/// Is `f` a contracttype-enum key builder (a `DataKey` → Val conversion): it
+/// switches on the discriminant and each case builds the variant's Symbol. It
+/// takes the enum either as `(discriminant, field)` integers or by pointer.
+fn is_datakey_builder(f: FunctionValue) -> bool {
+    f.count_basic_blocks() > 0
+        && !f.get_params().is_empty()
+        && all_instrs(f).iter().any(|i| i.get_opcode() == InstructionOpcode::Switch)
+        && builds_symbol(f)
+}
+
+/// A storage key, kept symbolic: `@key(disc, field, @kb:<builder>)` when it is
+/// built by a DataKey builder — so a caller's constant discriminant can name the
+/// slot after substitution — else the plain reconstruction. A builder that takes
+/// the enum by pointer gets its discriminant / field read from memory at the call.
+fn key_expr<'c>(
+    k: BasicValueEnum<'c>,
+    g: FunctionValue<'c>,
+    module: &inkwell::module::Module<'c>,
+    memo: &mut HashMap<String, Option<Expr>>,
+    depth: u32,
+) -> Expr {
+    let mut cur = k;
+    for _ in 0..8 {
+        let Some(i) = as_instr(cur) else { break };
+        let Some(n) = callee_name(i) else { break };
+        if is_wrapper(&n) || n.contains("from_payload") || n.contains("val.payload") {
+            if let Some(Operand::Value(x)) = i.get_operand(0) {
+                cur = x;
+                continue;
+            }
+            break;
+        }
+        if let Some(b) = module.get_function(&n) {
+            if is_datakey_builder(b) {
+                let kb = Expr::Opaque(format!("@kb:{n}"), vec![]);
+                let arg = |j: u32| match i.get_operand(j) { Some(Operand::Value(x)) => Some(x), _ => None };
+                // by pointer: the enum lives in memory (discriminant, then payload).
+                if b.count_params() == 1 || arg(1).is_none() {
+                    if let Some(a) = arg(0) {
+                        let (base, o) = if a.is_pointer_value() { ptr_base_off(a) } else { addr_base_off(a) };
+                        let cfg = Cfg::build(g);
+                        if let Some(blk) = i.get_parent().and_then(|bb| cfg.bidx(bb)) {
+                            let mut rd = |off: i64, memo: &mut HashMap<String, Option<Expr>>| {
+                                let mut seen = MemCtx::default();
+                                mem_before(i.get_previous_instruction(), blk, &(base.clone(), off), g, &cfg, module, memo, depth, &mut seen)
+                                    .unwrap_or(Expr::Opaque("?".into(), vec![]))
+                            };
+                            let d = rd(o, memo);
+                            let fld = rd(o + 8, memo);
+                            return Expr::Opaque("@key".into(), vec![d, fld, kb]);
+                        }
+                    }
+                }
+                let mut v = |j: u32| match arg(j) {
+                    Some(x) => value_expr(x, g, module, memo, depth),
+                    None => Expr::Opaque("?".into(), vec![]),
+                };
+                return Expr::Opaque("@key".into(), vec![v(0), v(1), kb]);
+            }
+        }
+        break;
+    }
+    value_expr(k, g, module, memo, depth)
+}
+
+/// For a DataKey builder `kb`, which discriminants are data variants (carry a
+/// field): an integer builder uses its field param in that case; a pointer
+/// builder reads the enum's payload (offset ≥ 8 off its pointer) in that case.
+fn kb_usage(kb: FunctionValue) -> (BTreeMap<i64, bool>, bool) {
+    if kb.count_params() >= 2 {
+        return kb_field_usage(kb);
+    }
+    let mut cases: BTreeMap<i64, bool> = BTreeMap::new();
+    let Some(p0) = kb.get_nth_param(0) else { return (cases, false) };
+    let pbase = fmt(p0);
+    let Some(sw) = all_instrs(kb).into_iter().find(|i| i.get_opcode() == InstructionOpcode::Switch) else {
+        return (cases, false);
+    };
+    let cfg = Cfg::build(kb);
+    let reads_field = |start: usize| -> bool {
+        // within the case: follow forward until a block reached from >1 case.
+        let mut seen = vec![false; cfg.blocks.len()];
+        let mut work = vec![start];
+        while let Some(b) = work.pop() {
+            if std::mem::replace(&mut seen[b], true) {
+                continue;
+            }
+            for i in cfg.blocks[b].get_instructions() {
+                if i.get_opcode() == InstructionOpcode::Load {
+                    if let Some(Operand::Value(pp)) = i.get_operand(0) {
+                        let (bs, o) = ptr_base_off(pp);
+                        if bs == pbase && o >= 8 {
+                            return true;
+                        }
+                    }
+                }
+            }
+            for &n in &cfg.succ[b] {
+                let preds = (0..cfg.succ.len()).filter(|&u| cfg.succ[u].contains(&n)).count();
+                if preds == 1 {
+                    work.push(n);
+                }
+            }
+        }
+        false
+    };
+    let n = sw.get_num_operands();
+    let mut k = 2;
+    let mut dflt = false;
+    if let Some(Operand::Block(db)) = sw.get_operand(1) {
+        if let Some(d) = cfg.bidx(db) {
+            dflt = reads_field(d);
+        }
+    }
+    while k + 1 < n {
+        if let (Some(Operand::Value(BasicValueEnum::IntValue(c))), Some(Operand::Block(b))) = (sw.get_operand(k), sw.get_operand(k + 1)) {
+            if let (Some(v), Some(bi)) = (c.get_sign_extended_constant(), cfg.bidx(b)) {
+                cases.insert(v, reads_field(bi));
+            }
+        }
+        k += 2;
+    }
+    (cases, dflt)
+}
+
+/// After reconstruction + substitution: turn each `@slot(@key(d, field))` with a
+/// constant discriminant into the named slot — `Slot(Name, 0)` for a unit
+/// variant, `@map:Name(field)` for a mapping — using the DataKey names from the
+/// data section. Unresolved keys are left as they are.
+fn name_slots<'c>(
+    e: &Expr,
+    module: &inkwell::module::Module<'c>,
+    kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
+    segs: &[(u64, Vec<u8>)],
+) -> Expr {
+    let rec = |x: &Expr| name_slots(x, module, kb, segs);
+    match e {
+        Expr::Opaque(l, xs) if l.starts_with("@slot:") && (xs.len() == 1 || xs.len() == 2) => {
+            let tag = xs.get(1).cloned(); // the read's program point (@at), if any
+            let tagn = match &tag {
+                Some(Expr::Opaque(a, k)) if a == "@at" => match k.first() { Some(Expr::Const(t)) => *t as usize + 1, _ => 0 },
+                _ => 0,
+            };
+            // the builder this key came from (a contract can have several).
+            let own_kb = match &xs[0] {
+                Expr::Opaque(kl, kx) if kl == "@key" && kx.len() == 3 => match &kx[2] {
+                    Expr::Opaque(n, _) if n.starts_with("@kb:") => module.get_function(&n["@kb:".len()..]),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let own_usage = own_kb.map(kb_usage);
+            let kb = match (own_kb, own_usage.as_ref()) { (Some(f), Some(u)) => Some((f, u)), _ => kb };
+            if let (Expr::Opaque(kl, kx), Some((kbf, usage))) = (&xs[0], kb) {
+                // a key whose discriminant is chosen by a condition: the slot is too.
+                if kl == "@key" && kx.len() >= 2 {
+                    let mk = |d: &Expr| {
+                        let mut v = vec![Expr::Opaque("@key".into(), {
+                            let mut kv = vec![d.clone(), kx[1].clone()];
+                            kv.extend(kx.get(2).cloned());
+                            kv
+                        })];
+                        v.extend(tag.clone());
+                        Expr::Opaque(l.clone(), v)
+                    };
+                    if let Expr::Opaque(sl, sx) = &kx[0] {
+                        if sl == "Select" && sx.len() == 3 {
+                            return Expr::Opaque("Select".into(), vec![rec(&sx[0]), rec(&mk(&sx[1])), rec(&mk(&sx[2]))]);
+                        }
+                    }
+                    // a discriminant computed from one decoded bool: evaluate both cases.
+                    if !matches!(kx[0], Expr::Const(_)) {
+                        if let Some(b) = sole_bool(&kx[0]) {
+                            if let (Some(d0), Some(d1)) = (eval_bool_fn(&kx[0], &b, 0), eval_bool_fn(&kx[0], &b, 1)) {
+                                let cond = Expr::Opaque("@isfalse".into(), vec![b.clone()]);
+                                return Expr::Opaque("Select".into(), vec![cond, rec(&mk(&Expr::Const(d0))), rec(&mk(&Expr::Const(d1)))]);
+                            }
+                        }
+                    }
+                }
+                if kl == "@key" && kx.len() >= 2 {
+                    if let Expr::Const(d) = kx[0] {
+                        if let Some(name) = datakey_name(kbf, d, module, segs) {
+                            let mapping = usage.0.get(&d).copied().unwrap_or(usage.1);
+                            return if mapping {
+                                let mut v = vec![rec(&kx[1])];
+                                v.extend(tag.clone());
+                                Expr::Opaque(format!("@map:{name}"), v)
+                            } else {
+                                Expr::Slot(name, tagn)
+                            };
+                        }
+                    }
+                }
+            }
+            // a key built inline: a bare Symbol (`symbol_short!("COUNTER")`) or
+            // `Vec[Symbol(variant), fields…]` (a contracttype enum variant).
+            let sym_name = |e: &Expr| -> Option<String> {
+                match e {
+                    Expr::Const(k) if (*k as u64) & 0xff == 14 => decode_symbol(*k as u64),
+                    Expr::Opaque(n, v) if n.starts_with("@sym:") && v.is_empty() => Some(n["@sym:".len()..].to_string()),
+                    _ => None,
+                }
+            };
+            if let Some(name) = sym_name(&xs[0]) {
+                return Expr::Slot(name, tagn);
+            }
+            if let Expr::Opaque(vl, els) = &xs[0] {
+                if vl == "@vec" && !els.is_empty() {
+                    if let Some(name) = sym_name(&els[0]) {
+                        if els.len() == 1 {
+                            return Expr::Slot(name, tagn);
+                        }
+                        let mut v = vec![rec(&els[1])];
+                        v.extend(tag.clone());
+                        return Expr::Opaque(format!("@map:{name}"), v);
+                    }
+                }
+            }
+            Expr::Opaque(l.clone(), xs.iter().map(rec).collect())
+        }
+        Expr::Bin(o, a, b) => fold_named(Expr::Bin(*o, Box::new(rec(a)), Box::new(rec(b)))),
+        Expr::VecGet(a, b) => Expr::VecGet(Box::new(rec(a)), Box::new(rec(b))),
+        Expr::Opaque(l, xs) => fold_named(Expr::Opaque(l.clone(), xs.iter().map(rec).collect())),
+        other => other.clone(),
+    }
+}
+
+/// When the returned Val is a decision tree over constants (a `Result<_, Error>`
+/// lowered to `Void` / `Error(code)` payloads), the condition under which the call
+/// returns Ok — an `Err` return fails the invocation like a panic. None when the
+/// return isn't such a tree or can never be an error.
+fn ok_condition(e: &Expr) -> Option<Expr> {
+    fn ok(e: &Expr) -> Option<Expr> {
+        match e {
+            Expr::Const(k) => Some(Expr::Opaque(if k & 0xff == 3 { "@false" } else { "@true" }.into(), vec![])),
+            Expr::Opaque(l, xs) if l == "Select" && xs.len() == 3 => {
+                let (c, a, b) = (&xs[0], ok(&xs[1])?, ok(&xs[2])?);
+                let is = |x: &Expr, n: &str| matches!(x, Expr::Opaque(l, v) if l == n && v.is_empty());
+                let and = |p: Expr, q: Expr| if is(&q, "@true") { p } else if is(&q, "@false") { q } else { Expr::Opaque("@and".into(), vec![p, q]) };
+                let nc = Expr::Opaque("@not".into(), vec![c.clone()]);
+                let l = and(c.clone(), a);
+                let r = and(nc, b);
+                Some(if is(&l, "@false") { r } else if is(&r, "@false") { l } else { Expr::Opaque("@or".into(), vec![l, r]) })
+            }
+            _ => None,
+        }
+    }
+    let has_err = |e: &Expr| -> bool {
+        fn go(e: &Expr) -> bool {
+            match e {
+                Expr::Const(k) => k & 0xff == 3,
+                Expr::Opaque(l, xs) if l == "Select" => xs.iter().skip(1).any(go),
+                _ => false,
+            }
+        }
+        go(e)
+    };
+    if !has_err(e) {
+        return None;
+    }
+    ok(e)
+}
+
+/// A Val read straight from a source (a storage slot / map entry / an arg).
+fn is_val_source(e: &Expr) -> bool {
+    match e {
+        Expr::Slot(..) | Expr::Param(_) => true,
+        Expr::Opaque(l, _) => l.starts_with("@map:"),
+        // `has(k) ? get(k) : 0` of such a source
+        _ => false,
+    }
+}
+
+/// The single decoded bool (`@bool(x)`) an expression depends on, if exactly one.
+fn sole_bool(e: &Expr) -> Option<Expr> {
+    fn go(e: &Expr, out: &mut Vec<Expr>) -> bool {
+        match e {
+            Expr::Opaque(l, xs) if l == "@bool" && xs.len() == 1 => {
+                if !out.contains(&xs[0]) {
+                    out.push(xs[0].clone());
+                }
+                true
+            }
+            Expr::Const(_) => true,
+            Expr::Bin(_, a, b) => go(a, out) && go(b, out),
+            Expr::Opaque(l, xs) if matches!(l.as_str(), "And" | "Or" | "Xor") => xs.iter().all(|x| go(x, out)),
+            _ => false, // depends on something else
+        }
+    }
+    let mut v = vec![];
+    (go(e, &mut v) && v.len() == 1).then(|| v.pop().unwrap())
+}
+
+/// Evaluate an expression over one decoded bool `b` set to `bit`.
+fn eval_bool_fn(e: &Expr, b: &Expr, bit: i64) -> Option<i64> {
+    let r = |x: &Expr| eval_bool_fn(x, b, bit);
+    match e {
+        Expr::Const(k) => Some(*k),
+        Expr::Opaque(l, xs) if l == "@bool" && xs.len() == 1 && xs[0] == *b => Some(bit),
+        Expr::Opaque(l, xs) if l == "And" && xs.len() == 2 => Some(r(&xs[0])? & r(&xs[1])?),
+        Expr::Opaque(l, xs) if l == "Or" && xs.len() == 2 => Some(r(&xs[0])? | r(&xs[1])?),
+        Expr::Opaque(l, xs) if l == "Xor" && xs.len() == 2 => Some(r(&xs[0])? ^ r(&xs[1])?),
+        Expr::Bin('+', a, c) => Some(r(a)? + r(c)?),
+        Expr::Bin('-', a, c) => Some(r(a)? - r(c)?),
+        Expr::Bin('*', a, c) => Some(r(a)? * r(c)?),
+        _ => None,
+    }
+}
+
+/// Folds that need named slots: a `get(k).unwrap_or(0)` (`has(k) ? get(k) : 0`)
+/// is just the read — the model's storage reads an absent key as 0; `Or(x, x)` is
+/// `x`; and `Or(a, b) = 0` is `a = 0 ∧ b = 0` (bitwise, exact).
+fn fold_named(e: Expr) -> Expr {
+    // the same slot, ignoring at which program point it was read.
+    let same_slot = |a: &Expr, b: &Expr| -> bool {
+        match (a, b) {
+            (Expr::Slot(x, _), Expr::Slot(y, _)) => x == y,
+            (Expr::Opaque(x, xa), Expr::Opaque(y, ya)) if x.starts_with("@map:") && x == y => xa.first() == ya.first(),
+            _ => a == b,
+        }
+    };
+    let is_has_of = |c: &Expr, x: &Expr| -> bool {
+        matches!(c, Expr::Opaque(l, v) if l == "ICmp_EQ" && v.len() == 2 && v[1] == Expr::Const(1)
+            && matches!(&v[0], Expr::Opaque(h, k) if h == "@has" && k.len() == 1 && same_slot(&k[0], x)))
+    };
+    // u32/i32 small-Val ENCODE: (v << 32) + ((k << 32) | tag) is v + k, tag 4/5.
+    if let Expr::Bin('+', a, b) = &e {
+        if let (Expr::Opaque(sl, sx), Expr::Const(c)) = (a.as_ref(), b.as_ref()) {
+            if sl == "Shl" && sx.len() == 2 && sx[1] == Expr::Const(32) && matches!(c & 0xff, 4 | 5) {
+                let k = c >> 32;
+                return if k == 0 { sx[0].clone() } else { Expr::Bin('+', Box::new(sx[0].clone()), Box::new(Expr::Const(k))) };
+            }
+        }
+    }
+    if let Expr::Opaque(ol, ox) = &e {
+        if ol == "Or" && ox.len() == 2 {
+            if let (Expr::Opaque(sl, sx), Expr::Const(c)) = (&ox[0], &ox[1]) {
+                if sl == "Shl" && sx.len() == 2 && sx[1] == Expr::Const(32) && matches!(c & 0xff, 4 | 5) && c >> 32 == 0 {
+                    return sx[0].clone();
+                }
+            }
+        }
+    }
+    match &e {
+        Expr::Opaque(l, xs) if l == "Select" && xs.len() == 3 => {
+            let (c, t, f) = (&xs[0], &xs[1], &xs[2]);
+            if *f == Expr::Const(0) && is_has_of(c, t) {
+                return t.clone();
+            }
+            if let Expr::Opaque(n, inner) = c {
+                if n == "@not" && inner.len() == 1 && *t == Expr::Const(0) && is_has_of(&inner[0], f) {
+                    return f.clone();
+                }
+            }
+            e
+        }
+        Expr::Opaque(l, xs) if l == "Or" && xs.len() == 2 && xs[0] == xs[1] => xs[0].clone(),
+        // u32/i32 small-Val DECODE of a Val source: `payload >> 32` is the value.
+        Expr::Opaque(l, xs) if l == "LShr" && xs.len() == 2 && xs[1] == Expr::Const(32) && is_val_source(&xs[0]) => xs[0].clone(),
+        Expr::Opaque(l, xs) if l == "ICmp_EQ" && xs.len() == 2 && xs[1] == Expr::Const(0) => {
+            if let Expr::Opaque(o, ab) = &xs[0] {
+                if o == "Or" && ab.len() == 2 {
+                    let z = |x: &Expr| fold_named(Expr::Opaque("ICmp_EQ".into(), vec![x.clone(), Expr::Const(0)]));
+                    let parts: Vec<Expr> = ab.iter().map(z).flat_map(|p| match p {
+                        Expr::Opaque(n, v) if n == "@and" => v,
+                        p => vec![p],
+                    }).collect();
+                    let mut uniq: Vec<Expr> = vec![];
+                    for p in parts {
+                        if !uniq.contains(&p) {
+                            uniq.push(p);
+                        }
+                    }
+                    return if uniq.len() == 1 { uniq.pop().unwrap() } else { Expr::Opaque("@and".into(), uniq) };
+                }
+            }
+            e
+        }
+        _ => e,
+    }
+}
+
+thread_local! {
+    static WRITE_OFFS: std::cell::RefCell<HashMap<(String, usize), Option<Vec<(i64, i64)>>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// The byte ranges `(offset, size)` callee `h` writes through its pointer param
+/// `k` (directly or through helpers it forwards the pointer to); `None` when
+/// unknown (a body-less callee, or a store whose address isn't param+constant).
+fn callee_write_offsets(h: FunctionValue, k: usize, fuel: u32) -> Option<Vec<(i64, i64)>> {
+    let key = (h.get_name().to_string_lossy().into_owned(), k);
+    if let Some(r) = WRITE_OFFS.with(|m| m.borrow().get(&key).cloned()) {
+        return r;
+    }
+    WRITE_OFFS.with(|m| m.borrow_mut().insert(key.clone(), None)); // recursion guard
+    let r = (|| {
+        if fuel == 0 || h.count_basic_blocks() == 0 {
+            return None;
+        }
+        let pbase = fmt(h.get_nth_param(k as u32)?);
+        let mut out = vec![];
+        for i in all_instrs(h) {
+            match i.get_opcode() {
+                InstructionOpcode::Store => {
+                    let Some(Operand::Value(sp)) = i.get_operand(1) else { continue };
+                    let (b, o) = ptr_base_off(sp);
+                    if b == pbase {
+                        let size = match i.get_operand(0) {
+                            Some(Operand::Value(BasicValueEnum::IntValue(v))) => (v.get_type().get_bit_width() as i64 + 7) / 8,
+                            _ => 8,
+                        };
+                        out.push((o, size));
+                    } else if !ptr_is_clean(sp) && b.contains(&pbase) {
+                        return None; // a dynamic offset off our pointer
+                    }
+                }
+                InstructionOpcode::Call => {
+                    let nargs = i.get_num_operands().saturating_sub(1);
+                    for j in 0..nargs {
+                        let Some(Operand::Value(a)) = i.get_operand(j) else { continue };
+                        let (b, o) = if a.is_pointer_value() { ptr_base_off(a) } else { addr_base_off(a) };
+                        if b != pbase {
+                            continue;
+                        }
+                        let h2 = inkwell::values::CallSiteValue::try_from(i).ok()?.get_called_fn_value()?;
+                        for (w, sz) in callee_write_offsets(h2, j as usize, fuel - 1)? {
+                            out.push((o + w, sz));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some(out)
+    })();
+    WRITE_OFFS.with(|m| m.borrow_mut().insert(key, r.clone()));
+    r
+}
+
+/// What callee `h` stores at `*(param k + off)`, as an expression over `h`'s
+/// params: a direct store in a non-trapping block, or (one level down) a nested
+/// call that forwards the pointer. Multiple distinct non-trapping stores (paths
+/// that disagree) make it a `phi`.
+fn callee_store_at<'c>(
+    h: FunctionValue<'c>,
+    k: usize,
+    off: i64,
+    module: &inkwell::module::Module<'c>,
+    memo: &mut HashMap<String, Option<Expr>>,
+    depth: u32,
+    fuel: u32,
+) -> Option<Expr> {
+    if fuel == 0 || depth == 0 {
+        return None;
+    }
+    let param = h.get_nth_param(k as u32)?;
+    let pbase = fmt(param);
+    let mut found: Vec<Expr> = vec![];
+    for bb in h.get_basic_blocks() {
+        if forces_trap(bb, 0) {
+            continue; // an error path writes its own garbage before trapping
+        }
+        let mut it = bb.get_first_instruction();
+        while let Some(i) = it {
+            it = i.get_next_instruction();
+            match i.get_opcode() {
+                InstructionOpcode::Store => {
+                    if let (Some(Operand::Value(sv)), Some(Operand::Value(sp))) = (i.get_operand(0), i.get_operand(1)) {
+                        if ptr_base_off(sp) == (pbase.clone(), off) {
+                            let e = value_expr(sv, h, module, memo, depth - 1);
+                            if !found.contains(&e) {
+                                found.push(e);
+                            }
+                        }
+                    }
+                }
+                InstructionOpcode::Call => {
+                    // the callee forwards the pointer (param k + c) to a deeper helper.
+                    let Some(cn) = callee_name(i) else { continue };
+                    let Some(h2) = module.get_function(&cn) else { continue };
+                    if h2.count_basic_blocks() == 0 {
+                        continue;
+                    }
+                    let nargs = i.get_num_operands().saturating_sub(1);
+                    for j in 0..nargs {
+                        let Some(Operand::Value(a)) = i.get_operand(j) else { continue };
+                        let (b, o) = if a.is_pointer_value() { ptr_base_off(a) } else { addr_base_off(a) };
+                        if b == pbase && o <= off {
+                            if let Some(e2) = callee_store_at(h2, j as usize, off - o, module, memo, depth - 1, fuel - 1) {
+                                let hcfg = Cfg::build(h);
+                                let e = subst_call(&e2, i, h, &hcfg, module, memo, depth - 1);
+                                if !found.contains(&e) {
+                                    found.push(e);
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    match found.len() {
+        0 => None,
+        1 => found.pop(),
+        _ => Some(Expr::Opaque("phi".into(), found)),
+    }
 }
 
 /// Substitute a callee's param-relative expression with the caller's arg exprs.
@@ -2251,23 +3501,34 @@ struct ModelEntry {
     inv: bool,                          // guards a trap with a constant-product (x*y) check
     guards: Vec<Guard>,                 // all recovered trap (panic) guards (pass conditions)
     gdecls: Vec<String>,                // opaque Step-terms the guards name
+    rich: Option<RichBody>,             // reconstructed transfers + writes (when available)
+    more_auths: Vec<String>,            // further signers beyond `auth` (require_auth*)
 }
 
 /// The arg whose `require_auth()` the entrypoint calls — the signer gate. The
 /// `to.require_auth()` at the top of each entrypoint means the caller must be
 /// that address, which is how we justify binding transfers to the caller.
 fn entry_auth(f: FunctionValue) -> Option<String> {
+    entry_auths(f).into_iter().next()
+}
+
+/// Every arg whose `require_auth()` / `require_auth_for_args()` the entrypoint
+/// calls, in order (e.g. both parties of an atomic swap).
+fn entry_auths(f: FunctionValue) -> Vec<String> {
     let args = arg_table(f);
+    let mut out = vec![];
     for i in all_instrs(f) {
         if callee_name(i).map_or(false, |n| n.contains("require_auth")) {
             if let Some(Operand::Value(v)) = i.get_operand(0) {
                 if let Some(Src::Arg(n)) = src_of(v, &args) {
-                    return Some(n);
+                    if !out.contains(&n) {
+                        out.push(n);
+                    }
                 }
             }
         }
     }
-    None
+    out
 }
 
 /// Does `f` contain a trap (`soroban.trap` / `unreachable`)?
@@ -2445,9 +3706,16 @@ fn gate_vals(cond: BasicValueEnum) -> Option<(RelOp, BasicValueEnum, BasicValueE
         if hi.get_opcode() != InstructionOpcode::ICmp {
             return None;
         }
-        let a = match hi.get_operand(0) { Some(Operand::Value(v)) => v, _ => return None };
-        let b = match hi.get_operand(1) { Some(Operand::Value(v)) => v, _ => return None };
-        return Some((pred(hi.get_icmp_predicate()?), a, b));
+        // operands from the LO-limb compare (the lo limb carries the value; the
+        // hi limb drops carries, e.g. the `+ 1` of `q + 1`), direction from the
+        // signed HI-limb compare.
+        let lo = match i.get_operand(1) { Some(Operand::Value(v)) => as_instr(v), _ => None };
+        // (the two limb compares may list their operands in opposite orders, so
+        // the direction is taken from the same compare as the operands.)
+        let src = match lo { Some(l) if l.get_opcode() == InstructionOpcode::ICmp => l, _ => hi };
+        let a = match src.get_operand(0) { Some(Operand::Value(v)) => v, _ => return None };
+        let b = match src.get_operand(1) { Some(Operand::Value(v)) => v, _ => return None };
+        return Some((pred(src.get_icmp_predicate()?), a, b));
     }
     if i.get_opcode() == InstructionOpcode::ICmp {
         let a = match i.get_operand(0) { Some(Operand::Value(v)) => v, _ => return None };
@@ -2467,6 +3735,10 @@ fn gate_vals(cond: BasicValueEnum) -> Option<(RelOp, BasicValueEnum, BasicValueE
 fn entry_guards<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> GuardSet {
     let cfg = Cfg::build(f);
     let args = arg_table(f);
+    let kbf = datakey_builder(module);
+    let usage = kbf.map(kb_field_usage);
+    let kb = kbf.zip(usage.as_ref());
+    let segs = rodata_segs(module);
     let fnid: String = f.get_name().to_string_lossy().chars()
         .map(|ch| if ch.is_alphanumeric() { ch } else { '_' }).collect();
     let mut vmemo: HashMap<String, Option<Expr>> = HashMap::new();
@@ -2509,13 +3781,19 @@ fn entry_guards<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) 
             if matches!(op, RelOp::Eq | RelOp::Ne) {
                 continue; // Val-tag / sign / overflow equality plumbing
             }
-            let le = simplify(value_expr(l, f, module, &mut vmemo, 40));
-            let re = simplify(value_expr(r, f, module, &mut vmemo, 40));
+            let (le, re) = with_rich(|| {
+                (simplify(value_expr(l, f, module, &mut vmemo, 40)), simplify(value_expr(r, f, module, &mut vmemo, 40)))
+            });
+            let (le, re) = (name_slots(&le, module, kb, &segs), name_slots(&re, module, kb, &segs));
             if !(expr_has_named(&le) || expr_has_named(&re)) {
                 continue;
             }
             // drop i128 signed-overflow checks: `And(Xor(a-b,a), Xor(a,b)) < 0`.
-            if matches!(op0, RelOp::Lt) && is_zero(&re) && is_sub_overflow(&le) {
+            let zm1 = |x: &Expr| matches!(x, Expr::Const(0) | Expr::Const(-1));
+            if (zm1(&re) && (is_sub_overflow(&le) || is_ovf_flag(&le))) || (zm1(&le) && is_ovf_flag(&re)) {
+                continue;
+            }
+            if has_cycle(&le) || has_cycle(&re) || has_label(&le, "llvm_") || has_label(&re, "llvm_") {
                 continue;
             }
             let (le, re) = (i128_sext(&le), i128_sext(&re));
@@ -2565,6 +3843,71 @@ fn bool_split<'c>(v: BasicValueEnum<'c>, split_or: bool, depth: u32, out: &mut V
 /// becomes `st.call.arg "n"`, arithmetic is kept, and any subtree the pass does
 /// not name (a storage read, an i128 reconstruction) becomes a fresh `opaque`
 /// Step-term (shared by structurally-identical subtrees), recorded in `decls`.
+/// A token (SEP-41 contract) as the Lean ledger name it maps to: a named token
+/// slot `"TokenA"`, or a conditional choice `(if c then "TokenB" else "TokenA")`.
+fn ledger_term(
+    tok: &Expr,
+    args: &Args,
+    opmap: &mut HashMap<String, String>,
+    oc: &mut usize,
+    decls: &mut Vec<String>,
+    fnid: &str,
+) -> Option<String> {
+    match tok {
+        Expr::Slot(n, _) if !matches!(n.as_str(), "instance" | "persistent" | "temporary" | "?") => Some(format!("\"{n}\"")),
+        Expr::Opaque(l, _) if l.starts_with("@map:") => None,
+        // a token passed as an argument: the ledger is keyed by its address.
+        Expr::Param(i) => args.get(*i).map(|(_, n, _)| format!("(toString (st.call.argA \"{n}\"))")),
+        Expr::Opaque(l, xs) if l == "Select" && xs.len() == 3 => {
+            let c = lean_cond(&xs[0], args, opmap, oc, decls, fnid)?;
+            let a = ledger_term(&xs[1], args, opmap, oc, decls, fnid)?;
+            let b = ledger_term(&xs[2], args, opmap, oc, decls, fnid)?;
+            Some(format!("(if {c} then {a} else {b})"))
+        }
+        _ => None,
+    }
+}
+
+/// A Select condition as a Lean `Prop` (a compare or a decoded-bool test), its
+/// operands rendered as Lean terms; None for anything else.
+fn lean_cond(
+    c: &Expr,
+    args: &Args,
+    opmap: &mut HashMap<String, String>,
+    oc: &mut usize,
+    decls: &mut Vec<String>,
+    fnid: &str,
+) -> Option<String> {
+    match c {
+        Expr::Opaque(l, xs) if l == "@and" => {
+            let parts: Option<Vec<String>> = xs.iter().map(|x| lean_cond(x, args, opmap, oc, decls, fnid)).collect();
+            Some(parts?.iter().map(|p| format!("({p})")).collect::<Vec<_>>().join(" ∧ "))
+        }
+        Expr::Opaque(l, xs) if l == "@or" => {
+            let parts: Option<Vec<String>> = xs.iter().map(|x| lean_cond(x, args, opmap, oc, decls, fnid)).collect();
+            Some(parts?.iter().map(|p| format!("({p})")).collect::<Vec<_>>().join(" ∨ "))
+        }
+        Expr::Opaque(l, xs) if l == "@true" && xs.is_empty() => Some("True".into()),
+        Expr::Opaque(l, xs) if l == "@false" && xs.is_empty() => Some("False".into()),
+        Expr::Opaque(l, xs) if l == "@not" && xs.len() == 1 => {
+            Some(format!("¬({})", lean_cond(&xs[0], args, opmap, oc, decls, fnid)?))
+        }
+        Expr::Opaque(l, xs) if l == "@isfalse" && xs.len() == 1 => {
+            Some(format!("{} = 0", lean_guard_term(&xs[0], args, opmap, oc, decls, fnid)))
+        }
+        Expr::Opaque(l, xs) if l.starts_with("ICmp_") && xs.len() == 2 => {
+            let rel = match &l["ICmp_".len()..] {
+                "EQ" => "=", "NE" => "≠", "SLT" | "ULT" => "<", "SLE" | "ULE" => "≤",
+                "SGT" | "UGT" => ">", "SGE" | "UGE" => "≥", _ => return None,
+            };
+            let a = lean_guard_term(&xs[0], args, opmap, oc, decls, fnid);
+            let b = lean_guard_term(&xs[1], args, opmap, oc, decls, fnid);
+            Some(format!("{a} {rel} {b}"))
+        }
+        _ => None,
+    }
+}
+
 fn lean_guard_term(
     e: &Expr,
     args: &Args,
@@ -2580,12 +3923,63 @@ fn lean_guard_term(
             None => format!("st.call.arg \"p{i}\""),
         },
         Expr::Const(k) => k.to_string(),
+        // Rust's `/` and `%` truncate toward zero: Int.tdiv / Int.tmod.
+        Expr::Bin(o @ ('/' | '%'), a, b) => format!(
+            "(Int.{} {} {})",
+            if *o == '/' { "tdiv" } else { "tmod" },
+            lean_guard_term(a, args, opmap, oc, decls, fnid),
+            lean_guard_term(b, args, opmap, oc, decls, fnid),
+        ),
         Expr::Bin(o, a, b) => format!(
             "({} {} {})",
             lean_guard_term(a, args, opmap, oc, decls, fnid),
             o,
             lean_guard_term(b, args, opmap, oc, decls, fnid),
         ),
+        // a named storage slot, read in the pre-state.
+        Expr::Slot(n, t) if !matches!(n.as_str(), "instance" | "persistent" | "temporary" | "?") => {
+            let st = if *t > 0 { state_at(*t - 1) } else { "st.pre".into() };
+            format!("({st} (.var \"{n}\"))")
+        }
+        Expr::Opaque(l, xs) if l.starts_with("@map:") && (xs.len() == 1 || xs.len() == 2) => {
+            let st = match xs.get(1) {
+                Some(Expr::Opaque(a, k)) if a == "@at" => match k.first() { Some(Expr::Const(t)) => state_at(*t as usize), _ => "st.pre".into() },
+                _ => "st.pre".into(),
+            };
+            format!("({st} (.entry \"{}\" ({})))", &l["@map:".len()..], lean_guard_term(&xs[0], args, opmap, oc, decls, fnid))
+        }
+        Expr::Opaque(l, xs) if l == "@pool" && xs.is_empty() => "pool".into(),
+        // the address carried by an address-like argument (MuxedAddress etc.)
+        Expr::Opaque(l, xs) if l == "@addrof" && xs.len() == 1 => match &xs[0] {
+            Expr::Param(i) => args.get(*i).map(|(_, n, _)| format!("st.call.argA \"{n}\"")).unwrap_or_else(|| "pool".into()),
+            x => lean_guard_term(x, args, opmap, oc, decls, fnid),
+        },
+        // SEP-41 `token.balance(who)` on a named token slot: that token's ledger.
+        Expr::Opaque(l, xs) if l == "@call:balance" && (xs.len() == 2 || xs.len() == 3)
+            && ledger_term(&xs[0], args, &mut HashMap::new(), &mut 0, &mut vec![], fnid).is_some()
+            && matches!(&xs[1], Expr::Opaque(v, w) if v == "@vec" && w.len() == 1) =>
+        {
+            let tok = ledger_term(&xs[0], args, opmap, oc, decls, fnid).unwrap();
+            let Expr::Opaque(_, who) = &xs[1] else { unreachable!() };
+            // the ledger state at the read's program point (after earlier transfers).
+            let state = match xs.get(2) {
+                Some(Expr::Opaque(a, k)) if a == "@at" => match k.first() { Some(Expr::Const(site)) => state_at(*site as usize), _ => "st.pre".into() },
+                _ => "st.pre".into(),
+            };
+            format!("(bal {tok} {state} {})", lean_guard_term(&who[0], args, opmap, oc, decls, fnid))
+        }
+        Expr::Opaque(l, xs) if l == "@bool" && xs.len() == 1 => lean_guard_term(&xs[0], args, opmap, oc, decls, fnid),
+        Expr::Opaque(l, xs) if l == "Select" && xs.len() == 3
+            && matches!(&xs[0], Expr::Opaque(n, _) if n == "@isfalse" || n == "@and" || n == "@not" || n.starts_with("ICmp_"))
+            && lean_cond(&xs[0], args, &mut HashMap::new(), &mut 0, &mut vec![], fnid).is_some() =>
+        {
+            let c = lean_cond(&xs[0], args, opmap, oc, decls, fnid).unwrap_or_else(|| "False".into());
+            format!(
+                "(if {c} then {} else {})",
+                lean_guard_term(&xs[1], args, opmap, oc, decls, fnid),
+                lean_guard_term(&xs[2], args, opmap, oc, decls, fnid)
+            )
+        }
         // storage read / vec read / unrecognized op: a fresh opaque Step-term.
         // (We do NOT merge by rendered shape — different i128 reconstructions
         // print identically once their loads are opaque, and merging them would
@@ -2595,7 +3989,7 @@ fn lean_guard_term(
             *oc += 1;
             let nm = format!("{fnid}_g{oc}");
             decls.push(nm.clone());
-            format!("{nm} st")
+            format!("({nm} st)")
         }
     }
 }
@@ -2641,6 +4035,33 @@ fn is_sub_overflow(e: &Expr) -> bool {
         }
     }
     false
+}
+
+/// The signed add/sub overflow flag idiom `And(Xor(..), Xor(..))` (its sign bit
+/// is the overflow bit) — compiler-inserted, not a contract guard.
+fn is_ovf_flag(e: &Expr) -> bool {
+    matches!(e, Expr::Opaque(op, xs) if op == "And" && xs.len() == 2
+        && xs.iter().any(|x| matches!(x, Expr::Opaque(n, _) if n == "Xor")))
+}
+
+/// Does `e` contain an uninterpreted op whose label starts with `prefix`?
+fn has_label(e: &Expr, prefix: &str) -> bool {
+    match e {
+        Expr::Opaque(l, xs) => l.starts_with(prefix) || xs.iter().any(|x| has_label(x, prefix)),
+        Expr::Bin(_, a, b) | Expr::VecGet(a, b) => has_label(a, prefix) || has_label(b, prefix),
+        _ => false,
+    }
+}
+
+/// Does `e` contain a loop-carried value (`cyc`: a cycle in the reconstruction,
+/// e.g. the iteration variables of the isqrt routine)? Those are internals of a
+/// numeric routine, not quantities a guard can be stated over.
+fn has_cycle(e: &Expr) -> bool {
+    match e {
+        Expr::Opaque(l, xs) => l == "cyc" || xs.iter().any(has_cycle),
+        Expr::Bin(_, a, b) | Expr::VecGet(a, b) => has_cycle(a) || has_cycle(b),
+        _ => false,
+    }
 }
 
 /// Does a reconstructed expression mention an argument or a storage slot?
@@ -2843,6 +4264,314 @@ fn storage_summary<'c>(
     facts
 }
 
+// ===================== rich entrypoint bodies (transfers + writes) =====================
+
+thread_local! {
+    /// The entrypoint being modeled: its name and instruction -> program ordinal.
+    static ENTRY: std::cell::RefCell<Option<(String, HashMap<usize, usize>)>> = const { std::cell::RefCell::new(None) };
+    /// Program ordinals of the entrypoint's transfer sites, sorted (for states).
+    static TX_SITES: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(vec![]) };
+}
+
+/// Run `body` with `f` as the entrypoint being modeled.
+fn with_entry<T>(f: FunctionValue, body: impl FnOnce() -> T) -> T {
+    use inkwell::values::AsValueRef;
+    let map: HashMap<usize, usize> =
+        all_instrs(f).iter().enumerate().map(|(k, i)| (i.as_value_ref() as usize, k)).collect();
+    ENTRY.with(|e| *e.borrow_mut() = Some((f.get_name().to_string_lossy().into_owned(), map)));
+    let r = body();
+    ENTRY.with(|e| *e.borrow_mut() = None);
+    TX_SITES.with(|t| t.borrow_mut().clear());
+    r
+}
+
+/// The program ordinal of instruction `i` if `g` is the entrypoint being modeled.
+fn entry_site(g: FunctionValue, i: InstructionValue) -> Option<usize> {
+    use inkwell::values::AsValueRef;
+    ENTRY.with(|e| {
+        let e = e.borrow();
+        let (name, map) = e.as_ref()?;
+        if g.get_name().to_string_lossy() != *name {
+            return None;
+        }
+        map.get(&(i.as_value_ref() as usize)).copied()
+    })
+}
+
+/// Tag every not-yet-tagged `balance()` read in `e` with the program point it
+/// happens at (so it reads the ledger state after the transfers before it).
+fn annotate_at(e: &Expr, site: usize) -> Expr {
+    match e {
+        Expr::Opaque(l, xs) if (l == "@call:balance" && xs.len() == 2) || (l.starts_with("@slot:") && xs.len() == 1) => {
+            let mut v: Vec<Expr> = xs.iter().map(|x| annotate_at(x, site)).collect();
+            v.push(Expr::Opaque("@at".into(), vec![Expr::Const(site as i64)]));
+            Expr::Opaque(l.clone(), v)
+        }
+        Expr::Bin(o, a, b) => Expr::Bin(*o, Box::new(annotate_at(a, site)), Box::new(annotate_at(b, site))),
+        Expr::VecGet(a, b) => Expr::VecGet(Box::new(annotate_at(a, site)), Box::new(annotate_at(b, site))),
+        Expr::Opaque(l, xs) => Expr::Opaque(l.clone(), xs.iter().map(|x| annotate_at(x, site)).collect()),
+        other => other.clone(),
+    }
+}
+
+/// The ledger state a read at program point `site` sees: after the transfers
+/// before it (`st.pre` when none).
+fn state_at(site: usize) -> String {
+    let n = TX_SITES.with(|t| t.borrow().iter().filter(|&&s| s < site).count());
+    if n == 0 { "st.pre".into() } else { format!("s{n}") }
+}
+
+/// Can block `from` reach block `target` over the CFG?
+fn reaches(from: usize, target: usize, cfg: &Cfg) -> bool {
+    let mut seen = vec![false; cfg.succ.len()];
+    let mut work = vec![from];
+    while let Some(b) = work.pop() {
+        if b == target {
+            return true;
+        }
+        if std::mem::replace(&mut seen[b], true) {
+            continue;
+        }
+        work.extend(cfg.succ[b].iter().copied());
+    }
+    false
+}
+
+/// The (non-panic) branch conditions block `blk` of `f` executes under: for each
+/// conditional branch that is not a guard (neither edge forces a trap) and whose
+/// one edge reaches `blk` while the other doesn't, that edge's condition.
+fn path_conds<'c>(
+    f: FunctionValue<'c>,
+    cfg: &Cfg<'c>,
+    blk: usize,
+    module: &inkwell::module::Module<'c>,
+    memo: &mut HashMap<String, Option<Expr>>,
+) -> Vec<Expr> {
+    let mut out = vec![];
+    for d in 0..cfg.blocks.len() {
+        let Some(t) = cfg.blocks[d].get_terminator() else { continue };
+        if t.get_opcode() != InstructionOpcode::Br || cfg.succ[d].len() != 2 {
+            continue;
+        }
+        let Some(Operand::Value(c)) = t.get_operand(0) else { continue };
+        if !is_bool(c) {
+            continue;
+        }
+        let (fb, tb) = (cfg.succ[d][0], cfg.succ[d][1]); // [false, true]
+        if forces_trap(cfg.blocks[fb], 6) || forces_trap(cfg.blocks[tb], 6) {
+            continue; // a guard: already a precondition of the step
+        }
+        let ce = fold_rich(simplify(value_expr(c, f, module, memo, 40)));
+        match (reaches(tb, blk, cfg), reaches(fb, blk, cfg)) {
+            (true, false) => out.push(ce),
+            (false, true) => out.push(Expr::Opaque("@not".into(), vec![ce])),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A transfer: (token, from, to, amount), relative to the function it's in.
+type Tx = (Expr, Expr, Expr, Expr);
+/// A storage write: (key slot, value), relative to the function it's in.
+type Wr = (Expr, Expr);
+
+/// The SEP-41 transfers and storage writes `h` performs (transitively), in
+/// program order, over `h`'s params. `site` maps a call/put in `h` to its
+/// ordinal when `h` is the entrypoint (so each event knows where it happens).
+#[allow(clippy::type_complexity)]
+fn effects<'c>(
+    h: FunctionValue<'c>,
+    module: &inkwell::module::Module<'c>,
+    memo: &mut HashMap<String, Option<Expr>>,
+    fuel: u32,
+) -> Vec<(InstructionValue<'c>, Option<Tx>, Option<Wr>)> {
+    let mut out = vec![];
+    if fuel == 0 {
+        return out;
+    }
+    let cfg = Cfg::build(h);
+    for i in all_instrs(h) {
+        let Some(cn) = callee_name(i) else { continue };
+        let op = |k: u32| match i.get_operand(k) { Some(Operand::Value(x)) => Some(x), _ => None };
+        if cn == "call.call" && call_symbol(i).as_deref() == Some("transfer") {
+            let tok = op(0).map(|x| value_expr(x, h, module, memo, 40)).unwrap_or(Expr::Opaque("?".into(), vec![]));
+            let parts: Vec<Expr> = op(2)
+                .map(linmem_vals_ordered)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|x| value_expr(x, h, module, memo, 40))
+                .collect();
+            if parts.len() == 3 {
+                out.push((i, Some((tok, parts[0].clone(), parts[1].clone(), parts[2].clone())), None));
+            }
+            continue;
+        }
+        if cn.contains("put_contract_data") {
+            let dur = op(2).map(durability).unwrap_or_else(|| "?".into());
+            let key = op(0).map(|x| key_expr(x, h, module, memo, 40)).unwrap_or(Expr::Opaque("?".into(), vec![]));
+            let val = op(1).map(|x| value_expr(x, h, module, memo, 40)).unwrap_or(Expr::Opaque("?".into(), vec![]));
+            out.push((i, None, Some((Expr::Opaque(format!("@slot:{dur}"), vec![key]), val))));
+            continue;
+        }
+        let Some(g2) = module.get_function(&cn) else { continue };
+        if g2.count_basic_blocks() == 0 {
+            continue;
+        }
+        for (_, tx, wr) in effects(g2, module, memo, fuel - 1) {
+            let sub = |e: &Expr, memo: &mut HashMap<String, Option<Expr>>| subst_call(e, i, h, &cfg, module, memo, 40);
+            let tx = tx.map(|(a, b, c, d)| (sub(&a, memo), sub(&b, memo), sub(&c, memo), sub(&d, memo)));
+            let wr = wr.map(|(k, v)| (sub(&k, memo), sub(&v, memo)));
+            out.push((i, tx, wr));
+        }
+    }
+    out
+}
+
+/// The rendered Lean body of one entrypoint: threaded transfer states, the post
+/// storage after the writes, the written keys, and the opaque terms used.
+struct RichBody {
+    lets: Vec<String>,
+    post: String,
+    writes: Vec<String>,
+    decls: Vec<String>,
+    key_decls: Vec<String>, // opaque Step → Key terms for unnameable written keys
+    events: Vec<String>,    // human-readable, for the doc comment
+    ret: Option<String>,    // the returned value, when it is a reconstructed scalar
+    ok_guard: Option<String>, // a Result-returning call succeeds only when it returns Ok
+}
+
+/// Build the rich body of entrypoint `f` (call inside `with_entry(f, …)`).
+fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> RichBody {
+    let args = arg_table(f);
+    let kbf = datakey_builder(module);
+    let usage = kbf.map(kb_field_usage);
+    let kb = kbf.zip(usage.as_ref());
+    let segs = rodata_segs(module);
+    let cfg = Cfg::build(f);
+    let fnid: String = f.get_name().to_string_lossy().chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+    let tid = format!("{fnid}_e");
+    let (mut opmap, mut oc, mut decls) = (HashMap::new(), 0usize, vec![]);
+    let evs = with_rich(|| {
+        let mut memo = HashMap::new();
+        let evs = effects(f, module, &mut memo, 6);
+        // each event's program site and path condition (in the entrypoint).
+        evs.into_iter()
+            .map(|(i, tx, wr)| {
+                let site = entry_site(f, i).unwrap_or(0);
+                let conds = i.get_parent().and_then(|b| cfg.bidx(b)).map(|b| path_conds(f, &cfg, b, module, &mut memo)).unwrap_or_default();
+                let fix = |e: Expr| name_slots(&annotate_at(&fold_rich(simplify(e)), site), module, kb, &segs);
+                (site, conds.into_iter().map(|c| name_slots(&c, module, kb, &segs)).collect::<Vec<_>>(),
+                 tx.map(|(a, b, c, d)| (fix(a), fix(b), fix(c), fix(d))),
+                 wr.map(|(k, v)| (fix(k), fix(v))))
+            })
+            .collect::<Vec<_>>()
+    });
+    // every effect (transfer or storage write) is a state; a read sees the
+    // state after the effects before it.
+    TX_SITES.with(|t| *t.borrow_mut() = evs.iter().filter(|e| e.2.is_some() || e.3.is_some()).map(|e| e.0).collect());
+    let cond_str = |cs: &Vec<Expr>, opmap: &mut HashMap<String, String>, oc: &mut usize, decls: &mut Vec<String>| -> Option<String> {
+        if cs.is_empty() {
+            return None;
+        }
+        let parts: Vec<String> = cs
+            .iter()
+            .map(|c| match c {
+                Expr::Opaque(l, x) if l == "@not" && x.len() == 1 => {
+                    lean_cond(&x[0], &args, opmap, oc, decls, &tid).map(|s| format!("¬({s})")).unwrap_or_else(|| "False".into())
+                }
+                c => lean_cond(c, &args, opmap, oc, decls, &tid).unwrap_or_else(|| "False".into()),
+            })
+            .collect();
+        Some(parts.join(" ∧ "))
+    };
+    let (mut lets, mut writes, mut events) = (vec![], vec![], vec![]);
+    let mut key_decls: Vec<String> = vec![];
+    let mut cur = "st.pre".to_string();
+    let mut nstate = 0;
+    for (_site, conds, tx, wr) in &evs {
+        let cs = cond_str(conds, &mut opmap, &mut oc, &mut decls);
+        let next = |x: String, cur: &str| match &cs { Some(c) => format!("if {c} then {x} else {cur}"), None => x };
+        if let Some((tok, from, to, amt)) = tx {
+            let ledger = ledger_term(tok, &args, &mut opmap, &mut oc, &mut decls, &tid).unwrap_or_else(|| format!("\"Token?{nstate}\""));
+            let (fr, tr, ar) = (
+                lean_guard_term(from, &args, &mut opmap, &mut oc, &mut decls, &tid),
+                lean_guard_term(to, &args, &mut opmap, &mut oc, &mut decls, &tid),
+                lean_guard_term(amt, &args, &mut opmap, &mut oc, &mut decls, &tid),
+            );
+            nstate += 1;
+            lets.push(format!("let s{nstate} := {}", next(format!("xfer {ledger} {cur} ({fr}) ({tr}) ({ar})"), &cur)));
+            for p in [&fr, &tr] {
+                let k = format!(".entry {ledger} ({p})");
+                if !writes.contains(&k) {
+                    writes.push(k);
+                }
+            }
+            let ledger_show = if ledger.contains("Token?") { format!("{ledger} = {}", render_expr(tok, &args)) } else { ledger.clone() };
+            events.push(format!("transfer {ledger_show}: {} -> {} : {}{}", render_expr(from, &args), render_expr(to, &args), render_expr(amt, &args),
+                cs.as_ref().map(|c| format!("   [when {c}]")).unwrap_or_default()));
+            cur = format!("s{nstate}");
+        }
+        if let Some((k, v)) = wr {
+            let key = match k {
+                Expr::Slot(n, _) => Some(format!(".var \"{n}\"")),
+                Expr::Opaque(l, x) if l.starts_with("@map:") && !x.is_empty() => Some(format!(
+                    ".entry \"{}\" ({})",
+                    &l["@map:".len()..],
+                    lean_guard_term(&x[0], &args, &mut opmap, &mut oc, &mut decls, &tid)
+                )),
+                _ => None,
+            };
+            // an unnameable key is still a write — to SOME key (opaque), never dropped.
+            let key = match key {
+                Some(k) => k,
+                None => {
+                    oc += 1;
+                    let nm = format!("{tid}_k{oc}");
+                    key_decls.push(nm.clone());
+                    format!("({nm} st)")
+                }
+            };
+            let val = lean_guard_term(v, &args, &mut opmap, &mut oc, &mut decls, &tid);
+            events.push(format!("write {}{} := {}", render_expr(k, &args), cs.as_ref().map(|c| format!(" [when {c}]")).unwrap_or_default(), render_expr(v, &args)));
+            if !writes.contains(&key) {
+                writes.push(key.clone());
+            }
+            nstate += 1;
+            lets.push(format!("let s{nstate} := {}", next(format!("({cur}).set ({key}) ({val})"), &cur)));
+            cur = format!("s{nstate}");
+        }
+    }
+    let post = cur;
+    // the returned value (a scalar Val), read in the final state.
+    let ret = with_rich(|| {
+        let mut memo = HashMap::new();
+        let rets: Vec<InstructionValue> = all_instrs(f).into_iter().filter(|i| i.get_opcode() == InstructionOpcode::Return).collect();
+        let mut vals: Vec<Expr> = vec![];
+        for r in &rets {
+            let Some(Operand::Value(v)) = r.get_operand(0) else { return None };
+            let site = entry_site(f, *r).unwrap_or(usize::MAX);
+            let e = name_slots(&annotate_at(&fold_rich(simplify(value_expr(v, f, module, &mut memo, 40))), site), module, kb, &segs);
+            if !vals.contains(&e) {
+                vals.push(e);
+            }
+        }
+        match vals.as_slice() {
+            [e] => Some(e.clone()),
+            _ => None,
+        }
+    });
+    // a Result-returning entrypoint: the Ok condition is a guard of the step.
+    let ok_guard = ret
+        .as_ref()
+        .and_then(ok_condition)
+        .and_then(|c| lean_cond(&c, &args, &mut opmap, &mut oc, &mut decls, &tid));
+    let ret = ret
+        .filter(|e| !matches!(e, Expr::Opaque(l, _) if l == "@vec" || l == "big") && (expr_has_named(e) || ok_guard.is_some()))
+        .map(|e| lean_guard_term(&e, &args, &mut opmap, &mut oc, &mut decls, &tid));
+    RichBody { lets, post, writes, decls: std::mem::take(&mut decls), key_decls, events, ret, ok_guard }
+}
+
 /// Emit a relational abstraction of the contract: one `Step → Prop` per
 /// entrypoint, in the style of stellar-lean-playground's `SorobanAmm.lean`.
 /// RECOVERED exactly from the bytecode: the entrypoints + their ABI args, the
@@ -2855,27 +4584,39 @@ fn emit_lean_model(entries: &[ModelEntry]) {
     let san = |s: &str| s.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect::<String>();
     println!("-- Auto-emitted by stellar-diver: a relational abstraction of the contract,");
     println!("-- one `Step → Prop` per entrypoint, in the style of SorobanAmm.lean.");
-    println!("-- RECOVERED from bytecode: entrypoints + ABI args, SEP-41 transfer directions");
-    println!("-- (traced through the fastcc helpers), and the storage slots each writes/reads");
-    println!("-- (real DataKey names). GUARDS: every entrypoint's auth gate (require_auth) and");
-    println!("-- its panic conditions are recovered generically; a gate is shown as a relation");
-    println!("-- when a side resolves to an argument or storage slot, plus the constant-product");
-    println!("-- trap when present. UNINTERPRETED (nonlinear fee/share math): transfer amounts,");
-    println!("-- stored values, and gate operands that round-trip through the i128 shadow stack");
-    println!("-- (naming those needs frame-memory analysis), shown as `opaque` Step terms.\n");
+    println!("--");
+    println!("-- RECONSTRUCTED from the bytecode, in terms of call arguments, storage slots");
+    println!("-- (real DataKey names) and token ledgers:");
+    println!("--   * effects, in program order, as a chain of states s1, s2, …: SEP-41");
+    println!("--     transfers (`xfer`: ledger, from, to, amount) and storage writes, each");
+    println!("--     under the (non-panic) branch condition it runs in;");
+    println!("--   * every read sees the state at its program point (a balance read after a");
+    println!("--     transfer reads the post-transfer ledger; a slot read after a write");
+    println!("--     reads the write — e.g. a token's self-transfer nets to zero);");
+    println!("--   * guards: require_auth, every panic condition and `Err` return, as the");
+    println!("--     condition to pass.");
+    println!("-- Values are rebuilt through i128 helper routines (__muloti4 / __divti3), out-");
+    println!("-- pointer returns and by-reference closure captures on the wasm shadow stack.");
+    println!("--");
+    println!("-- STILL `opaque`: values from loops (e.g. an integer sqrt), composite keys,");
+    println!("-- tuple returns, and whatever the reconstruction could not resolve.");
+    println!("-- ASSUMES token ledgers are keyed by the storage slot holding the token");
+    println!("-- address (`\"TokenA\"`), i.e. distinct slots hold distinct tokens.");
+    println!("-- Reads/writes inside one helper call are ordered at the call's position.\n");
     println!("namespace Contract\n");
     println!("abbrev Addr := Int\n");
     println!("inductive Key where");
     println!("  | var   (name : String)");
     println!("  | entry (map : String) (k : Addr)");
-    println!("  deriving DecidableEq\n");
+    println!("  deriving DecidableEq, Inhabited\n");
     println!("abbrev Storage := Key → Int");
     println!("def Storage.set (s : Storage) (k : Key) (v : Int) : Storage := fun k' => if k' = k then v else s k'\n");
     println!("structure Call where");
     println!("  fn     : String");
     println!("  caller : Addr");
     println!("  arg    : String → Int   -- numeric args by name");
-    println!("  argA   : String → Addr  -- address args by name\n");
+    println!("  argA   : String → Addr  -- address args by name");
+    println!("  signed : Addr → Prop    -- addresses that authorized the call (require_auth)\n");
     println!("structure Step where");
     println!("  call   : Call");
     println!("  pre    : Storage");
@@ -2902,7 +4643,12 @@ fn emit_lean_model(entries: &[ModelEntry]) {
         // signature comment
         let sig: Vec<String> = e.args.iter().map(|(n, t)| format!("{n}: {t}")).collect();
         println!("/-- `{}({})`", e.name, sig.join(", "));
-        if e.transfers.is_empty() {
+        if let Some(rb) = &e.rich {
+            println!("    effects (reconstructed, in program order):");
+            for ev in &rb.events {
+                println!("      {ev}");
+            }
+        } else if e.transfers.is_empty() {
             println!("    transfers: (none recovered)");
         } else {
             println!("    transfers (direction recovered; amount uninterpreted):");
@@ -2910,7 +4656,7 @@ fn emit_lean_model(entries: &[ModelEntry]) {
                 println!("      {}: {from} -> {to}", e.tokens[k]);
             }
         }
-        if !e.writes.is_empty() {
+        if e.rich.is_none() && !e.writes.is_empty() {
             let ws: Vec<String> = e.writes.iter().map(|(s, _)| s.clone()).collect();
             println!("    writes storage: {}", ws.join(", "));
         }
@@ -2920,23 +4666,34 @@ fn emit_lean_model(entries: &[ModelEntry]) {
             if let Some(a) = &e.auth {
                 println!("      auth: caller signed as `{a}` (require_auth)");
             }
+            for a in &e.more_auths {
+                println!("      auth: `{a}` also authorized the call (require_auth)");
+            }
             for g in &e.guards {
                 println!("      gate: {}", g.comment);
             }
         }
         println!("-/");
-        // opaque recovered-but-uninterpreted terms (transfer amounts, stored values)
-        for k in 0..e.transfers.len() {
-            println!("opaque {fn_id}_amt{k} : Step → Int");
+        // opaque Step-terms for anything not reconstructed.
+        if let Some(rb) = &e.rich {
+            for d in &rb.decls {
+                println!("opaque {d} : Step → Int");
+            }
+            for d in &rb.key_decls {
+                println!("opaque {d} : Step → Key");
+            }
+        } else {
+            for k in 0..e.transfers.len() {
+                println!("opaque {fn_id}_amt{k} : Step → Int");
+            }
+            for (slot, _) in &e.writes {
+                println!("opaque {fn_id}_v_{} : Step → Int", san(slot));
+            }
         }
-        // opaque Step-terms the recovered guards name (unresolved operands).
         for d in &e.gdecls {
             println!("opaque {d} : Step → Int");
         }
-        for (slot, _) in &e.writes {
-            println!("opaque {fn_id}_v_{} : Step → Int", san(slot));
-        }
-        if e.returns {
+        if e.returns && e.rich.as_ref().and_then(|rb| rb.ret.as_ref()).is_none() {
             println!("opaque {fn_id}_ret : Step → Int");
         }
         // the Step -> Prop model
@@ -2944,7 +4701,12 @@ fn emit_lean_model(entries: &[ModelEntry]) {
         println!("  let c := st.call.caller");
         // thread the transfers
         let mut cur = "st.pre".to_string();
-        for (k, (from, to)) in e.transfers.iter().enumerate() {
+        if let Some(rb) = &e.rich {
+            for l in &rb.lets {
+                println!("  {l}");
+            }
+        }
+        for (k, (from, to)) in e.transfers.iter().enumerate().filter(|_| e.rich.is_none()) {
             let next = format!("s{}", k + 1);
             println!(
                 "  let {next} := xfer \"{}\" {cur} {from} {to} ({fn_id}_amt{k} st)",
@@ -2964,13 +4726,25 @@ fn emit_lean_model(entries: &[ModelEntry]) {
         for (slot, mapping) in &e.writes {
             post = format!("({post}.set ({}) ({fn_id}_v_{} st))", key_term(slot, *mapping), san(slot));
         }
-        let writes_list: Vec<String> = e.writes.iter().map(|(s, m)| key_term(s, *m)).collect();
-        let ret = if e.returns { format!("{fn_id}_ret st") } else { "0".to_string() };
+        let mut writes_list: Vec<String> = e.writes.iter().map(|(s, m)| key_term(s, *m)).collect();
+        if let Some(rb) = &e.rich {
+            post = rb.post.clone();
+            writes_list = rb.writes.clone();
+        }
+        let rich_ret = e.rich.as_ref().and_then(|rb| rb.ret.clone());
+        let ret = match (&rich_ret, e.returns) {
+            (Some(r), true) => r.clone(),
+            (_, true) => format!("{fn_id}_ret st"),
+            _ => "0".to_string(),
+        };
         println!("  st.call.fn = \"{}\" ∧", e.name);
         println!("  c ≠ pool ∧");
         // recovered transition guards: auth, then the constant-product check.
         if let Some(a) = &e.auth {
             println!("  c = st.call.argA \"{a}\" ∧   -- require_auth");
+        }
+        for a in &e.more_auths {
+            println!("  st.call.signed (st.call.argA \"{a}\") ∧   -- require_auth");
         }
         if e.inv {
             println!("  invProduct st.pre ≤ invProduct st.post ∧   -- constant-product trap");
@@ -2978,6 +4752,9 @@ fn emit_lean_model(entries: &[ModelEntry]) {
         // the recovered panic gates as pass conditions over args + storage.
         for g in &e.guards {
             println!("  {} ∧   -- gate", g.lean);
+        }
+        if let Some(okg) = e.rich.as_ref().and_then(|rb| rb.ok_guard.as_ref()) {
+            println!("  ({okg}) ∧   -- returns Ok (an Err return fails the call)");
         }
         println!("  st.post = {post} ∧");
         println!("  st.writes = [{}] ∧", writes_list.join(", "));
@@ -4111,10 +5888,16 @@ fn main() {
                 .unwrap_or(false);
             let auth = entry_auth(f);
             let inv = has_product_invariant_trap(f);
-            let gset = entry_guards(f, &module);
+            let (rb, gset) = with_entry(f, || {
+                let rb = rich_body(f, &module);
+                let gs = entry_guards(f, &module);
+                (rb, gs)
+            });
             let (guards, gdecls) = (gset.guards, gset.decls);
+            let rich = (!rb.lets.is_empty() || !rb.writes.is_empty() || rb.ret.is_some()).then_some(rb);
             model_entries.push(ModelEntry {
-                name, args, transfers, tokens, writes, returns, auth, inv, guards, gdecls,
+                name, args, transfers, tokens, writes, returns, auth, inv, guards, gdecls, rich,
+                more_auths: entry_auths(f).into_iter().skip(1).collect(),
             });
             continue;
         }
@@ -4312,6 +6095,63 @@ m:
   ret i64 %p
 }
 "#;
+
+    /// A callee writing through a frame pointer must clobber that slot for the
+    /// sound forwarding (no stale `store 0`); rich mode resolves the load to the
+    /// callee's store; a 4-byte write next to a slot does not clobber it.
+    #[test]
+    fn outpointer_clobber_and_resolution() {
+        let ctx = Context::create();
+        let m = with(
+            &ctx,
+            r#"
+define void @w(i64 %p) {
+entry:
+  %a = trunc i64 %p to i32
+  %q = inttoptr i32 %a to ptr
+  store i64 7, ptr %q
+  ret void
+}
+define void @flag(i64 %p) {
+entry:
+  %a = trunc i64 %p to i32
+  %q = inttoptr i32 %a to ptr
+  store i32 1, ptr %q
+  ret void
+}
+define i64 @f() {
+entry:
+  %frame = alloca [64 x i8]
+  %s0 = getelementptr inbounds i8, ptr %frame, i32 16
+  store i64 0, ptr %s0
+  %pi = ptrtoint ptr %s0 to i32
+  %fp = zext i32 %pi to i64
+  call void @w(i64 %fp)
+  %v = load i64, ptr %s0
+  %s1 = getelementptr inbounds i8, ptr %frame, i32 48
+  store i64 5, ptr %s1
+  %s2 = getelementptr inbounds i8, ptr %frame, i32 44
+  %pj = ptrtoint ptr %s2 to i32
+  %fq = zext i32 %pj to i64
+  call void @flag(i64 %fq)
+  %u = load i64, ptr %s1
+  %r = add i64 %v, %u
+  ret i64 %r
+}
+"#,
+        );
+        let f = func(&m, "f");
+        let load = |n: &str| all_instrs(f).into_iter().find(|i| fmt(*i).starts_with(&format!("%{n} = load"))).unwrap();
+        let (v, u) = (load("v"), load("u"));
+        assert!(forward_load(v, f).is_none(), "the call through %fp clobbers the stale store 0");
+        let fwd = forward_load(u, f).map(fmt).unwrap_or_default();
+        assert!(fwd.contains('5'), "a 4-byte write at +44 doesn't clobber the slot at +48: {fwd}");
+        // %v as a value: the add's first operand.
+        let add = all_instrs(f).into_iter().find(|i| i.get_opcode() == InstructionOpcode::Add).unwrap();
+        let Some(Operand::Value(ve)) = add.get_operand(0) else { panic!("no %v operand") };
+        let e = with_rich(|| value_expr(ve, f, &m, &mut HashMap::new(), 20));
+        assert!(e == Expr::Const(7), "rich mode resolves the load to the callee's store");
+    }
 
     #[test]
     fn control_dep_diamond() {
