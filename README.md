@@ -190,21 +190,3 @@ Ultimately, we find a counterexample, which we can analyze to discover that no c
 | [`examples/`](examples) | The contracts used throughout: the soroban-examples builds (`03d42aa`) and Comet from mainnet. | WASM |
 | [`tests/`](tests) | `pipeline.py` (upload → model → `answer` → sandbox → vibe) and `permalinks.py` (every link in this README opens and checks). | Python |
 
-## Running
-
-```
-./soroprove setup              # lifter, Lean libraries and models, editor (+ --runtime for the runtime)
-./soroprove serve              # http://localhost:8765: drop a .wasm, build invariants, prove
-./soroprove test [--vibe]      # everything below; --vibe adds a live agent run
-./soroprove import X.wasm      # model a contract without the editor
-```
-
-Requirements: Rust and LLVM 18 (`lifter/shell.nix` provides them under Nix), [elan](https://github.com/leanprover/elan) (Lean 4.35 for `prover/`, 4.30 for `lifter/prove/` and `runtime/`, fetched automatically), Python 3, Node, and for vibe the [`claude`](https://claude.com/claude-code) CLI, logged in: agents run on the subscription of whoever runs the server, so behind a proxy (or anywhere public) start it with `VIBE_TOKEN=…`, which uploads and vibe jobs then require.
-
-## What `./soroprove test` checks
-
-1. **Models.** Every example's emitted model typechecks with its hand proofs (`lifter/lean-examples/check.sh`).
-2. **Locked invariants.** For each of the 8 contracts, the reference agent proofs settle every locked invariant (proved, or disproved by a kernel-checked counterexample), and nine standard ways of cheating are rejected (`lifter/prove/tests/run.sh`).
-3. **The pipeline.** A WASM uploaded through the editor's server is lifted, modelled and built; `answer` proves a per-call property and the cross-transaction solvency invariant and declines a false claim; the server's check rejects `sorry`, new axioms, `native_decide`, `#eval`, a weaker statement and a redefined name; with `--vibe`, an agent refutes the false claim and the counterexample comes back as a concrete call (`tests/pipeline.py`).
-4. **Permalinks.** Every link in this README opens: its blocks exist, print to Lean, and check (`tests/permalinks.py`).
-5. **The runtime** (after `setup --runtime`). 200 random liquidity-pool calls replayed on the Lean host give byte-identical results, ledger changes, events and CPU/memory metering to the production host; and every real call is admitted by the emitted model (`lifter/prove/conform/`).
