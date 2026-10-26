@@ -8,8 +8,8 @@
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage unavailable */ } },
   };
 
-  let contract = store.get('pg.contract', 'amm');
-  if (!V.contracts[contract]) contract = 'amm';
+  let contract = store.get('pg.contract', Object.keys(V.contracts)[0]);
+  if (!V.contracts[contract]) contract = Object.keys(V.contracts)[0];
   let mode = store.get('pg.mode', 'lean');
   const SPECS = Object.fromEntries(Object.entries(V.contracts).map(([k, C]) => [k, L.buildSpecs(k, C)]));
   const specs = () => SPECS[contract];
@@ -113,7 +113,7 @@
     })).filter((c) => c.contents.length);
     const examples = [];
     for (const ex of C().examples) {
-      try { examples.push({ kind: 'block', ...L.parseTheorem(S, contract, C(), ex) }); }
+      try { examples.push({ kind: 'block', ...(typeof ex === 'string' ? L.parseTheorem(S, contract, C(), ex) : ex) }); }
       catch (e) { console.warn('example', ex, e); }
     }
     cats.push({ kind: 'category', name: 'Examples', colour: '#D65CA8', contents: examples });
@@ -136,7 +136,8 @@
     const S = specs(), C0 = C();
     if (!C0.examples.length)
       return { blocks: { languageVersion: 0, blocks: [{ type: `${contract}.theorem`, x: 40, y: 40, fields: { NAME: 'my_question' } }] } };
-    const b = L.parseTheorem(S, contract, C0, C0.examples[0]);
+    const ex = C0.examples[0];
+    const b = typeof ex === 'string' ? L.parseTheorem(S, contract, C0, ex) : ex;
     return { blocks: { languageVersion: 0, blocks: [{ ...b, x: 40, y: 40 }] } };
   }
 
