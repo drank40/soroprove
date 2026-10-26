@@ -1775,6 +1775,580 @@ fn linmem_dest(i: InstructionValue) -> Option<Option<((String, i64), i64)>> {
     })
 }
 
+/// The `#[contracttype]` structs of the contract spec: name -> (field, type).
+fn spec_structs(module: &inkwell::module::Module) -> HashMap<String, Vec<(String, String)>> {
+    let mut out = HashMap::new();
+    for node in module.get_global_metadata("soroban.spec") {
+        for v in node.get_node_values().unwrap_or_default() {
+            let BasicMetadataValueEnum::MetadataValue(mv) = v else { continue };
+            let Some(raw) = mv.get_string_value() else { continue };
+            let line = String::from_utf8_lossy(raw).into_owned();
+            let Some(rest) = line.strip_prefix("struct ") else { continue };
+            let Some((name, body)) = rest.split_once('{') else { continue };
+            let fields = body.trim_end_matches('}').split(',').filter_map(|f| {
+                let (n, t) = f.split_once(':')?;
+                Some((n.trim().to_string(), t.trim().to_string()))
+            });
+            out.insert(name.trim().to_string(), fields.collect());
+        }
+    }
+    out
+}
+
+/// The Val tags a value of spec type `ty` can carry (None: not tracked).
+fn val_tags(ty: &str, structs: &HashMap<String, Vec<(String, String)>>) -> Option<Vec<i64>> {
+    Some(match ty {
+        "bool" => vec![0, 1],
+        "u32" => vec![4],
+        "i32" => vec![5],
+        "u64" => vec![6, 64],
+        "i64" => vec![7, 65],
+        "u128" => vec![10, 68],
+        "i128" => vec![11, 69],
+        "Address" => vec![77],
+        "MuxedAddress" => vec![77, 78],
+        "String" => vec![73],
+        "Bytes" => vec![72],
+        t if t.starts_with("BytesN<") => vec![72],
+        t if t.starts_with("Vec<") => vec![75],
+        t if t.starts_with("Map<") => vec![76],
+        t if structs.contains_key(t) => vec![76],
+        _ => return None,
+    })
+}
+
+/// In a successful run every argument has its spec type (the SDK's entrypoint
+/// wrapper traps when one fails to convert), and so do the fields of a struct
+/// argument: their Val-tag tests are decided. Folds the decided booleans.
+fn assume_arg_types(e: &Expr, args: &Args, structs: &HashMap<String, Vec<(String, String)>>) -> Expr {
+    fn excludes_all(xs: &[Expr], args: &Args, structs: &HashMap<String, Vec<(String, String)>>) -> bool {
+        let mut ne: Vec<(&Expr, i64)> = vec![];
+        for x in xs {
+            if let Expr::Opaque(l, v) = x {
+                if let (true, [Expr::Opaque(a, ax), Expr::Const(k)]) = (l == "ICmp_NE", v.as_slice()) {
+                    if a == "And" && ax.len() == 2 && ax[1] == Expr::Const(255) {
+                        ne.push((&ax[0], *k));
+                    }
+                }
+            }
+        }
+        ne.iter().any(|(x, _)| {
+            ty(x, args, structs).and_then(|t| val_tags(&t, structs))
+                .is_some_and(|tags| tags.iter().all(|t| ne.iter().any(|(y, k)| y == x && k == t)))
+        })
+    }
+    fn ty(e: &Expr, args: &Args, structs: &HashMap<String, Vec<(String, String)>>) -> Option<String> {
+        match e {
+            Expr::Param(i) => args.get(*i).map(|a| a.2.clone()).filter(|t| !t.is_empty()),
+            Expr::Opaque(l, xs) if l.starts_with("@field:") && xs.len() == 1 => {
+                let s = ty(&xs[0], args, structs)?;
+                structs.get(&s)?.iter().find(|(f, _)| *f == l["@field:".len()..]).map(|(_, t)| t.clone())
+            }
+            _ => None,
+        }
+    }
+    let t = Expr::Opaque("@true".into(), vec![]);
+    let f = Expr::Opaque("@false".into(), vec![]);
+    let is = |x: &Expr, n: &str| matches!(x, Expr::Opaque(l, v) if l == n && v.is_empty());
+    let boolish = |x: &Expr| matches!(x, Expr::Opaque(l, _) if l.starts_with("ICmp_") || ["@true", "@false", "@not", "@and", "@or"].contains(&l.as_str()));
+    let rec = |x: &Expr| assume_arg_types(x, args, structs);
+    match e {
+        Expr::Opaque(l, xs) if (l == "ICmp_EQ" || l == "ICmp_NE") && xs.len() == 2 => {
+            if let (Expr::Opaque(a, ax), Expr::Const(k)) = (&xs[0], &xs[1]) {
+                if a == "And" && ax.len() == 2 && ax[1] == Expr::Const(255) {
+                    if let Some(tags) = ty(&ax[0], args, structs).and_then(|ty| val_tags(&ty, structs)) {
+                        let eq = if tags == [*k] { Some(true) } else if !tags.contains(k) { Some(false) } else { None };
+                        if let Some(eq) = eq {
+                            return if eq == (l == "ICmp_EQ") { t } else { f };
+                        }
+                    }
+                }
+            }
+            Expr::Opaque(l.clone(), xs.iter().map(rec).collect())
+        }
+        Expr::Opaque(l, xs) => {
+            let xs: Vec<Expr> = xs.iter().map(rec).collect();
+            match (l.as_str(), xs.as_slice()) {
+                ("@not", [x]) if is(x, "@true") => f,
+                ("@not", [x]) if is(x, "@false") => t,
+                ("@and", _) if xs.iter().any(|x| is(x, "@false")) => f,
+                // `tag ≠ a ∧ tag ≠ b ∧ …` ruling out every tag the type allows.
+                ("@and", _) if excludes_all(&xs, args, structs) => f,
+                ("@or", _) if xs.iter().any(|x| is(x, "@true")) => t,
+                ("@and" | "@or", _) => {
+                    let unit = if l == "@and" { "@true" } else { "@false" };
+                    let rest: Vec<Expr> = xs.iter().filter(|x| !is(x, unit)).cloned().collect();
+                    match rest.len() {
+                        0 => Expr::Opaque(unit.into(), vec![]),
+                        1 => rest.into_iter().next().unwrap(),
+                        _ => Expr::Opaque(l.clone(), rest),
+                    }
+                }
+                // i1 bitwise and/or of decided tests.
+                ("And", [a, b]) if boolish(a) && boolish(b) && (is(a, "@false") || is(b, "@false")) => f,
+                ("And", [a, b]) if boolish(a) && boolish(b) && is(a, "@true") => b.clone(),
+                ("And", [a, b]) if boolish(a) && boolish(b) && is(b, "@true") => a.clone(),
+                ("Or", [a, b]) if boolish(a) && boolish(b) && (is(a, "@true") || is(b, "@true")) => t,
+                ("Or", [a, b]) if boolish(a) && boolish(b) && is(a, "@false") => b.clone(),
+                ("Or", [a, b]) if boolish(a) && boolish(b) && is(b, "@false") => a.clone(),
+                ("Select", [c, a, _]) if is(c, "@true") => a.clone(),
+                ("Select", [c, _, b]) if is(c, "@false") => b.clone(),
+                _ => Expr::Opaque(l.clone(), xs),
+            }
+        }
+        Expr::Bin(o, a, b) => Expr::Bin(*o, Box::new(rec(a)), Box::new(rec(b))),
+        Expr::VecGet(a, b) => Expr::VecGet(Box::new(rec(a)), Box::new(rec(b))),
+        other => other.clone(),
+    }
+}
+
+thread_local! {
+    /// Facts every successful run of the entrypoint satisfies: `(e, is_eq, k)`
+    /// for `e = k` / `e ≠ k`, from the unconditional panic guards.
+    static FACTS: std::cell::RefCell<Vec<(usize, (Expr, bool, i64))>> = const { std::cell::RefCell::new(vec![]) };
+    /// The guard block being stated (its own fact must not simplify it away).
+    static EXCLUDE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Simplify `e` under the entrypoint's FACTS. A value fact `X = k` / `X ≠ k`
+/// decides tests on X and pins X; `X ≠ k` for an if-chain `Select(c, k, Y)`
+/// also says `c` is false (and `Y ≠ k`) — e.g. a decode helper's error result,
+/// which the caller panics on, rules out the error paths. Boolean facts are
+/// split (`¬a`, `a ∧ b`) and the whole set closed under simplification.
+fn entry_fact_list() -> Vec<(Expr, bool, i64)> {
+    let ex = EXCLUDE.with(|x| x.get());
+    FACTS.with(|f| f.borrow().iter().filter(|(b, _)| Some(*b) != ex).map(|(_, x)| x.clone()).collect())
+}
+
+fn apply_facts(e: &Expr) -> Expr {
+    let raw = entry_fact_list();
+    simplify_under(e, &raw, true)
+}
+
+/// `e` simplified under `raw` facts; `by_state` equates reads of a key at
+/// points that see the same state (entry level), else reads match exactly.
+fn simplify_under(e: &Expr, raw: &[(Expr, bool, i64)], by_state: bool) -> Expr {
+    if raw.is_empty() {
+        return e.clone();
+    }
+    BY_STATE.with(|b| b.set(by_state));
+    let facts = close_facts(raw);
+    let mut cur = e.clone();
+    for _ in 0..4 {
+        let next = fold_bools(&facts_go(&cur, &facts));
+        if next == cur {
+            break;
+        }
+        cur = next;
+    }
+    cur
+}
+
+/// `e` assuming the conditions `cs` (and the entrypoint's facts).
+fn assuming(e: &Expr, cs: &[(Expr, bool)]) -> Expr {
+    if cs.is_empty() {
+        return e.clone();
+    }
+    let raw = entry_fact_list();
+    let facts = close_facts_with(&raw, cs);
+    let mut cur = e.clone();
+    for _ in 0..4 {
+        let next = fold_bools(&facts_go(&cur, &facts));
+        if next == cur {
+            break;
+        }
+        cur = next;
+    }
+    cur
+}
+
+/// Contextual simplification: in `Select(c, a, b)` the arm `a` assumes `c` and
+/// `b` assumes `¬c`; each conjunct of an `@and` assumes the ones before it.
+fn ctx_simplify(e: &Expr) -> Expr {
+    fn go(e: &Expr, cs: &mut Vec<(Expr, bool)>, budget: &mut usize) -> Expr {
+        if *budget == 0 {
+            return e.clone();
+        }
+        *budget -= 1;
+        match e {
+            Expr::Opaque(l, v) if l == "Select" && v.len() == 3 => {
+                let c = go(&v[0], cs, budget);
+                let c = assuming(&c, cs);
+                cs.push((c.clone(), true));
+                let a = assuming(&go(&v[1], cs, budget), cs);
+                cs.pop();
+                cs.push((c.clone(), false));
+                let b = assuming(&go(&v[2], cs, budget), cs);
+                cs.pop();
+                fold_bools(&Expr::Opaque("Select".into(), vec![c, a, b]))
+            }
+            Expr::Opaque(l, v) if l == "@and" => {
+                let n = cs.len();
+                let mut out = vec![];
+                for x in v {
+                    let x = assuming(&go(x, cs, budget), cs);
+                    cs.push((x.clone(), true));
+                    out.push(x);
+                }
+                cs.truncate(n);
+                fold_bools(&Expr::Opaque("@and".into(), out))
+            }
+            Expr::Opaque(l, v) => Expr::Opaque(l.clone(), v.iter().map(|x| go(x, cs, budget)).collect()),
+            Expr::Bin(o, a, b) => Expr::Bin(*o, Box::new(go(a, cs, budget)), Box::new(go(b, cs, budget))),
+            Expr::VecGet(a, b) => Expr::VecGet(Box::new(go(a, cs, budget)), Box::new(go(b, cs, budget))),
+            e => e.clone(),
+        }
+    }
+    if !has_label(e, "Select") && !has_label(e, "@and") {
+        return e.clone();
+    }
+    go(e, &mut vec![], &mut 400)
+}
+
+/// Facts as (normalized expr, value): a boolean fact `(c, 1|0)` or a value fact.
+struct Facts {
+    vals: Vec<(Expr, bool, i64)>, // (x, is_eq, k): x = k / x ≠ k
+    bools: Vec<(Expr, bool)>,      // (c, holds)
+}
+
+thread_local! {
+    static BY_STATE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Reads of one key at points that see the same state are the same value.
+fn norm_at(e: &Expr) -> Expr {
+    if !BY_STATE.with(|b| b.get()) {
+        return e.clone();
+    }
+    let st = |id: usize| {
+        let at = path_of(id);
+        TX_SITES.with(|t| t.borrow().iter().filter(|&&s| path_of(s) < at).count()) as i64
+    };
+    match e {
+        Expr::Slot(n, t) if *t > 0 => Expr::Slot(n.clone(), st(*t - 1) as usize + 1),
+        Expr::Opaque(l, xs) if l == "@at" => match xs.first() {
+            Some(Expr::Const(id)) => Expr::Opaque("@at".into(), vec![Expr::Const(st(*id as usize))]),
+            _ => e.clone(),
+        },
+        Expr::Opaque(l, xs) => Expr::Opaque(l.clone(), xs.iter().map(norm_at).collect()),
+        Expr::Bin(o, a, b) => Expr::Bin(*o, Box::new(norm_at(a)), Box::new(norm_at(b))),
+        Expr::VecGet(a, b) => Expr::VecGet(Box::new(norm_at(a)), Box::new(norm_at(b))),
+        e => e.clone(),
+    }
+}
+
+fn close_facts(raw: &[(Expr, bool, i64)]) -> Facts {
+    close_facts_with(raw, &[])
+}
+
+fn close_facts_with(raw: &[(Expr, bool, i64)], bools: &[(Expr, bool)]) -> Facts {
+    let mut fs = Facts { vals: vec![], bools: vec![] };
+    let mut todo: Vec<(Expr, bool, i64)> = raw.iter().map(|(e, q, k)| (norm_at(e), *q, *k)).collect();
+    let mut btodo: Vec<(Expr, bool)> = bools.iter().map(|(e, h)| (norm_at(e), *h)).collect();
+    for _round in 0..8 {
+        let mut changed = false;
+        // revisit what is known with what was learnt since.
+        btodo.extend(std::mem::take(&mut fs.bools));
+        todo.extend(std::mem::take(&mut fs.vals));
+        let before = (todo.clone(), btodo.clone());
+        for (x, q, k) in std::mem::take(&mut todo) {
+            let x = fold_bools(&facts_go(&x, &fs));
+            if !fs.vals.contains(&(x.clone(), q, k)) {
+                // an if-chain known = k: arms that are other constants are not taken.
+                if q {
+                    let mut cur = &x;
+                    while let Expr::Opaque(l, v) = cur {
+                        if l != "Select" || v.len() != 3 {
+                            break;
+                        }
+                        let other = |y: &Expr| matches!(y, Expr::Const(j) if *j != k);
+                        if other(&v[1]) {
+                            btodo.push((v[0].clone(), false));
+                            cur = &v[2];
+                        } else if other(&v[2]) {
+                            btodo.push((v[0].clone(), true));
+                            cur = &v[1];
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                // an if-chain known ≠ k: the conditions of its k arms are false.
+                if !q {
+                    let mut cur = &x;
+                    while let Expr::Opaque(l, v) = cur {
+                        if l != "Select" || v.len() != 3 {
+                            break;
+                        }
+                        if v[1] == Expr::Const(k) {
+                            btodo.push((v[0].clone(), false));
+                            cur = &v[2];
+                        } else if v[2] == Expr::Const(k) {
+                            btodo.push((v[0].clone(), true));
+                            cur = &v[1];
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                fs.vals.push((x, q, k));
+                changed = true;
+            }
+        }
+        while let Some((c, holds)) = btodo.pop() {
+            let c = fold_bools(&facts_go(&c, &fs));
+            match (&c, holds) {
+                (Expr::Opaque(l, v), _) if l == "@not" && v.len() == 1 => btodo.push((v[0].clone(), !holds)),
+                (Expr::Opaque(l, v), true) if l == "@and" => btodo.extend(v.iter().map(|x| (x.clone(), true))),
+                (Expr::Opaque(l, v), false) if l == "@or" => btodo.extend(v.iter().map(|x| (x.clone(), false))),
+                (Expr::Opaque(l, v), _) if (l == "ICmp_EQ" || l == "ICmp_NE") && v.len() == 2 && matches!(v[1], Expr::Const(_)) => {
+                    let Expr::Const(k) = v[1] else { unreachable!() };
+                    todo.push((v[0].clone(), (l == "ICmp_EQ") == holds, k));
+                }
+                (Expr::Opaque(l, v), _) if (l == "@true" || l == "@false") && v.is_empty() => {}
+                _ => {
+                    // also its negation, pushed inwards (`¬(a ∨ b)` is `¬a ∧ ¬b`).
+                    for f in [(c.clone(), holds), (negate_bool(&c), !holds)] {
+                        if !fs.bools.contains(&f) {
+                            fs.bools.push(f);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        let _ = changed;
+        if todo.is_empty() && (fs.vals.clone(), fs.bools.clone()) == before {
+            break;
+        }
+    }
+    fs
+}
+
+fn facts_go(e: &Expr, fs: &Facts) -> Expr {
+    fn prune(e: &Expr, k: i64) -> Expr {
+        match e {
+            Expr::Opaque(l, v) if l == "Select" && v.len() == 3 => {
+                let (a, b) = (prune(&v[1], k), prune(&v[2], k));
+                if a == Expr::Const(k) { b } else if b == Expr::Const(k) { a } else { Expr::Opaque(l.clone(), vec![v[0].clone(), a, b]) }
+            }
+            e => e.clone(),
+        }
+    }
+    let e = match e {
+        Expr::Opaque(l, xs) => Expr::Opaque(l.clone(), xs.iter().map(|x| facts_go(x, fs)).collect()),
+        Expr::Bin(o, a, b) => Expr::Bin(*o, Box::new(facts_go(a, fs)), Box::new(facts_go(b, fs))),
+        Expr::VecGet(a, b) => Expr::VecGet(Box::new(facts_go(a, fs)), Box::new(facts_go(b, fs))),
+        e => e.clone(),
+    };
+    let ne = norm_at(&e);
+    for (c, holds) in &fs.bools {
+        if *c == ne {
+            return Expr::Opaque(if *holds { "@true" } else { "@false" }.into(), vec![]);
+        }
+    }
+    if let Expr::Opaque(l, xs) = &e {
+        if (l == "ICmp_EQ" || l == "ICmp_NE") && xs.len() == 2 {
+            if let Expr::Const(k) = xs[1] {
+                let x = norm_at(&xs[0]);
+                for (fe, is_eq, fk) in &fs.vals {
+                    if *fe == x && (*is_eq || *fk == k) {
+                        let eq = if *is_eq { *fk == k } else { false };
+                        return Expr::Opaque(if eq == (l == "ICmp_EQ") { "@true" } else { "@false" }.into(), vec![]);
+                    }
+                }
+            }
+        }
+    }
+    for (fe, is_eq, k) in &fs.vals {
+        if *fe == ne {
+            return if *is_eq { Expr::Const(*k) } else { prune(&e, *k) };
+        }
+    }
+    e
+}
+
+/// `¬e` with the negation pushed through `@and` / `@or` / `@not` to the
+/// comparisons (which flip).
+fn negate_bool(e: &Expr) -> Expr {
+    match e {
+        Expr::Opaque(l, v) if l == "@not" && v.len() == 1 => v[0].clone(),
+        Expr::Opaque(l, v) if l == "@and" || l == "@or" => {
+            Expr::Opaque(if l == "@and" { "@or" } else { "@and" }.into(), v.iter().map(negate_bool).collect())
+        }
+        Expr::Opaque(l, v) if l.starts_with("ICmp_") && v.len() == 2 => {
+            let flip = match &l["ICmp_".len()..] {
+                "EQ" => "NE", "NE" => "EQ", "SLT" => "SGE", "SGE" => "SLT", "SGT" => "SLE", "SLE" => "SGT",
+                "ULT" => "UGE", "UGE" => "ULT", "UGT" => "ULE", "ULE" => "UGT", _ => return Expr::Opaque("@not".into(), vec![e.clone()]),
+            };
+            Expr::Opaque(format!("ICmp_{flip}"), v.clone())
+        }
+        Expr::Opaque(l, v) if l == "@true" && v.is_empty() => Expr::Opaque("@false".into(), vec![]),
+        Expr::Opaque(l, v) if l == "@false" && v.is_empty() => Expr::Opaque("@true".into(), vec![]),
+        e => Expr::Opaque("@not".into(), vec![e.clone()]),
+    }
+}
+
+/// An if-chain whose leaves are all constants.
+fn const_chain(e: &Expr) -> bool {
+    match e {
+        Expr::Const(_) => true,
+        Expr::Opaque(l, v) if l == "Select" && v.len() == 3 => const_chain(&v[1]) && const_chain(&v[2]),
+        _ => false,
+    }
+}
+
+/// Fold decided booleans: `@and`/`@or`/`@not`, i1 `And`/`Or`, `Select` on a
+/// decided condition.
+fn fold_bools(e: &Expr) -> Expr {
+    let t = Expr::Opaque("@true".into(), vec![]);
+    let f = Expr::Opaque("@false".into(), vec![]);
+    let is = |x: &Expr, n: &str| matches!(x, Expr::Opaque(l, v) if l == n && v.is_empty());
+    let boolish = |x: &Expr| matches!(x, Expr::Opaque(l, _) if l.starts_with("ICmp_") || ["@true", "@false", "@not", "@and", "@or"].contains(&l.as_str()));
+    match e {
+        Expr::Opaque(l, xs) => {
+            let xs: Vec<Expr> = xs.iter().map(fold_bools).collect();
+            match (l.as_str(), xs.as_slice()) {
+                ("@not", [x]) if is(x, "@true") => f,
+                ("@not", [x]) if is(x, "@false") => t,
+                ("@and", _) if xs.iter().any(|x| is(x, "@false")) => f,
+                ("@or", _) if xs.iter().any(|x| is(x, "@true")) => t,
+                ("@and" | "@or", _) => {
+                    let unit = if l == "@and" { "@true" } else { "@false" };
+                    let rest: Vec<Expr> = xs.iter().filter(|x| !is(x, unit)).cloned().collect();
+                    match rest.len() {
+                        0 => Expr::Opaque(unit.into(), vec![]),
+                        1 => rest.into_iter().next().unwrap(),
+                        _ => Expr::Opaque(l.clone(), rest),
+                    }
+                }
+                ("And", [a, b]) if boolish(a) && boolish(b) && (is(a, "@false") || is(b, "@false")) => f,
+                ("And", [a, b]) if boolish(a) && boolish(b) && is(a, "@true") => b.clone(),
+                ("And", [a, b]) if boolish(a) && boolish(b) && is(b, "@true") => a.clone(),
+                ("Or", [a, b]) if boolish(a) && boolish(b) && (is(a, "@true") || is(b, "@true")) => t,
+                ("Or", [a, b]) if boolish(a) && boolish(b) && is(a, "@false") => b.clone(),
+                ("Or", [a, b]) if boolish(a) && boolish(b) && is(b, "@false") => a.clone(),
+                ("Select", [c, a, _]) if is(c, "@true") => a.clone(),
+                ("Select", [c, _, b]) if is(c, "@false") => b.clone(),
+                ("Select", [_, a, b]) if a == b => a.clone(),
+                // a mask of an if-chain of constants: per arm.
+                ("And", [Expr::Opaque(sl, v), Expr::Const(k)]) if sl == "Select" && v.len() == 3 && const_chain(&xs[0]) => {
+                    let m = |x: &Expr| fold_bools(&Expr::Opaque("And".into(), vec![x.clone(), Expr::Const(*k)]));
+                    Expr::Opaque("Select".into(), vec![v[0].clone(), m(&v[1]), m(&v[2])])
+                }
+                ("And", [Expr::Const(a), Expr::Const(b)]) => Expr::Const(a & b),
+                (op, [Expr::Const(a), Expr::Const(b)]) if op.starts_with("ICmp_") => {
+                    let (a, b) = (*a, *b);
+                    let r = match &op["ICmp_".len()..] {
+                        "EQ" => Some(a == b), "NE" => Some(a != b),
+                        "SLT" => Some(a < b), "SLE" => Some(a <= b), "SGT" => Some(a > b), "SGE" => Some(a >= b),
+                        "ULT" => Some((a as u64) < (b as u64)), "ULE" => Some((a as u64) <= (b as u64)),
+                        "UGT" => Some((a as u64) > (b as u64)), "UGE" => Some((a as u64) >= (b as u64)),
+                        _ => None,
+                    };
+                    match r { Some(true) => t, Some(false) => f, None => Expr::Opaque(l.clone(), xs) }
+                }
+                _ => Expr::Opaque(l.clone(), xs),
+            }
+        }
+        Expr::Bin(o, a, b) => Expr::Bin(*o, Box::new(fold_bools(a)), Box::new(fold_bools(b))),
+        Expr::VecGet(a, b) => Expr::VecGet(Box::new(fold_bools(a)), Box::new(fold_bools(b))),
+        other => other.clone(),
+    }
+}
+
+/// The facts of entrypoint `f`: the `=` / `≠ const` tests of the panic guards
+/// that every successful run passes (their branch is reached unconditionally).
+fn entry_facts<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> Vec<(usize, (Expr, bool, i64))> {
+    guard_facts_blocks(f, module, true, true)
+}
+
+/// The raw (unnamed) facts of `f` that hold at the end of block `b`: the
+/// panic guards whose branch dominates `b` (every path to `b` passed them).
+fn facts_at<'c>(f: FunctionValue<'c>, cfg: &Cfg<'c>, b: usize, module: &inkwell::module::Module<'c>) -> Vec<(Expr, bool, i64)> {
+    use inkwell::values::AsValueRef;
+    thread_local! {
+        static MEMO: std::cell::RefCell<HashMap<usize, (Vec<HashSet<usize>>, Vec<(usize, (Expr, bool, i64))>)>> = std::cell::RefCell::new(HashMap::new());
+    }
+    let key = f.as_value_ref() as usize;
+    if MEMO.with(|m| !m.borrow().contains_key(&key)) {
+        MEMO.with(|m| m.borrow_mut().insert(key, (vec![], vec![]))); // recursion guard
+        let r = (dominators(cfg), guard_facts_blocks(f, module, false, false));
+        MEMO.with(|m| m.borrow_mut().insert(key, r));
+    }
+    MEMO.with(|m| {
+        let m = m.borrow();
+        let (dom, gf) = &m[&key];
+        gf.iter().filter(|(g, _)| dom.get(b).is_some_and(|d| d.contains(g))).map(|(_, x)| x.clone()).collect()
+    })
+}
+
+/// Each block's dominators (blocks on every path from the entry to it).
+fn dominators(cfg: &Cfg) -> Vec<HashSet<usize>> {
+    let n = cfg.succ.len();
+    let all: HashSet<usize> = (0..n).collect();
+    let preds: Vec<Vec<usize>> = (0..n).map(|b| (0..n).filter(|&u| cfg.succ[u].contains(&b)).collect()).collect();
+    let mut dom: Vec<HashSet<usize>> = (0..n).map(|b| if b == 0 { [0].into() } else { all.clone() }).collect();
+    loop {
+        let mut changed = false;
+        for b in 1..n {
+            let mut d: HashSet<usize> = preds[b].iter().map(|&p| dom[p].clone()).reduce(|a, x| &a & &x).unwrap_or_default();
+            d.insert(b);
+            if d != dom[b] {
+                dom[b] = d;
+                changed = true;
+            }
+        }
+        if !changed {
+            return dom;
+        }
+    }
+}
+
+/// The `=` / `≠ const` tests of `f`'s panic guards, with the guard's block;
+/// `unconditional`: only guards on every successful path.
+fn guard_facts_blocks<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>, named: bool, unconditional: bool) -> Vec<(usize, (Expr, bool, i64))> {    let cfg = Cfg::build(f);
+    let args = arg_table(f);
+    let structs = spec_structs(module);
+    let kbf = datakey_builder(module);
+    let usage = kbf.map(kb_field_usage);
+    let kb = kbf.zip(usage.as_ref());
+    let segs = rodata_segs(module);
+    let mut out = vec![];
+    with_rich(|| {
+        let mut memo = HashMap::new();
+        for (bi, blk) in cfg.blocks.iter().enumerate() {
+            let Some(term) = blk.get_terminator().filter(|t| t.get_opcode() == InstructionOpcode::Br) else { continue };
+            let Some(Operand::Value(cond)) = term.get_operand(0) else { continue };
+            if !is_bool(cond) || cfg.succ[bi].len() != 2 {
+                continue;
+            }
+            let (ft, tt) = (forces_trap(cfg.blocks[cfg.succ[bi][0]], 6), forces_trap(cfg.blocks[cfg.succ[bi][1]], 6));
+            let negate = match (tt, ft) { (true, false) => true, (false, true) => false, _ => continue };
+            if unconditional && reach_dnf(&cfg, bi, &mut HashMap::new(), &mut HashSet::new()).as_deref() != Some(&[PathConj::new()][..]) {
+                continue; // not on every successful path
+            }
+            let mut leaves = vec![];
+            bool_split(cond, negate, 8, &mut leaves);
+            for leaf in leaves {
+                let Some((op0, l, r)) = gate_vals(leaf) else { continue };
+                let op = if negate { op0.negate() } else { op0 };
+                let is_eq = match op { RelOp::Eq => true, RelOp::Ne => false, _ => continue };
+                let mut ev = |x| {
+                    let e = simplify(value_expr(x, f, module, &mut memo, 40));
+                    if named { assume_arg_types(&name_slots(&e, module, kb, &segs), &args, &structs) } else { e }
+                };
+                let (le, re) = (ev(l), ev(r));
+                match (le, re) {
+                    (e, Expr::Const(k)) | (Expr::Const(k), e) if !matches!(e, Expr::Const(_)) => out.push((bi, (e, is_eq, k))),
+                    _ => {}
+                }
+            }
+        }
+    });
+    out
+}
+
 /// The field names (sorted, as Soroban stores them) of the `#[contracttype]`
 /// struct whose key table is at `pos` — the front end's `soroban.keys` metadata.
 fn struct_keys(module: &inkwell::module::Module, pos: u64) -> Option<Vec<String>> {
@@ -2008,8 +2582,7 @@ fn value_expr<'c>(
 
 /// Fold the i128 / Soroban lowering idioms back into source-level values. Applied
 /// at every reconstructed node (children are already folded):
-/// - hi-limb phi `phi(x, AShr(x,63) [, 0 | arg])` → `x` (sign-extended hi limb,
-///   with the storage-absent default);
+/// - hi-limb phi `phi(x, AShr(x,63))` → `x` (the sign-extended hi limb);
 /// - Soroban bool decode `Select(And(b,255)==1, 1, Select(And(b,255)==0, 0, 2))`
 ///   → `@bool(b)`, and `And(@bool b, 1) == 0` → `@isfalse(b)`;
 fn fold_rich(e: Expr) -> Expr {
@@ -2017,10 +2590,9 @@ fn fold_rich(e: Expr) -> Expr {
     let args_of = |x: &Expr| -> Vec<Expr> { if let Expr::Opaque(_, xs) = x { xs.clone() } else { vec![] } };
     match &e {
         Expr::Opaque(l, xs) if l == "phi" => {
-            let arms: Vec<&Expr> = xs
-                .iter()
-                .filter(|a| !matches!(a, Expr::Const(0)) && !matches!(a, Expr::Opaque(n, v) if n == "arg" && v.is_empty()))
-                .collect();
+            // only the exact limb idiom: every arm is x or its sign extension (a
+            // `0` arm is a real alternative, e.g. an absent key's default).
+            let arms: Vec<&Expr> = xs.iter().collect();
             let is_sext_of = |a: &Expr, x: &Expr| {
                 matches!(a, Expr::Opaque(n, v) if n == "AShr" && v.len() == 2 && v[0] == *x && v[1] == Expr::Const(63))
             };
@@ -2395,13 +2967,18 @@ fn value_expr_raw<'c>(
             let opc = match ins.get_opcode() {
                 Add => '+', Sub => '-', Mul => '*', UDiv | SDiv => '/', _ => '%',
             };
-            // drop a carry/sign addend: X ± sext/zext/trunc(..) == X
+            // drop the i128 carry addend of a hi limb: X ± ext(icmp ult (a + b), a).
             if matches!(opc, '+' | '-') {
-                if let Some(bi) = o(1).and_then(as_instr) {
-                    if matches!(bi.get_opcode(), SExt | ZExt | Trunc) {
-                        if let Some(x) = o(0) {
-                            return value_expr(x, g, module, memo, depth - 1);
-                        }
+                let carry = o(1).and_then(as_instr).filter(|bi| matches!(bi.get_opcode(), SExt | ZExt)).and_then(|bi| match bi.get_operand(0) {
+                    Some(Operand::Value(c)) => as_instr(c),
+                    _ => None,
+                }).is_some_and(|c| {
+                    c.get_opcode() == ICmp && c.get_icmp_predicate() == Some(inkwell::IntPredicate::ULT)
+                        && matches!(c.get_operand(0), Some(Operand::Value(s)) if as_instr(s).is_some_and(|s| s.get_opcode() == Add))
+                });
+                if carry {
+                    if let Some(x) = o(0) {
+                        return value_expr(x, g, module, memo, depth - 1);
                     }
                 }
             }
@@ -2418,10 +2995,16 @@ fn value_expr_raw<'c>(
                 }
             }
         }
-        // extension / truncation is limb bookkeeping -> the value passes through.
+        // extension, and truncation to ≥ 32 bits (u32/i32 values, limbs), pass the
+        // value through; a narrower truncation keeps the low bits (a Val's tag byte).
         SExt | ZExt | Trunc => {
             if let Some(x) = o(0) {
-                return value_expr(x, g, module, memo, depth - 1);
+                let w = ins.get_type().into_int_type().get_bit_width();
+                let v = value_expr(x, g, module, memo, depth - 1);
+                if ins.get_opcode() == Trunc && w < 32 {
+                    return Expr::Opaque("And".into(), vec![v, Expr::Const((1i64 << w) - 1)]);
+                }
+                return v;
             }
         }
         // rich mode: a phi at a control-flow join, as the value of the arm taken —
@@ -2757,8 +3340,19 @@ fn mem_before<'c>(
     let preds: Vec<usize> = (0..cfg.succ.len())
         .filter(|&u| cfg.succ[u].contains(&blk) && seen.allow.as_ref().is_none_or(|a| a.contains(&u)))
         .collect();
+    // the function's entry: memory behind one of our pointer params is the
+    // caller's (resolved at the call site).
+    if preds.is_empty() {
+        seen.active.remove(&blk);
+        let r = (0..g.count_params())
+            .find(|&q| g.get_nth_param(q).map(fmt).as_deref() == Some(target.0.as_str()))
+            .map(|q| Expr::Opaque("@deref".into(), vec![Expr::Param(q as usize), Expr::Const(target.1)]));
+        seen.done.insert(blk, r.clone());
+        return r;
+    }
     let mut vals: Vec<Expr> = vec![];
-    let mut ok = !preds.is_empty();
+    let mut arms: Vec<(usize, Expr)> = vec![];
+    let mut ok = true;
     for p in preds {
         let e = match seen.done.get(&(p + 1_000_000)) {
             Some(r) => r.clone(),
@@ -2771,8 +3365,9 @@ fn mem_before<'c>(
         match e {
             Some(e) => {
                 if !vals.contains(&e) {
-                    vals.push(e);
+                    vals.push(e.clone());
                 }
+                arms.push((p, e));
             }
             None => {
                 ok = false;
@@ -2787,7 +3382,8 @@ fn mem_before<'c>(
         match vals.len() {
             0 => None,
             1 => vals.pop(),
-            _ => Some(Expr::Opaque("phi".into(), vals)),
+            // paths that disagree: the value of the path taken.
+            _ => gate_by_reach(g, cfg, arms, Some(blk), module, memo),
         }
     };
     seen.done.insert(blk, r.clone());
@@ -2881,7 +3477,7 @@ fn subst_call<'c>(
             e => Some(e.clone()),
         }
     }
-    let e = derefs(e, call, g, cfg, module, memo, depth);
+    let e = prefix_at(&derefs(e, call, g, cfg, module, memo, depth), local_ordinal(g, call));
     let nargs = call.get_num_operands().saturating_sub(1);
     let actuals: Vec<Expr> = (0..nargs)
         .map(|j| match call.get_operand(j) {
@@ -2889,11 +3485,7 @@ fn subst_call<'c>(
             _ => Expr::Opaque("?".into(), vec![]),
         })
         .collect();
-    let r = fold_rich(subst(&e, &actuals));
-    match entry_site(g, call) {
-        Some(site) => annotate_at(&r, site),
-        None => r,
-    }
+    fold_rich(subst(&e, &actuals))
 }
 
 /// A rustc/compiler-rt i128 arithmetic routine, `f(out, a_lo, a_hi, b_lo, b_hi
@@ -3402,29 +3994,11 @@ fn eval_bool_fn(e: &Expr, b: &Expr, bit: i64) -> Option<i64> {
     }
 }
 
-/// Folds that need named slots: a `get(k).unwrap_or(0)` (`has(k) ? get(k) : 0`)
-/// is just the read — the model's storage reads an absent key as 0; `Or(x, x)` is
-/// `x`; and `Or(a, b) = 0` is `a = 0 ∧ b = 0` (bitwise, exact).
+/// Folds that need named slots: `Or(x, x)` is `x`; `Or(a, b) = 0` is
+/// `a = 0 ∧ b = 0` (bitwise, exact); Val encode/decode of named sources. A
+/// `get(k).unwrap_or(0)` (`has(k) ? get(k) : 0`) stays as it is — the model does
+/// not assume an absent key holds 0 (it renders as `getOr0`).
 fn fold_named(e: Expr) -> Expr {
-    // the same slot, ignoring at which program point it was read.
-    // (a field read `@field:f(K)` is a read of the struct at K.)
-    fn root(e: &Expr) -> &Expr {
-        match e {
-            Expr::Opaque(l, xs) if l.starts_with("@field:") && xs.len() == 1 => root(&xs[0]),
-            e => e,
-        }
-    }
-    let same_slot = |a: &Expr, b: &Expr| -> bool {
-        match (root(a), root(b)) {
-            (Expr::Slot(x, _), Expr::Slot(y, _)) => x == y,
-            (Expr::Opaque(x, xa), Expr::Opaque(y, ya)) if (x.starts_with("@map:") || x.starts_with("@tup:")) && x == y => xa.first() == ya.first(),
-            (a, b) => a == b,
-        }
-    };
-    let is_has_of = |c: &Expr, x: &Expr| -> bool {
-        matches!(c, Expr::Opaque(l, v) if l == "ICmp_EQ" && v.len() == 2 && v[1] == Expr::Const(1)
-            && matches!(&v[0], Expr::Opaque(h, k) if h == "@has" && k.len() == 1 && same_slot(&k[0], x)))
-    };
     // u32/i32 small-Val ENCODE: (v << 32) + ((k << 32) | tag) is v + k, tag 4/5.
     if let Expr::Bin('+', a, b) = &e {
         if let (Expr::Opaque(sl, sx), Expr::Const(c)) = (a.as_ref(), b.as_ref()) {
@@ -3459,19 +4033,15 @@ fn fold_named(e: Expr) -> Expr {
         _ => {}
     }
     match &e {
-        Expr::Opaque(l, xs) if l == "Select" && xs.len() == 3 => {
-            let (c, t, f) = (&xs[0], &xs[1], &xs[2]);
-            if *f == Expr::Const(0) && is_has_of(c, t) {
-                return t.clone();
-            }
-            if let Expr::Opaque(n, inner) = c {
-                if n == "@not" && inner.len() == 1 && *t == Expr::Const(0) && is_has_of(&inner[0], f) {
-                    return f.clone();
-                }
-            }
-            e
-        }
         Expr::Opaque(l, xs) if l == "Or" && xs.len() == 2 && xs[0] == xs[1] => xs[0].clone(),
+        // decode through `c ? v : 0` (an `unwrap_or(0)` of a u32): `c ? (v >> 32) : 0`.
+        Expr::Opaque(l, xs) if l == "LShr" && xs.len() == 2 && xs[1] == Expr::Const(32)
+            && matches!(&xs[0], Expr::Opaque(s, v) if s == "Select" && v.len() == 3 && v[2] == Expr::Const(0)) =>
+        {
+            let Expr::Opaque(_, v) = &xs[0] else { unreachable!() };
+            let dec = fold_named(Expr::Opaque("LShr".into(), vec![v[1].clone(), Expr::Const(32)]));
+            Expr::Opaque("Select".into(), vec![v[0].clone(), dec, Expr::Const(0)])
+        }
         // u32/i32 small-Val DECODE of a Val source: `payload >> 32` is the value.
         Expr::Opaque(l, xs) if l == "LShr" && xs.len() == 2 && xs[1] == Expr::Const(32) && is_val_source(&xs[0]) => xs[0].clone(),
         Expr::Opaque(l, xs) if l == "ICmp_EQ" && xs.len() == 2 && xs[1] == Expr::Const(0) => {
@@ -3565,10 +4135,10 @@ fn callee_write_offsets(h: FunctionValue, k: usize, fuel: u32) -> Option<Vec<(i6
     r
 }
 
-/// What callee `h` stores at `*(param k + off)`, as an expression over `h`'s
-/// params: a direct store in a non-trapping block, or (one level down) a nested
-/// call that forwards the pointer. Multiple distinct non-trapping stores (paths
-/// that disagree) make it a `phi`.
+/// What `*(param k + off)` holds when callee `h` returns, as an expression over
+/// `h`'s params: the memory there at each (non-trapping) return, gated by the
+/// exact condition of reaching it. A path that never writes it leaves the
+/// caller's value (`@deref(Param k, off)`).
 fn callee_store_at<'c>(
     h: FunctionValue<'c>,
     k: usize,
@@ -3581,58 +4151,62 @@ fn callee_store_at<'c>(
     if fuel == 0 || depth == 0 {
         return None;
     }
-    let param = h.get_nth_param(k as u32)?;
-    let pbase = fmt(param);
-    let mut found: Vec<Expr> = vec![];
-    for bb in h.get_basic_blocks() {
-        if forces_trap(bb, 0) {
-            continue; // an error path writes its own garbage before trapping
-        }
-        let mut it = bb.get_first_instruction();
-        while let Some(i) = it {
-            it = i.get_next_instruction();
-            match i.get_opcode() {
-                InstructionOpcode::Store => {
-                    if let (Some(Operand::Value(sv)), Some(Operand::Value(sp))) = (i.get_operand(0), i.get_operand(1)) {
-                        if ptr_base_off(sp) == (pbase.clone(), off) {
-                            let e = value_expr(sv, h, module, memo, depth - 1);
-                            if !found.contains(&e) {
-                                found.push(e);
-                            }
-                        }
-                    }
-                }
-                InstructionOpcode::Call => {
-                    // the callee forwards the pointer (param k + c) to a deeper helper.
-                    let Some(cn) = callee_name(i) else { continue };
-                    let Some(h2) = module.get_function(&cn) else { continue };
-                    if h2.count_basic_blocks() == 0 {
-                        continue;
-                    }
-                    let nargs = i.get_num_operands().saturating_sub(1);
-                    for j in 0..nargs {
-                        let Some(Operand::Value(a)) = i.get_operand(j) else { continue };
-                        let (b, o) = if a.is_pointer_value() { ptr_base_off(a) } else { addr_base_off(a) };
-                        if b == pbase && o <= off {
-                            if let Some(e2) = callee_store_at(h2, j as usize, off - o, module, memo, depth - 1, fuel - 1) {
-                                let hcfg = Cfg::build(h);
-                                let e = subst_call(&e2, i, h, &hcfg, module, memo, depth - 1);
-                                if !found.contains(&e) {
-                                    found.push(e);
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {}
+    let target = (fmt(h.get_nth_param(k as u32)?), off);
+    let cfg = Cfg::build(h);
+    let mut arms: Vec<(usize, Expr)> = vec![];
+    for (b, bb) in cfg.blocks.iter().enumerate() {
+        let Some(t) = bb.get_terminator().filter(|t| t.get_opcode() == InstructionOpcode::Return) else { continue };
+        let mut seen = MemCtx::default();
+        arms.push((b, mem_before(Some(t), b, &target, h, &cfg, module, memo, depth - 1, &mut seen)?));
+    }
+    gate_by_reach(h, &cfg, arms, None, module, memo)
+}
+
+/// One value per block (each block's value at its end), as the value at the
+/// point those blocks lead to: `Select(reach(b₁) [∧ edge b₁→join], v₁, …)` over
+/// the exact path conditions; equal values merge. Unrenderable conditions make
+/// it an (open) `phi`.
+fn gate_by_reach<'c>(
+    g: FunctionValue<'c>,
+    cfg: &Cfg<'c>,
+    arms: Vec<(usize, Expr)>,
+    join: Option<usize>,
+    module: &inkwell::module::Module<'c>,
+    memo: &mut HashMap<String, Option<Expr>>,
+) -> Option<Expr> {
+    // each arm under the panic checks every path to it passed.
+    let by_state = BY_STATE.with(|b| b.get());
+    let arms: Vec<(usize, Expr)> = arms.into_iter().map(|(b, v)| {
+        let fs = facts_at(g, cfg, b, module);
+        let r = simplify_under(&v, &fs, false);
+        (b, r)
+    }).collect();
+    BY_STATE.with(|b| b.set(by_state));
+    let first = arms.first()?.1.clone();
+    if arms.iter().all(|(_, v)| *v == first) {
+        return Some(first);
+    }
+    let open = || Some(Expr::Opaque("phi".into(), arms.iter().map(|(_, v)| v.clone()).collect()));
+    let mut rmemo = HashMap::new();
+    let mut gated: Vec<(Expr, Expr)> = vec![];
+    for (b, v) in &arms {
+        let Some(ds) = reach_dnf(cfg, *b, &mut rmemo, &mut HashSet::new()) else { return open() };
+        let Some(mut c) = dnf_expr(g, cfg, &ds, module, memo) else { return open() };
+        if let Some(j) = join {
+            if cfg.succ[*b].iter().filter(|&&s| !forces_trap(cfg.blocks[s], 6)).count() > 1 {
+                let Some(e) = edge_cond(g, cfg, *b, j, module, memo) else { return open() };
+                c = Expr::Opaque("@and".into(), vec![c, e]);
             }
         }
+        gated.push((c, v.clone()));
     }
-    match found.len() {
-        0 => None,
-        1 => found.pop(),
-        _ => Some(Expr::Opaque("phi".into(), found)),
+    let (_, mut acc) = gated.pop()?;
+    while let Some((c, v)) = gated.pop() {
+        if v != acc {
+            acc = Expr::Opaque("Select".into(), vec![c, v, acc]);
+        }
     }
+    Some(acc)
 }
 
 /// Substitute a callee's param-relative expression with the caller's arg exprs.
@@ -3824,113 +4398,12 @@ fn party(r: ARef) -> &'static str {
     }
 }
 
-/// The Lean term for a transfer party, inside an entrypoint model: the external
-/// party is the caller `c`, the pool is `pool`, an unresolved one is left `0`.
-fn party_term(r: ARef) -> &'static str {
-    match r {
-        ARef::Contract => "pool",
-        ARef::Param(_) => "c",
-        ARef::Other => "0",
-    }
-}
-
 /// One entrypoint's recovered shape, for the relational Lean model.
 struct ModelEntry {
     name: String,
-    args: Vec<(String, String)>,        // (spec.name, spec.type) of the ABI args
-    transfers: Vec<(String, String)>,   // (from term, to term) per traced SEP-41 transfer
-    tokens: Vec<String>,                // token ledger each transfer moves (by recovered order)
-    writes: Vec<(String, bool)>,        // (storage slot name, is_mapping) written
-    returns: bool,                      // the entrypoint returns a value
-    auth: Option<String>,               // the arg whose `require_auth()` gates the call
-    inv: bool,                          // guards a trap with a constant-product (x*y) check
-    guards: Vec<Guard>,                 // all recovered trap (panic) guards (pass conditions)
-    gdecls: Vec<String>,                // opaque Step-terms the guards name
-    rich: Option<RichBody>,             // reconstructed transfers + writes (when available)
-    more_auths: Vec<String>,            // further signers beyond `auth` (require_auth*)
-}
-
-/// The arg whose `require_auth()` the entrypoint calls — the signer gate. The
-/// `to.require_auth()` at the top of each entrypoint means the caller must be
-/// that address, which is how we justify binding transfers to the caller.
-fn entry_auth(f: FunctionValue) -> Option<String> {
-    entry_auths(f).into_iter().next()
-}
-
-/// Every arg whose `require_auth()` / `require_auth_for_args()` the entrypoint
-/// calls, in order (e.g. both parties of an atomic swap).
-fn entry_auths(f: FunctionValue) -> Vec<String> {
-    let args = arg_table(f);
-    let mut out = vec![];
-    for i in all_instrs(f) {
-        if callee_name(i).map_or(false, |n| n.contains("require_auth")) {
-            if let Some(Operand::Value(v)) = i.get_operand(0) {
-                if let Some(Src::Arg(n)) = src_of(v, &args) {
-                    if !out.contains(&n) {
-                        out.push(n);
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Does `f` contain a trap (`soroban.trap` / `unreachable`)?
-fn f_has_trap(f: FunctionValue) -> bool {
-    all_instrs(f).iter().any(|i| {
-        i.get_opcode() == InstructionOpcode::Unreachable
-            || callee_name(*i).map_or(false, |n| n.contains("trap"))
-    })
-}
-
-/// Does `v` trace (through the transparent Val wrappers, selects and arithmetic,
-/// but NOT through a memory load) to one of `f`'s parameters? Used to tell a
-/// guard that compares against an argument (slippage/amount checks) from one
-/// that compares two internally-computed values (the constant-product check).
-fn derives_from_arg(v: BasicValueEnum, f: FunctionValue, depth: u32) -> bool {
-    if depth == 0 {
-        return false;
-    }
-    if param_index(v, f).is_some() {
-        return true;
-    }
-    let Some(i) = as_instr(v) else { return false };
-    if i.get_opcode() == InstructionOpcode::Load {
-        return false; // a frame load severs the arg connection
-    }
-    (0..i.get_num_operands()).any(|k| match i.get_operand(k) {
-        Some(Operand::Value(o)) => derives_from_arg(o, f, depth - 1),
-        _ => false,
-    })
-}
-
-/// Is `v` a constant integer?
-fn is_const_int(v: BasicValueEnum) -> bool {
-    matches!(v, BasicValueEnum::IntValue(c) if c.is_const())
-}
-
-/// Does block `b`, or a shallow successor, contain a trap?
-fn blk_traps(b: BasicBlock, depth: u32) -> bool {
-    let mut it = b.get_first_instruction();
-    while let Some(i) = it {
-        if i.get_opcode() == InstructionOpcode::Unreachable
-            || callee_name(i).map_or(false, |n| n.contains("trap"))
-        {
-            return true;
-        }
-        it = i.get_next_instruction();
-    }
-    if depth == 0 {
-        return false;
-    }
-    match b.get_terminator() {
-        Some(t) => (0..t.get_num_operands()).any(|k| match t.get_operand(k) {
-            Some(Operand::Block(nb)) => blk_traps(nb, depth - 1),
-            _ => false,
-        }),
-        None => false,
-    }
+    args: Vec<(String, String)>, // (spec.name, spec.type) of the ABI args
+    guards: Vec<Guard>,          // recovered panic guards (pass conditions)
+    rich: RichBody,              // reconstructed effects, auths, Ok condition, return
 }
 
 /// Does block `b` unavoidably trap — it traps directly, or its terminator is an
@@ -3962,84 +4435,6 @@ fn forces_trap(b: BasicBlock, depth: u32) -> bool {
         }
         None => false,
     }
-}
-
-/// Is the i1 `cmp` the condition of a branch one of whose targets reaches a
-/// trap — i.e. `cmp` gates a panic (a guard), not just any branch?
-fn gates_trap_br(cmp: InstructionValue, f: FunctionValue) -> bool {
-    for i in all_instrs(f) {
-        if i.get_opcode() != InstructionOpcode::Br {
-            continue;
-        }
-        if as_instr(match i.get_operand(0) { Some(Operand::Value(c)) => c, _ => continue }) != Some(cmp) {
-            continue;
-        }
-        // a conditional branch whose condition is `cmp`: does a target trap?
-        let traps = (1..i.get_num_operands()).any(|k| match i.get_operand(k) {
-            Some(Operand::Block(b)) => blk_traps(b, 1),
-            _ => false,
-        });
-        if traps {
-            return true;
-        }
-    }
-    false
-}
-
-/// Does `f` guard a trap with a constant-product check — a comparison of two
-/// internally-computed values (the two `inv_a*inv_b` products) feeding a panic?
-/// Every OTHER trap guard compares a computed value against an argument
-/// (slippage, amount, insufficient-shares) or a constant (sign checks), so
-/// "both sides computed, neither an arg nor a constant, gating a trap" pins the
-/// `new_inv_a*new_inv_b < old_inv_a*old_inv_b` panic — the invariant the
-/// contract enforces on itself, without reconstructing the formula.
-fn has_product_invariant_trap<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> bool {
-    if !f_has_trap(f) {
-        return false;
-    }
-    for i in all_instrs(f) {
-        if !gates_trap_br(i, f) {
-            continue;
-        }
-        // the invariant is a WIDE (i128/i256) comparison of the two products,
-        // which lifts as the select-compare idiom `select (icmp eq hi) cmplo cmphi`
-        // — we read its hi-limb icmp. A plain i64 icmp (e.g. inside the isqrt
-        // share math) is not the constant-product check.
-        let ci = match i.get_opcode() {
-            InstructionOpcode::Select => match i.get_operand(2) {
-                Some(Operand::Value(hv)) => match as_instr(hv).filter(|x| x.get_opcode() == InstructionOpcode::ICmp) {
-                    Some(hi) => hi,
-                    None => continue,
-                },
-                _ => continue,
-            },
-            _ => continue,
-        };
-        // an ORDERING comparison (`new < old`), not equality — that rules out
-        // i128-multiply overflow/sign checks (`hi == lo>>63`), which also compare
-        // two computed values but are not the constant-product invariant.
-        use inkwell::IntPredicate::*;
-        if !matches!(ci.get_icmp_predicate(), Some(ULT | ULE | UGT | UGE | SLT | SLE | SGT | SGE)) {
-            continue;
-        }
-        if let (Some(Operand::Value(av)), Some(Operand::Value(bv))) = (ci.get_operand(0), ci.get_operand(1)) {
-            let computed = |x: BasicValueEnum| !is_const_int(x) && !derives_from_arg(x, f, 24);
-            // …and both sides really are products (not, say, two timestamps).
-            fn has_mul(e: &Expr) -> bool {
-                match e {
-                    Expr::Bin('*', _, _) => true,
-                    Expr::Bin(_, a, b) | Expr::VecGet(a, b) => has_mul(a) || has_mul(b),
-                    Expr::Opaque(_, xs) => xs.iter().any(has_mul),
-                    _ => false,
-                }
-            }
-            let product = |x: BasicValueEnum<'c>| with_rich(|| has_mul(&value_expr(x, f, module, &mut HashMap::new(), 40)));
-            if computed(av) && computed(bv) && product(av) && product(bv) {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 // ===================== generic guard recovery =====================
@@ -4100,6 +4495,7 @@ fn gate_vals(cond: BasicValueEnum) -> Option<(RelOp, BasicValueEnum, BasicValueE
 fn entry_guards<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> GuardSet {
     let cfg = Cfg::build(f);
     let args = arg_table(f);
+    let structs = spec_structs(module);
     let kbf = datakey_builder(module);
     let usage = kbf.map(kb_field_usage);
     let kb = kbf.zip(usage.as_ref());
@@ -4136,6 +4532,19 @@ fn entry_guards<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) 
             (false, true) => false,  // the false edge panics -> pass = cond
             _ => continue,           // both or neither: not a clean guard
         };
+        EXCLUDE.with(|x| x.set(Some(bi)));
+        // the guard binds only when its branch is reached: `reach → pass`. A
+        // reach condition we can't render drops the guard (weaker, still sound).
+        let pcs = with_rich(|| path_conds(f, &cfg, bi, module, &mut vmemo));
+        let pc: Option<Vec<String>> = pcs
+            .iter()
+            .map(|c| match apply_facts(&assume_arg_types(&name_slots(c, module, kb, &segs), &args, &structs)) {
+                Expr::Opaque(l, x) if l == "@not" && x.len() == 1 => lean_cond(&x[0], &args, &mut opmap, &mut oc, &mut decls, &fnid).map(|s| format!("¬({s})")),
+                c => lean_cond(&c, &args, &mut opmap, &mut oc, &mut decls, &fnid),
+            })
+            .collect();
+        let Some(pc) = pc else { continue };
+        let first = gs.len();
         // split so each leaf is a conjunct of the PASS condition: ¬(a∨b)=¬a∧¬b
         // when negating, (a∧b) when keeping.
         let mut leaves = vec![];
@@ -4144,7 +4553,7 @@ fn entry_guards<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) 
             // a boolean `select c, a, b` (one test or another, chosen by c).
             if gate_vals(leaf).is_none() && as_instr(leaf).is_some_and(|i| i.get_opcode() == InstructionOpcode::Select) {
                 let e = with_rich(|| fold_rich(simplify(value_expr(leaf, f, module, &mut vmemo, 40))));
-                let e = name_slots(&e, module, kb, &segs);
+                let e = apply_facts(&assume_arg_types(&name_slots(&e, module, kb, &segs), &args, &structs));
                 if !expr_has_named(&e) || has_cycle(&e) {
                     continue;
                 }
@@ -4168,7 +4577,7 @@ fn entry_guards<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) 
             let (le, re) = with_rich(|| {
                 (simplify(value_expr(l, f, module, &mut vmemo, 40)), simplify(value_expr(r, f, module, &mut vmemo, 40)))
             });
-            let (le, re) = (name_slots(&le, module, kb, &segs), name_slots(&re, module, kb, &segs));
+            let (le, re) = (apply_facts(&assume_arg_types(&name_slots(&le, module, kb, &segs), &args, &structs)), apply_facts(&assume_arg_types(&name_slots(&re, module, kb, &segs), &args, &structs)));
             if !(expr_has_named(&le) || expr_has_named(&re)) {
                 continue;
             }
@@ -4209,13 +4618,21 @@ fn entry_guards<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) 
             );
             gs.push(Guard { comment, lean });
         }
+        if !pc.is_empty() {
+            for g in &mut gs[first..] {
+                g.lean = format!("(({}) → {})", pc.join(" ∧ "), g.lean);
+                g.comment = format!("{}   [when {}]", g.comment, pc.join(" ∧ "));
+            }
+        }
     }
-    GuardSet { guards: gs, decls }
+    EXCLUDE.with(|x| x.set(None));
+    let _ = decls;
+    GuardSet { guards: gs }
 }
 
 /// A recovered transition guard: its human-readable form and its Lean conjunct.
 struct Guard { comment: String, lean: String }
-struct GuardSet { guards: Vec<Guard>, decls: Vec<String> }
+struct GuardSet { guards: Vec<Guard> }
 
 /// Split an i1 into conjuncts: when `split_or` (we are negating, De Morgan turns
 /// `¬(a∨b)` into `¬a ∧ ¬b`) descend through Or; otherwise descend through And.
@@ -4237,40 +4654,6 @@ fn bool_split<'c>(v: BasicValueEnum<'c>, split_or: bool, depth: u32, out: &mut V
         }
     }
     out.push(v);
-}
-
-/// Render a reconstructed expression as a Lean term over the model: an argument
-/// becomes `st.call.arg "n"`, arithmetic is kept, and any subtree the pass does
-/// not name (a storage read, an i128 reconstruction) becomes a fresh `opaque`
-/// Step-term (shared by structurally-identical subtrees), recorded in `decls`.
-/// A token (SEP-41 contract) as the Lean ledger name it maps to: a named token
-/// slot `"TokenA"`, or a conditional choice `(if c then "TokenB" else "TokenA")`.
-fn ledger_term(
-    tok: &Expr,
-    args: &Args,
-    opmap: &mut HashMap<String, String>,
-    oc: &mut usize,
-    decls: &mut Vec<String>,
-    fnid: &str,
-) -> Option<String> {
-    match tok {
-        Expr::Slot(n, _) if !matches!(n.as_str(), "instance" | "persistent" | "temporary" | "?") => Some(format!("\"{n}\"")),
-        Expr::Opaque(l, _) if l.starts_with("@map:") => None,
-        // a token address held in a struct field: `"Offer.buy_token"`.
-        Expr::Opaque(l, xs) if l.starts_with("@field:") && xs.len() == 1 => {
-            let base = ledger_term(&xs[0], args, opmap, oc, decls, fnid)?;
-            Some(format!("{}.{}\"", base.strip_suffix('"')?, &l["@field:".len()..]))
-        }
-        // a token passed as an argument: the ledger is keyed by its address.
-        Expr::Param(i) => args.get(*i).map(|(_, n, _)| format!("(toString (st.call.argA \"{n}\"))")),
-        Expr::Opaque(l, xs) if l == "Select" && xs.len() == 3 => {
-            let c = lean_cond(&xs[0], args, opmap, oc, decls, fnid)?;
-            let a = ledger_term(&xs[1], args, opmap, oc, decls, fnid)?;
-            let b = ledger_term(&xs[2], args, opmap, oc, decls, fnid)?;
-            Some(format!("(if {c} then {a} else {b})"))
-        }
-        _ => None,
-    }
 }
 
 /// A Select condition as a Lean `Prop` (a compare or a decoded-bool test), its
@@ -4379,6 +4762,43 @@ fn lean_key(
             Some((format!(".fld ({k}) \"{}\"", &l["@field:".len()..]), st))
         }
         _ => None,
+    }
+}
+
+/// `Select(has(base) == 1, k, 0)` (either polarity): `(base, k)` when `k` is a
+/// read of `base` (itself, or a field of the struct stored there).
+fn getor0_parts(xs: &[Expr]) -> Option<(&Expr, &Expr)> {
+    fn has_eq1(c: &Expr) -> Option<&Expr> {
+        match c {
+            Expr::Opaque(l, v) if l == "ICmp_EQ" && v.len() == 2 && v[1] == Expr::Const(1) => match &v[0] {
+                Expr::Opaque(h, k) if h == "@has" && k.len() == 1 => Some(&k[0]),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    let (base, k) = match (&xs[0], &xs[1], &xs[2]) {
+        (c, k, Expr::Const(0)) if has_eq1(c).is_some() => (has_eq1(c)?, k),
+        (Expr::Opaque(n, c), Expr::Const(0), k) if n == "@not" && c.len() == 1 => (has_eq1(&c[0])?, k),
+        _ => return None,
+    };
+    // same key, ignoring program points: `k` is `base` or `.fld … base`.
+    fn strip(e: &Expr) -> Expr {
+        match e {
+            Expr::Slot(n, _) => Expr::Slot(n.clone(), 0),
+            Expr::Opaque(l, xs) => Expr::Opaque(l.clone(), xs.iter().filter(|x| !matches!(x, Expr::Opaque(a, _) if a == "@at")).map(strip).collect()),
+            e => e.clone(),
+        }
+    }
+    let mut r = k;
+    loop {
+        if strip(r) == strip(base) {
+            return Some((base, k));
+        }
+        match r {
+            Expr::Opaque(l, v) if l.starts_with("@field:") && v.len() == 1 => r = &v[0],
+            _ => return None,
+        }
     }
 }
 
@@ -4491,10 +4911,9 @@ fn lean_guard_term(
         },
         // SEP-41 `token.balance(who)` on a named token slot: that token's ledger.
         Expr::Opaque(l, xs) if l == "@call:balance" && (xs.len() == 2 || xs.len() == 3)
-            && ledger_term(&xs[0], args, &mut HashMap::new(), &mut 0, &mut vec![], fnid).is_some()
             && matches!(&xs[1], Expr::Opaque(v, w) if v == "@vec" && w.len() == 1) =>
         {
-            let tok = ledger_term(&xs[0], args, opmap, oc, decls, fnid).unwrap();
+            let tok = lean_guard_term(&xs[0], args, opmap, oc, decls, fnid);
             let Expr::Opaque(_, who) = &xs[1] else { unreachable!() };
             // the ledger state at the read's program point (after earlier transfers).
             let state = match xs.get(2) {
@@ -4504,6 +4923,21 @@ fn lean_guard_term(
             format!("(bal {tok} {state} {})", lean_guard_term(&who[0], args, opmap, oc, decls, fnid))
         }
         Expr::Opaque(l, xs) if l == "@bool" && xs.len() == 1 => lean_guard_term(&xs[0], args, opmap, oc, decls, fnid),
+        // `get(k).unwrap_or(0)`: `has(base) ? k : 0`, read in one state.
+        Expr::Opaque(l, xs) if l == "Select" && xs.len() == 3 && getor0_parts(xs).is_some_and(|(b, k)| {
+            lean_key(b, args, &mut HashMap::new(), &mut 0, &mut vec![], fnid).is_some() && lean_key(k, args, &mut HashMap::new(), &mut 0, &mut vec![], fnid).is_some()
+        }) => {
+            let (base, k) = getor0_parts(xs).unwrap();
+            let (kb, sb) = lean_key(base, args, &mut HashMap::new(), &mut 0, &mut vec![], fnid).unwrap();
+            let (kk, sk) = lean_key(k, args, &mut HashMap::new(), &mut 0, &mut vec![], fnid).unwrap();
+            if sb == sk {
+                let (kk, _) = lean_key(k, args, opmap, oc, decls, fnid).unwrap();
+                if kb == kk { format!("(getOr0 {sk} ({kk}))") } else { format!("(getOr0 {sk} ({kk}) (base := {kb}))") }
+            } else {
+                let _ = kk;
+                format!("(if ({sb} (.has ({kb}))) = 1 then {} else 0)", lean_guard_term(k, args, opmap, oc, decls, fnid))
+            }
+        }
         Expr::Opaque(l, xs) if l == "Select" && xs.len() == 3
             && matches!(&xs[0], Expr::Opaque(n, _) if n == "@isfalse" || n == "@and" || n == "@or" || n == "@not" || n.starts_with("ICmp_"))
             && lean_cond(&xs[0], args, &mut HashMap::new(), &mut 0, &mut vec![], fnid).is_some() =>
@@ -4522,17 +4956,14 @@ fn lean_guard_term(
         _ => {
             let _ = &opmap;
             *oc += 1;
-            let nm = format!("{fnid}_g{oc}");
+            // body unknowns are `u.i n`, guard unknowns `u.g n` (distinct counters).
+            let nm = format!("(u.{} {oc})", if fnid.ends_with("_e") { "i" } else { "g" });
             decls.push(nm.clone());
-            format!("({nm} st)")
+            nm
         }
     }
 }
 
-
-fn is_zero(e: &Expr) -> bool {
-    matches!(e, Expr::Const(0))
-}
 
 /// Recognize the i128 sign-extension of the hi limb, `phi(x, AShr(x, 63))`, and
 /// collapse it to `x` (so an i128 argument/value reads as itself, not its limb).
@@ -4609,234 +5040,84 @@ fn expr_has_named(e: &Expr) -> bool {
     }
 }
 
-/// The storage slots an entrypoint touches, with real `DataKey` names:
-/// `(slot, mapping-key-types, written, read)` — found transitively through the
-/// helpers the entrypoint calls (puts/gets live in `put_reserve_a`,
-/// `mint_shares`, … not the entrypoint itself).
-fn entry_storage<'c>(
-    f: FunctionValue<'c>,
-    kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
-    module: &inkwell::module::Module<'c>,
-    segs: &[(u64, Vec<u8>)],
-) -> Vec<(String, Vec<String>, bool, bool)> {
-    let mut out: Vec<(String, Vec<String>, bool, bool)> = vec![];
-    let mut memo: HashMap<String, Vec<SFact>> = HashMap::new();
-    for sf in storage_summary(f, kb, module, segs, &mut memo, 12) {
-        if let KeyRef::Slot(name, params) = sf.key {
-            add_slot(&mut out, name, params, sf.put, !sf.put);
-        }
-    }
-    out.sort();
-    out
-}
-
-/// Record a storage slot, OR-ing access flags and keeping any recovered params.
-fn add_slot(out: &mut Vec<(String, Vec<String>, bool, bool)>, name: String, params: Vec<String>, w: bool, r: bool) {
-    if let Some(e) = out.iter_mut().find(|(nm, _, _, _)| *nm == name) {
-        e.2 |= w;
-        e.3 |= r;
-        if e.1.is_empty() && !params.is_empty() {
-            e.1 = params;
-        }
-    } else {
-        out.push((name, params, w, r));
-    }
-}
-
-/// A storage access's key, relative to the function it was found in: a resolved
-/// slot, or "the key is my parameter #j" (the caller supplies the real key).
-#[derive(Clone)]
-enum KeyRef {
-    Slot(String, Vec<String>),
-    Param(usize),      // the key Val is my parameter #j
-    DiscParam(usize),  // the key is built from a DataKey discriminant in my parameter #j
-    Unknown,
-}
-
-/// If key `k` is a `DataKey` built by the builder with its discriminant taken
-/// from one of `f`'s parameters, that parameter's index (so the caller's
-/// constant discriminant names the slot).
-fn key_disc_param<'c>(
-    k: BasicValueEnum<'c>,
-    f: FunctionValue<'c>,
-    kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
-) -> Option<usize> {
-    let kb_name = kb?.0.get_name().to_string_lossy().into_owned();
-    let mut cur = k;
-    for _ in 0..8 {
-        let i = as_instr(cur)?;
-        let n = callee_name(i)?;
-        if n == kb_name {
-            // the builder's first operand is the discriminant.
-            return match i.get_operand(0) {
-                Some(Operand::Value(o)) => param_index(o, f),
-                _ => None,
-            };
-        }
-        if n.contains("from_payload") || n.contains("val.payload") {
-            if let Some(Operand::Value(inner)) = i.get_operand(0) {
-                cur = inner;
-                continue;
-            }
-        }
-        break;
-    }
-    None
-}
-
-#[derive(Clone)]
-struct SFact {
-    key: KeyRef,
-    put: bool,
-}
-
-/// How to resolve a key value to a `KeyRef` in function `f`: an inline-built
-/// `DataKey` resolves to its slot; a key that is just `f`'s parameter is left as
-/// `Param(j)` for the caller to fill in.
-fn key_ref<'c>(
-    k: BasicValueEnum<'c>,
-    f: FunctionValue<'c>,
-    args: &Args<'c>,
-    kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
-    module: &inkwell::module::Module<'c>,
-    segs: &[(u64, Vec<u8>)],
-) -> KeyRef {
-    let (name, params) = storage_key(k, f, args, kb, module, segs);
-    if name != "?" {
-        KeyRef::Slot(name, params)
-    } else if let Some(j) = key_disc_param(k, f, kb) {
-        KeyRef::DiscParam(j)
-    } else if let Some(j) = param_index(k, f) {
-        KeyRef::Param(j)
-    } else {
-        KeyRef::Unknown
-    }
-}
-
-/// Resolve a caller-supplied constant discriminant to its slot.
-fn disc_slot<'c>(
-    d: i64,
-    kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
-    module: &inkwell::module::Module<'c>,
-    segs: &[(u64, Vec<u8>)],
-) -> KeyRef {
-    if let Some((kbf, usage)) = kb {
-        if let Some(name) = datakey_name(kbf, d, module, segs) {
-            let mapping = usage.0.get(&d).copied().unwrap_or(usage.1);
-            return KeyRef::Slot(name, if mapping { vec!["Address".to_string()] } else { vec![] });
-        }
-    }
-    KeyRef::Unknown
-}
-
-/// Transitive storage-access summary of `f`, over `f`'s OWN parameters: each
-/// put/get, with its key resolved to a slot where possible. Descends into
-/// helpers and substitutes the caller's actual key at each hop (like
-/// `summarize` does for transfers), so a put whose key is a parameter deep in a
-/// setter helper is resolved from the discriminant the entrypoint passed.
-fn storage_summary<'c>(
-    f: FunctionValue<'c>,
-    kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
-    module: &inkwell::module::Module<'c>,
-    segs: &[(u64, Vec<u8>)],
-    memo: &mut HashMap<String, Vec<SFact>>,
-    depth: u32,
-) -> Vec<SFact> {
-    let name = f.get_name().to_string_lossy().into_owned();
-    if let Some(v) = memo.get(&name) {
-        return v.clone();
-    }
-    memo.insert(name.clone(), vec![]); // recursion guard
-    if depth == 0 {
-        return vec![];
-    }
-    let args = arg_table(f);
-    let mut facts = vec![];
-    for i in all_instrs(f) {
-        let Some(n) = callee_name(i) else { continue };
-        if n.contains("put_contract_data") || n.contains("get_contract_data") || n.contains("has_contract_data") {
-            let put = n.contains("put_contract_data");
-            let key = match i.get_operand(0) {
-                Some(Operand::Value(k)) => key_ref(k, f, &args, kb, module, segs),
-                _ => KeyRef::Unknown,
-            };
-            facts.push(SFact { key, put });
-            continue;
-        }
-        let Some(h) = module.get_function(&n) else { continue };
-        if h.count_basic_blocks() == 0 {
-            continue;
-        }
-        let hs = storage_summary(h, kb, module, segs, memo, depth - 1);
-        // map h's param-relative keys to f's terms via the call-site actuals.
-        for sf in hs {
-            let key = match sf.key {
-                KeyRef::Param(j) => match i.get_operand(j as u32) {
-                    Some(Operand::Value(a)) => key_ref(a, f, &args, kb, module, segs),
-                    _ => KeyRef::Unknown,
-                },
-                // the helper's key is a discriminant param: the caller passes a
-                // constant discriminant (names the slot) or forwards its own param.
-                KeyRef::DiscParam(j) => match i.get_operand(j as u32) {
-                    Some(Operand::Value(BasicValueEnum::IntValue(c))) if c.is_const() => {
-                        match c.get_sign_extended_constant() {
-                            Some(d) => disc_slot(d, kb, module, segs),
-                            None => KeyRef::Unknown,
-                        }
-                    }
-                    Some(Operand::Value(a)) => match param_index(a, f) {
-                        Some(jj) => KeyRef::DiscParam(jj),
-                        None => KeyRef::Unknown,
-                    },
-                    _ => KeyRef::Unknown,
-                },
-                other => other,
-            };
-            facts.push(SFact { key, put: sf.put });
-        }
-    }
-    memo.insert(name, facts.clone());
-    facts
-}
-
 // ===================== rich entrypoint bodies (transfers + writes) =====================
 
 thread_local! {
-    /// The entrypoint being modeled: its name and instruction -> program ordinal.
-    static ENTRY: std::cell::RefCell<Option<(String, HashMap<usize, usize>)>> = const { std::cell::RefCell::new(None) };
-    /// Program ordinals of the entrypoint's transfer sites, sorted (for states).
+    /// Program points (paths of instruction ordinals down the call chain), interned.
+    static PATHS: std::cell::RefCell<(Vec<Vec<usize>>, HashMap<Vec<usize>, usize>)> = std::cell::RefCell::new((vec![], HashMap::new()));
+    /// Each function's instruction -> execution-order ordinal.
+    static ORDINALS: std::cell::RefCell<HashMap<usize, HashMap<usize, usize>>> = std::cell::RefCell::new(HashMap::new());
+    /// The program points of the entrypoint's effects, in order (for states).
     static TX_SITES: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(vec![]) };
 }
 
 /// Run `body` with `f` as the entrypoint being modeled.
-fn with_entry<T>(f: FunctionValue, body: impl FnOnce() -> T) -> T {
-    use inkwell::values::AsValueRef;
-    let map: HashMap<usize, usize> =
-        rpo_instrs(f).iter().enumerate().map(|(k, i)| (i.as_value_ref() as usize, k)).collect();
-    ENTRY.with(|e| *e.borrow_mut() = Some((f.get_name().to_string_lossy().into_owned(), map)));
+fn with_entry<T>(_f: FunctionValue, body: impl FnOnce() -> T) -> T {
     let r = body();
-    ENTRY.with(|e| *e.borrow_mut() = None);
     TX_SITES.with(|t| t.borrow_mut().clear());
     r
 }
 
-/// The program ordinal of instruction `i` if `g` is the entrypoint being modeled.
-fn entry_site(g: FunctionValue, i: InstructionValue) -> Option<usize> {
-    use inkwell::values::AsValueRef;
-    ENTRY.with(|e| {
-        let e = e.borrow();
-        let (name, map) = e.as_ref()?;
-        if g.get_name().to_string_lossy() != *name {
-            return None;
+/// The id of program point `path` (a call path: ordinals in each function).
+fn intern(path: Vec<usize>) -> usize {
+    PATHS.with(|p| {
+        let mut p = p.borrow_mut();
+        if let Some(&id) = p.1.get(&path) {
+            return id;
         }
-        map.get(&(i.as_value_ref() as usize)).copied()
+        let id = p.0.len();
+        p.0.push(path.clone());
+        p.1.insert(path, id);
+        id
     })
+}
+
+fn path_of(id: usize) -> Vec<usize> {
+    PATHS.with(|p| p.borrow().0.get(id).cloned().unwrap_or_default())
+}
+
+/// `i`'s ordinal in `g`, in execution (reverse postorder) order.
+fn local_ordinal(g: FunctionValue, i: InstructionValue) -> usize {
+    use inkwell::values::AsValueRef;
+    let key = g.as_value_ref() as usize;
+    ORDINALS.with(|o| {
+        let mut o = o.borrow_mut();
+        let m = o.entry(key).or_insert_with(|| rpo_instrs(g).iter().enumerate().map(|(k, x)| (x.as_value_ref() as usize, k)).collect());
+        m.get(&(i.as_value_ref() as usize)).copied().unwrap_or(usize::MAX)
+    })
+}
+
+/// The program point of instruction `i` of `g`, relative to `g` (a call site
+/// prefixes it when `g`'s expressions are substituted into a caller).
+fn entry_site(g: FunctionValue, i: InstructionValue) -> Option<usize> {
+    Some(intern(vec![local_ordinal(g, i)]))
+}
+
+/// Re-root the program points in callee expression `e` under call `c` (an
+/// ordinal in the caller); caller-side parts (`@done`) are left alone.
+fn prefix_at(e: &Expr, c: usize) -> Expr {
+    match e {
+        Expr::Opaque(l, xs) if l == "@done" => e.clone(),
+        Expr::Opaque(l, xs) if l == "@at" && xs.len() == 1 => match xs[0] {
+            Expr::Const(id) => {
+                let mut p = vec![c];
+                p.extend(path_of(id as usize));
+                Expr::Opaque("@at".into(), vec![Expr::Const(intern(p) as i64)])
+            }
+            _ => e.clone(),
+        },
+        Expr::Bin(o, a, b) => Expr::Bin(*o, Box::new(prefix_at(a, c)), Box::new(prefix_at(b, c))),
+        Expr::VecGet(a, b) => Expr::VecGet(Box::new(prefix_at(a, c)), Box::new(prefix_at(b, c))),
+        Expr::Opaque(l, xs) => annotate_at(&Expr::Opaque(l.clone(), xs.iter().map(|x| prefix_at(x, c)).collect()), intern(vec![c])),
+        other => other.clone(),
+    }
 }
 
 /// Tag every not-yet-tagged `balance()` read in `e` with the program point it
 /// happens at (so it reads the ledger state after the transfers before it).
 fn annotate_at(e: &Expr, site: usize) -> Expr {
     match e {
+        Expr::Opaque(l, _) if l == "@done" => e.clone(),
         Expr::Opaque(l, xs) if (l == "@call:balance" && xs.len() == 2) || (l.starts_with("@slot:") && xs.len() == 1) => {
             let mut v: Vec<Expr> = xs.iter().map(|x| annotate_at(x, site)).collect();
             v.push(Expr::Opaque("@at".into(), vec![Expr::Const(site as i64)]));
@@ -4849,10 +5130,11 @@ fn annotate_at(e: &Expr, site: usize) -> Expr {
     }
 }
 
-/// The ledger state a read at program point `site` sees: after the transfers
-/// before it (`st.pre` when none).
+/// The state a read at program point `site` sees: after the effects that come
+/// before it in execution order (`st.pre` when none).
 fn state_at(site: usize) -> String {
-    let n = TX_SITES.with(|t| t.borrow().iter().filter(|&&s| s < site).count());
+    let at = path_of(site);
+    let n = TX_SITES.with(|t| t.borrow().iter().filter(|&&s| path_of(s) < at).count());
     if n == 0 { "st.pre".into() } else { format!("s{n}") }
 }
 
@@ -5055,21 +5337,83 @@ type Wr = (Expr, Expr);
 /// The SEP-41 transfers and storage writes `h` performs (transitively), in
 /// program order, over `h`'s params. `site` maps a call/put in `h` to its
 /// ordinal when `h` is the entrypoint (so each event knows where it happens).
-#[allow(clippy::type_complexity)]
+/// A cross-contract call the model does not interpret: anything but a SEP-41
+/// `transfer` (modeled) or one of its read-only queries.
+fn foreign_effect(i: InstructionValue) -> bool {
+    let Some(cn) = callee_name(i) else { return false };
+    if cn.contains("update_current_contract_wasm") {
+        return true;
+    }
+    if cn != "call.call" && cn != "call.try_call" {
+        return false;
+    }
+    !matches!(call_symbol(i).as_deref(), Some("balance" | "decimals" | "name" | "symbol" | "allowance"))
+}
+
+/// Can `h` (transitively) change storage or call another contract?
+fn may_effect(h: FunctionValue) -> bool {
+    use inkwell::values::AsValueRef;
+    thread_local! {
+        static MAY: std::cell::RefCell<HashMap<usize, bool>> = std::cell::RefCell::new(HashMap::new());
+    }
+    let key = h.as_value_ref() as usize;
+    if let Some(r) = MAY.with(|m| m.borrow().get(&key).copied()) {
+        return r;
+    }
+    MAY.with(|m| m.borrow_mut().insert(key, true)); // a cycle: assume it may
+    let r = all_instrs(h).into_iter().any(|i| {
+        let Some(cn) = callee_name(i) else { return false };
+        cn.contains("put_contract_data") || cn.contains("del_contract_data") || foreign_effect(i)
+            || inkwell::values::CallSiteValue::try_from(i).ok().and_then(|c| c.get_called_fn_value())
+                .is_some_and(|g| g.count_basic_blocks() > 0 && may_effect(g))
+    });
+    MAY.with(|m| m.borrow_mut().insert(key, r));
+    r
+}
+
+/// An effect the model does not reconstruct: the token ledgers (`@ledgers`, an
+/// uninterpreted cross-contract call) or all of storage (`@all`: effects inside
+/// a loop, or past the analysis depth) become unknown.
+fn havoc(what: &str) -> Option<Wr> {
+    Some((Expr::Opaque("@havoc".into(), vec![]), Expr::Opaque(format!("@{what}"), vec![])))
+}
+
+/// One effect of `h`: the `h`-level instruction it happens at, its program
+/// point (a call path relative to `h`), and the transfer or write.
+type Effect<'c> = (InstructionValue<'c>, Vec<usize>, Option<Tx>, Option<Wr>);
+
+/// The SEP-41 transfers and storage writes `h` performs (transitively), in
+/// execution order, over `h`'s params — and, where it can't reconstruct an
+/// effect, a havoc of what that effect could touch (never nothing).
 fn effects<'c>(
     h: FunctionValue<'c>,
     module: &inkwell::module::Module<'c>,
     memo: &mut HashMap<String, Option<Expr>>,
     fuel: u32,
-) -> Vec<(InstructionValue<'c>, Option<Tx>, Option<Wr>)> {
+) -> Vec<Effect<'c>> {
     let mut out = vec![];
+    let Some(first) = h.get_first_basic_block().and_then(|b| b.get_first_instruction()) else { return out };
     if fuel == 0 {
+        if may_effect(h) {
+            out.push((first, vec![0], None, havoc("all")));
+        }
         return out;
     }
     let cfg = Cfg::build(h);
+    let loops = loop_of(&cfg);
     for i in rpo_instrs(h) {
         let Some(cn) = callee_name(i) else { continue };
+        let at = vec![local_ordinal(h, i)];
         let op = |k: u32| match i.get_operand(k) { Some(Operand::Value(x)) => Some(x), _ => None };
+        let callee = module.get_function(&cn).filter(|g| g.count_basic_blocks() > 0);
+        let effectful = cn.contains("put_contract_data") || cn.contains("del_contract_data") || foreign_effect(i)
+            || (cn == "call.call" && call_symbol(i).as_deref() == Some("transfer"))
+            || callee.is_some_and(may_effect);
+        // inside a loop: how many times it runs is not tracked.
+        if effectful && i.get_parent().and_then(|b| cfg.bidx(b)).is_some_and(|b| loops[b].is_some()) {
+            out.push((i, at, None, havoc("all")));
+            continue;
+        }
         if cn == "call.call" && call_symbol(i).as_deref() == Some("transfer") {
             let tok = op(0).map(|x| value_expr(x, h, module, memo, 40)).unwrap_or(Expr::Opaque("?".into(), vec![]));
             let parts: Vec<Expr> = op(2)
@@ -5079,50 +5423,52 @@ fn effects<'c>(
                 .map(|x| value_expr(x, h, module, memo, 40))
                 .collect();
             if parts.len() == 3 {
-                out.push((i, Some((tok, parts[0].clone(), parts[1].clone(), parts[2].clone())), None));
+                out.push((i, at, Some((tok, parts[0].clone(), parts[1].clone(), parts[2].clone())), None));
+            } else {
+                out.push((i, at, None, havoc("ledgers")));
             }
+            continue;
+        }
+        if foreign_effect(i) {
+            out.push((i, at, None, havoc(if cn.contains("update_current_contract_wasm") { "all" } else { "ledgers" })));
             continue;
         }
         if cn.contains("del_contract_data") {
             let dur = op(1).map(durability).unwrap_or_else(|| "?".into());
             let key = op(0).map(|x| key_expr(x, h, module, memo, 40)).unwrap_or(Expr::Opaque("?".into(), vec![]));
-            out.push((i, None, Some((Expr::Opaque(format!("@slot:{dur}"), vec![key]), Expr::Opaque("@del".into(), vec![])))));
+            out.push((i, at, None, Some((Expr::Opaque(format!("@slot:{dur}"), vec![key]), Expr::Opaque("@del".into(), vec![])))));
             continue;
         }
         if cn.contains("put_contract_data") {
             let dur = op(2).map(durability).unwrap_or_else(|| "?".into());
             let key = op(0).map(|x| key_expr(x, h, module, memo, 40)).unwrap_or(Expr::Opaque("?".into(), vec![]));
             let val = op(1).map(|x| value_expr(x, h, module, memo, 40)).unwrap_or(Expr::Opaque("?".into(), vec![]));
-            out.push((i, None, Some((Expr::Opaque(format!("@slot:{dur}"), vec![key]), val))));
+            out.push((i, at, None, Some((Expr::Opaque(format!("@slot:{dur}"), vec![key]), val))));
             continue;
         }
-        let Some(g2) = module.get_function(&cn) else { continue };
-        if g2.count_basic_blocks() == 0 {
-            continue;
-        }
-        for (_, tx, wr) in effects(g2, module, memo, fuel - 1) {
+        let Some(g2) = callee else { continue };
+        for (_, inner, tx, wr) in effects(g2, module, memo, fuel - 1) {
             let sub = |e: &Expr, memo: &mut HashMap<String, Option<Expr>>| subst_call(e, i, h, &cfg, module, memo, 40);
             let tx = tx.map(|(a, b, c, d)| (sub(&a, memo), sub(&b, memo), sub(&c, memo), sub(&d, memo)));
             let wr = wr.map(|(k, v)| (sub(&k, memo), sub(&v, memo)));
-            out.push((i, tx, wr));
+            let mut path = at.clone();
+            path.extend(inner);
+            out.push((i, path, tx, wr));
         }
     }
     out
 }
 
-/// The rendered Lean body of one entrypoint: threaded transfer states, the post
-/// storage after the writes, the written keys, and the opaque terms used.
+/// The rendered Lean body of one entrypoint: the state chain, its conjuncts
+/// (auth, Ok), post state, the keys its effects name, and the returned value.
 struct RichBody {
     lets: Vec<String>,
     post: String,
     writes: Vec<String>,
-    decls: Vec<String>,
-    key_decls: Vec<String>, // opaque Step → Key terms for unnameable written keys
-    bool_decls: Vec<String>, // opaque Step → Bool branch conditions that couldn't be rendered
-    events: Vec<String>,    // human-readable, for the doc comment
-    ret: Option<String>,    // the returned value, when it is a reconstructed scalar
-    ok_guard: Option<String>, // a Result-returning call succeeds only when it returns Ok
-    auths: Vec<String>,       // require_auth on an address read from storage (not an arg)
+    events: Vec<String>,           // human-readable, for the doc comment
+    ret: String,                   // the returned value (`(u.i 0)` when not reconstructed)
+    conjs: Vec<(String, String)>,  // (label, Lean Prop): auths, then the Ok condition
+    unk_key: bool,                 // some write goes to a key the model leaves open
 }
 
 /// Build the rich body of entrypoint `f` (call inside `with_entry(f, …)`).
@@ -5136,36 +5482,48 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
     let fnid: String = f.get_name().to_string_lossy().chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
     let tid = format!("{fnid}_e");
     let (mut opmap, mut oc, mut decls) = (HashMap::new(), 0usize, vec![]);
-    let evs = with_rich(|| {
+    let structs = spec_structs(module);
+    let named = |e: &Expr| ctx_simplify(&apply_facts(&assume_arg_types(&name_slots(e, module, kb, &segs), &args, &structs)));
+    let raw = with_rich(|| {
         let mut memo = HashMap::new();
         let evs = effects(f, module, &mut memo, 6);
-        // each event's program site and path condition (in the entrypoint).
+        // each event's program point and the condition its block runs under.
         evs.into_iter()
-            .map(|(i, tx, wr)| {
-                let site = entry_site(f, i).unwrap_or(0);
+            .map(|(i, path, tx, wr)| {
+                let site = intern(path);
                 let conds = i.get_parent().and_then(|b| cfg.bidx(b)).map(|b| path_conds(f, &cfg, b, module, &mut memo)).unwrap_or_default();
-                let fix = |e: Expr| name_slots(&annotate_at(&fold_rich(simplify(e)), site), module, kb, &segs);
-                (site, conds.into_iter().map(|c| name_slots(&c, module, kb, &segs)).collect::<Vec<_>>(),
-                 tx.map(|(a, b, c, d)| (fix(a), fix(b), fix(c), fix(d))),
-                 wr.map(|(k, v)| (fix(k), fix(v))))
+                let fix = |e: Expr| annotate_at(&fold_rich(simplify(e)), site);
+                (site, conds, tx.map(|(a, b, c, d)| (fix(a), fix(b), fix(c), fix(d))), wr.map(|(k, v)| (fix(k), fix(v))))
             })
             .collect::<Vec<_>>()
     });
-    // every effect (transfer or storage write) is a state; a read sees the
-    // state after the effects before it.
-    TX_SITES.with(|t| *t.borrow_mut() = evs.iter().filter(|e| e.2.is_some() || e.3.is_some()).map(|e| e.0).collect());
-    // a branch condition we can't render is an uninterpreted (Bool) one — never
-    // `False`, which would claim the guarded effect cannot happen.
-    let mut bool_decls: Vec<String> = vec![];
-    let mut cond_str = |cs: &Vec<Expr>, opmap: &mut HashMap<String, String>, oc: &mut usize, decls: &mut Vec<String>| -> Option<String> {
+    // every effect is a state; a read sees the state after the effects before it.
+    TX_SITES.with(|t| *t.borrow_mut() = raw.iter().map(|e| e.0).collect());
+    let evs: Vec<_> = raw
+        .into_iter()
+        .map(|(site, conds, tx, wr)| {
+            // each conjunct of the condition assumes the ones before it.
+            let mut conds_n: Vec<Expr> = vec![];
+            for c in &conds {
+                let prev: Vec<(Expr, bool)> = conds_n.iter().map(|x: &Expr| (x.clone(), true)).collect();
+                conds_n.push(assuming(&named(c), &prev));
+            }
+            let conds = conds_n;
+            // an effect only happens under its condition: its values assume it.
+            let cs: Vec<(Expr, bool)> = conds.iter().map(|c| (c.clone(), true)).collect();
+            let at = |e: &Expr| assuming(&named(e), &cs);
+            (site, conds, tx.map(|(a, b, c, d)| (at(&a), at(&b), at(&c), at(&d))), wr.map(|(k, v)| (at(&k), at(&v))))
+        })
+        .collect();
+    // a condition as a Lean Prop; a part we can't render is an open Bool, never
+    // `False` (which would claim the guarded effect cannot happen).
+    let cond_str = |cs: &[Expr], opmap: &mut HashMap<String, String>, oc: &mut usize, decls: &mut Vec<String>| -> Option<String> {
         if cs.is_empty() {
             return None;
         }
-        let mut unknown = |oc: &mut usize| {
+        let unknown = |oc: &mut usize| {
             *oc += 1;
-            let nm = format!("{tid}_c{oc}");
-            bool_decls.push(nm.clone());
-            format!("({nm} st) = true")
+            format!("(u.b {oc}) = true")
         };
         let parts: Vec<String> = cs
             .iter()
@@ -5180,374 +5538,300 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
         Some(parts.join(" ∧ "))
     };
     let (mut lets, mut writes, mut events) = (vec![], vec![], vec![]);
-    let mut key_decls: Vec<String> = vec![];
+    let mut unk_key = false;
     let mut cur = "st.pre".to_string();
     let mut nstate = 0;
     for (_site, conds, tx, wr) in &evs {
         let cs = cond_str(conds, &mut opmap, &mut oc, &mut decls);
+        let when = cs.as_ref().map(|c| format!("   [when {c}]")).unwrap_or_default();
         let next = |x: String, cur: &str| match &cs { Some(c) => format!("if {c} then {x} else {cur}"), None => x };
         if let Some((tok, from, to, amt)) = tx {
-            let ledger = ledger_term(tok, &args, &mut opmap, &mut oc, &mut decls, &tid).unwrap_or_else(|| format!("\"Token?{nstate}\""));
+            let ledger = lean_guard_term(tok, &args, &mut opmap, &mut oc, &mut decls, &tid);
             let (fr, tr, ar) = (
                 lean_guard_term(from, &args, &mut opmap, &mut oc, &mut decls, &tid),
                 lean_guard_term(to, &args, &mut opmap, &mut oc, &mut decls, &tid),
                 lean_guard_term(amt, &args, &mut opmap, &mut oc, &mut decls, &tid),
             );
             nstate += 1;
-            lets.push(format!("let s{nstate} := {}", next(format!("xfer {ledger} {cur} ({fr}) ({tr}) ({ar})"), &cur)));
+            lets.push(format!("let s{nstate} := {}", next(format!("xfer ({ledger}) {cur} ({fr}) ({tr}) ({ar})"), &cur)));
             for p in [&fr, &tr] {
-                let k = format!(".entry {ledger} ({p})");
+                let k = format!(".bal ({ledger}) ({p})");
                 if !writes.contains(&k) {
                     writes.push(k);
                 }
             }
-            let ledger_show = if ledger.contains("Token?") { format!("{ledger} = {}", render_expr(tok, &args)) } else { ledger.clone() };
-            events.push(format!("transfer {ledger_show}: {} -> {} : {}{}", render_expr(from, &args), render_expr(to, &args), render_expr(amt, &args),
-                cs.as_ref().map(|c| format!("   [when {c}]")).unwrap_or_default()));
+            events.push(format!("transfer {}: {} -> {} : {}{when}", render_expr(tok, &args), render_expr(from, &args), render_expr(to, &args), render_expr(amt, &args)));
             cur = format!("s{nstate}");
         }
-        if let Some((k, v)) = wr {
-            let key = lean_key(k, &args, &mut opmap, &mut oc, &mut decls, &tid).map(|(k, _)| k);
-            // an unnameable key is still a write — to SOME key (opaque), never dropped.
-            let key = match key {
-                Some(k) => k,
-                None => {
-                    oc += 1;
-                    let nm = format!("{tid}_k{oc}");
-                    key_decls.push(nm.clone());
-                    format!("({nm} st)")
-                }
-            };
-            events.push(format!("write {}{} := {}", render_expr(k, &args), cs.as_ref().map(|c| format!(" [when {c}]")).unwrap_or_default(), render_expr(v, &args)));
-            // a struct value is stored field by field (nested structs recursively).
-            fn flatten(key: String, v: &Expr, out: &mut Vec<(String, Expr)>) {
-                match v {
-                    Expr::Opaque(l, xs) if l.starts_with("@struct:") && l["@struct:".len()..].split(',').count() == xs.len() => {
-                        for (f, x) in l["@struct:".len()..].split(',').zip(xs) {
-                            flatten(format!(".fld ({key}) \"{f}\""), x, out);
-                        }
-                    }
-                    _ => out.push((key, v.clone())),
-                }
-            }
-            let mut sets = vec![];
-            let del = matches!(v, Expr::Opaque(l, x) if l == "@del" && x.is_empty());
-            if del {
-                sets.push((key.clone(), Expr::Const(0)));
-            } else {
-                flatten(key.clone(), v, &mut sets);
-            }
-            // a named key's presence: set → 1, remove → 0.
-            if !key.ends_with(" st)") {
-                sets.push((format!(".has ({key})"), Expr::Const(if del { 0 } else { 1 })));
-            }
-            let mut upd = cur.clone();
-            for (key, v) in &sets {
-                let val = lean_guard_term(v, &args, &mut opmap, &mut oc, &mut decls, &tid);
-                upd = format!("({upd}).set ({key}) ({val})");
-                if !writes.contains(key) {
-                    writes.push(key.clone());
-                }
-            }
+        let Some((k, v)) = wr else { continue };
+        // an effect the model doesn't interpret: what it could touch is open.
+        if matches!(k, Expr::Opaque(l, x) if l == "@havoc" && x.is_empty()) {
+            oc += 1;
+            let all = matches!(v, Expr::Opaque(l, _) if l == "@all");
+            let h = if all { format!("(u.s {oc})") } else { format!("havoc {cur} (u.s {oc})") };
+            events.push(format!("{}{when}", if all { "unmodeled effect: all storage open" } else { "call into another contract: token ledgers open" }));
             nstate += 1;
-            lets.push(format!("let s{nstate} := {}", next(upd, &cur)));
+            lets.push(format!("let s{nstate} := {}", next(h, &cur)));
             cur = format!("s{nstate}");
+            continue;
         }
+        // an unnameable key is still a write — to SOME key (open), never dropped.
+        let key = match lean_key(k, &args, &mut opmap, &mut oc, &mut decls, &tid) {
+            Some((k, _)) => k,
+            None => {
+                oc += 1;
+                unk_key = true;
+                format!("(u.k {oc})")
+            }
+        };
+        events.push(format!("write {} := {}{when}", render_expr(k, &args), render_expr(v, &args)));
+        // a struct value is stored field by field (nested structs recursively).
+        fn flatten(key: String, v: &Expr, out: &mut Vec<(String, Expr)>) {
+            match v {
+                Expr::Opaque(l, xs) if l.starts_with("@struct:") && l["@struct:".len()..].split(',').count() == xs.len() => {
+                    for (f, x) in l["@struct:".len()..].split(',').zip(xs) {
+                        flatten(format!(".fld ({key}) \"{f}\""), x, out);
+                    }
+                }
+                _ => out.push((key, v.clone())),
+            }
+        }
+        let mut sets = vec![];
+        let del = matches!(v, Expr::Opaque(l, x) if l == "@del" && x.is_empty());
+        if !del {
+            flatten(key.clone(), v, &mut sets);
+        }
+        // the key's presence: set → 1, remove → 0.
+        sets.push((format!(".has ({key})"), Expr::Const(if del { 0 } else { 1 })));
+        let mut upd = cur.clone();
+        for (key, v) in &sets {
+            let val = lean_guard_term(v, &args, &mut opmap, &mut oc, &mut decls, &tid);
+            upd = format!("({upd}).set ({key}) ({val})");
+            if !writes.contains(key) {
+                writes.push(key.clone());
+            }
+        }
+        nstate += 1;
+        lets.push(format!("let s{nstate} := {}", next(upd, &cur)));
+        cur = format!("s{nstate}");
     }
     let post = cur;
-    let bool_decls = std::mem::take(&mut bool_decls);
-    // the returned value (a scalar Val), read in the final state.
+    // the returned value, read in the state at the return.
     let ret = with_rich(|| {
         let mut memo = HashMap::new();
-        let rets: Vec<InstructionValue> = all_instrs(f).into_iter().filter(|i| i.get_opcode() == InstructionOpcode::Return).collect();
         let mut vals: Vec<Expr> = vec![];
-        for r in &rets {
+        for r in all_instrs(f).into_iter().filter(|i| i.get_opcode() == InstructionOpcode::Return) {
             let Some(Operand::Value(v)) = r.get_operand(0) else { return None };
-            let site = entry_site(f, *r).unwrap_or(usize::MAX);
-            let e = name_slots(&annotate_at(&fold_rich(simplify(value_expr(v, f, module, &mut memo, 40))), site), module, kb, &segs);
+            let e = named(&fold_rich(simplify(value_expr(v, f, module, &mut memo, 40))));
             if !vals.contains(&e) {
                 vals.push(e);
             }
         }
-        if std::env::var("SDBG").is_ok() { for v in &vals { eprintln!("RET {}: {}", fnid, render_expr(v, &args)); } }
         match vals.as_slice() {
             [e] => Some(e.clone()),
             _ => None,
         }
     });
-    // a Result-returning entrypoint: the Ok condition is a guard of the step.
-    let ok_guard = ret
-        .as_ref()
-        .and_then(ok_condition)
-        .and_then(|c| lean_cond(&c, &args, &mut opmap, &mut oc, &mut decls, &tid));
-    let ret = ret
-        .filter(|e| !matches!(e, Expr::Opaque(l, _) if l == "@vec" || l == "big") && (expr_has_named(e) || ok_guard.is_some()))
-        .map(|e| lean_guard_term(&e, &args, &mut opmap, &mut oc, &mut decls, &tid));
-    // `x.require_auth()` on an address that isn't an argument (e.g. a struct
-    // field in storage): that address must have signed.
-    let auths: Vec<String> = with_rich(|| {
+    let mut conjs: Vec<(String, String)> = vec![];
+    // every `x.require_auth()` (and `_for_args`) of the entrypoint: x signed —
+    // under the condition the call runs in.
+    with_rich(|| {
         let mut memo = HashMap::new();
-        let mut out = vec![];
-        for i in all_instrs(f) {
+        for i in rpo_instrs(f) {
             if !callee_name(i).is_some_and(|n| n.contains("require_auth")) {
                 continue;
             }
             let Some(Operand::Value(v)) = i.get_operand(0) else { continue };
-            let site = entry_site(f, i).unwrap_or(0);
-            let e = name_slots(&annotate_at(&fold_rich(simplify(value_expr(v, f, module, &mut memo, 40))), site), module, kb, &segs);
-            if matches!(e, Expr::Param(_)) || lean_key(&e, &args, &mut HashMap::new(), &mut 0, &mut vec![], &tid).is_none() {
-                continue;
-            }
-            let t = lean_guard_term(&e, &args, &mut opmap, &mut oc, &mut decls, &tid);
-            if !out.contains(&t) {
-                out.push(t);
+            let e = named(&fold_rich(simplify(value_expr(v, f, module, &mut memo, 40))));
+            let who = match &e {
+                Expr::Param(_) => lean_guard_term(&e, &args, &mut opmap, &mut oc, &mut decls, &tid),
+                e if lean_key(e, &args, &mut HashMap::new(), &mut 0, &mut vec![], &tid).is_some() => lean_guard_term(e, &args, &mut opmap, &mut oc, &mut decls, &tid),
+                _ => continue, // an address we can't name: the auth is dropped (weaker, sound)
+            };
+            let pcs: Vec<Expr> = i.get_parent().and_then(|b| cfg.bidx(b)).map(|b| path_conds(f, &cfg, b, module, &mut memo)).unwrap_or_default();
+            let pc = cond_str(&pcs.iter().map(named).collect::<Vec<_>>(), &mut opmap, &mut oc, &mut decls);
+            let p = match pc {
+                Some(pc) => format!("(({pc}) → {who} ∈ st.call.signers)"),
+                None => format!("{who} ∈ st.call.signers"),
+            };
+            let label = format!("require_auth {}", render_expr(&e, &args));
+            if !conjs.iter().any(|(_, q)| *q == p) {
+                conjs.push((label, p));
             }
         }
-        out
     });
-    RichBody { lets, post, writes, decls: std::mem::take(&mut decls), key_decls, bool_decls, events, ret, ok_guard, auths }
+    // a Result-returning entrypoint: it succeeds only when it returns Ok.
+    if let Some(c) = ret.as_ref().and_then(ok_condition).and_then(|c| lean_cond(&c, &args, &mut opmap, &mut oc, &mut decls, &tid)) {
+        conjs.push(("returns Ok".into(), format!("({c})")));
+    }
+    let ret = ret
+        .filter(|e| !matches!(e, Expr::Opaque(l, _) if l == "@vec" || l == "big"))
+        .map(|e| lean_guard_term(&e, &args, &mut opmap, &mut oc, &mut decls, &tid))
+        .unwrap_or_else(|| "(u.i 0)".into());
+    RichBody { lets, post, writes, events, ret, conjs, unk_key }
 }
 
 /// Emit a relational abstraction of the contract: one `Step → Prop` per
-/// entrypoint, in the style of stellar-lean-playground's `SorobanAmm.lean`.
-/// RECOVERED exactly from the bytecode: the entrypoints + their ABI args, the
-/// SEP-41 transfer DIRECTIONS (traced transitively through fastcc helpers), and
-/// the storage slots each entrypoint writes/reads (real `DataKey` names from the
-/// data section). UNINTERPRETED (the nonlinear fee / share math the lifter marks
-/// opaque): transfer amounts and stored values — emitted as `opaque` Step-indexed
-/// terms, so the model is faithful about exactly what was and was not recovered.
-fn emit_lean_model(entries: &[ModelEntry]) {
+/// entrypoint, in the style of stellar-lean-playground's `SorobanAmm.lean`,
+/// built to OVER-approximate the contract: every successful invocation is a
+/// step its entrypoint's predicate admits (for some choice of the values the
+/// reconstruction leaves open), so a property proved of all admitted steps
+/// holds of the contract. With `check`, also emit per-entrypoint checkers that
+/// evaluate the same conjuncts on concrete steps (the conformance harness).
+fn emit_lean_model(entries: &[ModelEntry], check: bool) {
     let san = |s: &str| s.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect::<String>();
-    println!("-- Auto-emitted by stellar-diver: a relational abstraction of the contract,");
-    println!("-- one `Step → Prop` per entrypoint, in the style of SorobanAmm.lean.");
-    println!("--");
-    println!("-- RECONSTRUCTED from the bytecode, in terms of call arguments, storage slots");
-    println!("-- (real DataKey names) and token ledgers:");
-    println!("--   * effects, in program order, as a chain of states s1, s2, …: SEP-41");
-    println!("--     transfers (`xfer`: ledger, from, to, amount) and storage writes, each");
-    println!("--     under the (non-panic) branch condition it runs in;");
-    println!("--   * every read sees the state at its program point (a balance read after a");
-    println!("--     transfer reads the post-transfer ledger; a slot read after a write");
-    println!("--     reads the write — e.g. a token's self-transfer nets to zero);");
-    println!("--   * guards: require_auth, every panic condition and `Err` return, as the");
-    println!("--     condition to pass.");
-    println!("-- Values are rebuilt through i128 helper routines (__muloti4 / __divti3), out-");
-    println!("-- pointer returns and by-reference closure captures on the wasm shadow stack.");
-    println!("--");
-    println!("-- Storage keys: `.var` (unit variant), `.entry` / `.tup` (variants with one /");
-    println!("-- several fields), `.fld k f` (field f of the #[contracttype] struct stored at");
-    println!("-- k, nested structs field by field) and `.has k` (k's presence: set → 1,");
-    println!("-- remove → 0). Struct arguments' fields are args named `config.limit`.");
-    println!("--");
-    println!("-- STILL `opaque`: values from loops (e.g. an integer sqrt), tuple and whole-");
-    println!("-- struct returns, enum values carried as data, and whatever the");
-    println!("-- reconstruction could not resolve (a branch condition so becomes an opaque");
-    println!("-- `Step → Bool`, never `False`).");
-    println!("-- ASSUMES token ledgers are keyed by the storage slot holding the token");
-    println!("-- address (`\"TokenA\"`, `\"Offer.buy_token\"`), i.e. distinct slots hold");
-    println!("-- distinct tokens; an absent key reads as 0 (`get(k).unwrap_or(0)`); the");
-    println!("-- host's address order (`obj_cmp`) is the order on `Addr`; loops terminate.");
-    println!("-- Reads/writes inside one helper call are ordered at the call's position.\n");
-    println!("namespace Contract\n");
-    println!("abbrev Addr := Int\n");
-    println!("inductive Key where");
-    println!("  | var   (name : String)");
-    println!("  | entry (map : String) (k : Addr)");
-    println!("  | tup   (map : String) (ks : List Int)   -- a multi-field key variant, `Minter(a, b)`");
-    println!("  | fld   (base : Key) (f : String)   -- a field of the #[contracttype] struct at `base`");
-    println!("  | has   (k : Key)                   -- k's presence (1 = set): `has(k)`, written by set/remove");
-    println!("  deriving DecidableEq, Inhabited\n");
-    println!("abbrev Storage := Key → Int");
-    println!("def Storage.set (s : Storage) (k : Key) (v : Int) : Storage := fun k' => if k' = k then v else s k'\n");
-    println!("structure Call where");
-    println!("  fn     : String");
-    println!("  caller : Addr");
-    println!("  arg    : String → Int   -- numeric args by name");
-    println!("  argA   : String → Addr  -- address args by name");
-    println!("  signed : Addr → Prop    -- addresses that authorized the call (require_auth)");
-    println!("  env    : String → Int   -- ledger info (`sequence`, `timestamp`)\n");
-    println!("structure Step where");
-    println!("  call   : Call");
-    println!("  pre    : Storage");
-    println!("  post   : Storage");
-    println!("  writes : List Key");
-    println!("  ret    : Int\n");
-    println!("/-- the pool's own address (`e.current_contract_address()`). -/");
-    println!("opaque pool : Addr\n");
-    println!("/-- a token ledger `m`'s balance of `a`. -/");
-    println!("def bal (m : String) (s : Storage) (a : Addr) : Int := s (.entry m a)");
-    println!("/-- storage after token `m` moves `amt` from `src` to `dst`. -/");
-    println!("def xfer (m : String) (s : Storage) (src dst : Addr) (amt : Int) : Storage :=");
-    println!("  let s1 := s.set (.entry m src) (bal m s src - amt)   -- (a self-transfer nets to zero)");
-    println!("  s1.set (.entry m dst) (bal m s1 dst + amt)\n");
-    // the fee-adjusted constant-product invariant the contract checks on itself
-    // (new_inv_a*new_inv_b). Opaque: we recover that it is CHECKED, not its formula.
-    if entries.iter().any(|e| e.inv) {
-        println!("/-- the fee-adjusted constant-product invariant value `new_inv_a*new_inv_b`,");
-        println!("    the quantity the contract's `constant product` panic compares. -/");
-        println!("opaque invProduct : Storage → Int\n");
-    }
-
+    print!("{}", LEAN_PRELUDE);
     for e in entries {
         let fn_id = san(&e.name);
-        // signature comment
+        let rb = &e.rich;
         let sig: Vec<String> = e.args.iter().map(|(n, t)| format!("{n}: {t}")).collect();
         println!("/-- `{}({})`", e.name, sig.join(", "));
-        if let Some(rb) = &e.rich {
-            println!("    effects (reconstructed, in program order):");
+        if !rb.events.is_empty() {
+            println!("    effects, in execution order:");
             for ev in &rb.events {
                 println!("      {ev}");
             }
-        } else if e.transfers.is_empty() {
-            println!("    transfers: (none recovered)");
-        } else {
-            println!("    transfers (direction recovered; amount uninterpreted):");
-            for (k, (from, to)) in e.transfers.iter().enumerate() {
-                println!("      {}: {from} -> {to}", e.tokens[k]);
-            }
         }
-        if e.rich.is_none() && !e.writes.is_empty() {
-            let ws: Vec<String> = e.writes.iter().map(|(s, _)| s.clone()).collect();
-            println!("    writes storage: {}", ws.join(", "));
-        }
-        // the recovered transition guards: auth, then every trap (panic) gate.
-        if e.auth.is_some() || !e.guards.is_empty() {
-            println!("    guards (recovered panic/gate conditions):");
-            if let Some(a) = &e.auth {
-                println!("      auth: caller signed as `{a}` (require_auth)");
-            }
-            for a in &e.more_auths {
-                println!("      auth: `{a}` also authorized the call (require_auth)");
+        if !rb.conjs.is_empty() || !e.guards.is_empty() {
+            println!("    conditions to succeed:");
+            for (l, _) in &rb.conjs {
+                println!("      {l}");
             }
             for g in &e.guards {
                 println!("      gate: {}", g.comment);
             }
         }
         println!("-/");
-        // opaque Step-terms for anything not reconstructed.
-        if let Some(rb) = &e.rich {
-            for d in &rb.decls {
-                println!("opaque {d} : Step → Int");
-            }
-            for d in &rb.key_decls {
-                println!("opaque {d} : Step → Key");
-            }
-            for d in &rb.bool_decls {
-                println!("opaque {d} : Step → Bool");
-            }
-        } else {
-            for k in 0..e.transfers.len() {
-                println!("opaque {fn_id}_amt{k} : Step → Int");
-            }
-            for (slot, _) in &e.writes {
-                println!("opaque {fn_id}_v_{} : Step → Int", san(slot));
+        // the conjuncts, labelled (the checker evaluates exactly these).
+        let mut conjs: Vec<(String, String)> = vec![
+            ("fn".into(), format!("st.call.fn = \"{}\"", e.name)),
+            ("not re-entrant".into(), "c ≠ pool".into()),
+        ];
+        conjs.extend(rb.conjs.iter().cloned());
+        for g in &e.guards {
+            if !conjs.iter().any(|(_, p)| *p == g.lean) {
+                conjs.push((format!("gate: {}", g.comment), g.lean.clone()));
             }
         }
-        for d in &e.gdecls {
-            println!("opaque {d} : Step → Int");
+        let mut body: Vec<String> = vec!["let c := st.call.caller".into(), "let pool := st.call.self".into()];
+        body.extend(rb.lets.iter().cloned());
+        let writes = format!("[{}]", rb.writes.join(", "));
+        let text = format!("{} {} {} {} {}", body.join(" "), conjs.iter().map(|c| c.1.clone()).collect::<Vec<_>>().join(" "), rb.post, writes, rb.ret);
+        let open = text.contains("(u.");
+        println!("def {fn_id} : Step → Prop := fun st =>{}", if open { " ∃ u : Unk," } else { "" });
+        for l in &body {
+            println!("  {l}");
         }
-        if e.returns && e.rich.as_ref().and_then(|rb| rb.ret.as_ref()).is_none() {
-            println!("opaque {fn_id}_ret : Step → Int");
+        for (k, (label, p)) in conjs.iter().enumerate() {
+            let tag = if k < 2 { String::new() } else if label.starts_with("gate") { "   -- gate".into() } else { format!("   -- {label}") };
+            println!("  {p} ∧{tag}");
         }
-        // the Step -> Prop model
-        println!("def {fn_id} : Step → Prop := fun st =>");
-        println!("  let c := st.call.caller");
-        // thread the transfers
-        let mut cur = "st.pre".to_string();
-        if let Some(rb) = &e.rich {
-            for l in &rb.lets {
+        println!("  st.post = {} ∧", rb.post);
+        println!("  st.writes = {writes} ∧");
+        println!("  st.ret = {}\n", rb.ret);
+        if check {
+            // the same terms, evaluated: (labelled conjuncts, post, writes, open key?).
+            println!("def {fn_id}.check (st : Step) (u : Unk) : List (String × Bool) × Storage × List Key × Bool :=");
+            println!("  let _ := u");
+            for l in &body {
                 println!("  {l}");
             }
-        }
-        for (k, (from, to)) in e.transfers.iter().enumerate().filter(|_| e.rich.is_none()) {
-            let next = format!("s{}", k + 1);
-            println!(
-                "  let {next} := xfer \"{}\" {cur} {from} {to} ({fn_id}_amt{k} st)",
-                e.tokens[k]
-            );
-            cur = next;
-        }
-        // post: fold the recovered storage writes onto the post-transfer storage
-        let key_term = |slot: &str, mapping: bool| -> String {
-            if mapping {
-                format!(".entry \"{slot}\" c") // mapping keyed by the caller
-            } else {
-                format!(".var \"{slot}\"")
-            }
-        };
-        let mut post = cur.clone();
-        for (slot, mapping) in &e.writes {
-            post = format!("({post}.set ({}) ({fn_id}_v_{} st))", key_term(slot, *mapping), san(slot));
-        }
-        let mut writes_list: Vec<String> = e.writes.iter().map(|(s, m)| key_term(s, *m)).collect();
-        if let Some(rb) = &e.rich {
-            post = rb.post.clone();
-            writes_list = rb.writes.clone();
-        }
-        let rich_ret = e.rich.as_ref().and_then(|rb| rb.ret.clone());
-        let ret = match (&rich_ret, e.returns) {
-            (Some(r), true) => r.clone(),
-            (_, true) => format!("{fn_id}_ret st"),
-            _ => "0".to_string(),
-        };
-        println!("  st.call.fn = \"{}\" ∧", e.name);
-        println!("  c ≠ pool ∧");
-        // recovered transition guards: auth, then the constant-product check.
-        if let Some(a) = &e.auth {
-            println!("  c = st.call.argA \"{a}\" ∧   -- require_auth");
-        }
-        for a in &e.more_auths {
-            println!("  st.call.signed (st.call.argA \"{a}\") ∧   -- require_auth");
-        }
-        for a in e.rich.iter().flat_map(|rb| &rb.auths) {
-            println!("  st.call.signed {a} ∧   -- require_auth");
-        }
-        if e.inv {
-            println!("  invProduct st.pre ≤ invProduct st.post ∧   -- constant-product trap");
-        }
-        // the recovered panic gates as pass conditions over args + storage.
-        for g in &e.guards {
-            println!("  {} ∧   -- gate", g.lean);
-        }
-        if let Some(okg) = e.rich.as_ref().and_then(|rb| rb.ok_guard.as_ref()) {
-            println!("  ({okg}) ∧   -- returns Ok (an Err return fails the call)");
-        }
-        println!("  st.post = {post} ∧");
-        println!("  st.writes = [{}] ∧", writes_list.join(", "));
-        println!("  st.ret = {ret}\n");
-
-        // the recovered constant-product guard is itself a value invariant:
-        // emit the one-step monotonicity theorem, projected out of the def.
-        if e.inv {
-            let before = 2 + if e.auth.is_some() { 1 } else { 0 }; // fn, c≠pool, [auth]
-            let path = ".2".repeat(before) + ".1"; // invProduct is the next conjunct
-            println!("-- VALUE INVARIANT: a `{}` never decreases the constant product.", e.name);
-            println!("theorem {fn_id}_keeps_product (st : Step) (h : {fn_id} st) :");
-            println!("    invProduct st.pre ≤ invProduct st.post := h{path}\n");
+            let mut items: Vec<String> = conjs.iter().map(|(l, p)| format!("({:?}, decide ({p}))", l)).collect();
+            items.push(format!("(\"ret\", decide (st.ret = {}))", rb.ret));
+            println!("  ([{}],\n   {}, {writes}, {})\n", items.join(",\n    "), rb.post, rb.unk_key);
         }
     }
-
-    // the contract as the list of its entrypoints (cf. SorobanAmm.contract).
     let names: Vec<String> = entries.iter().map(|e| san(&e.name)).collect();
     println!("/-- the contract's entry points (each a `Step → Prop`). -/");
     println!("def entries : List (Step → Prop) := [{}]\n", names.join(", "));
-
-    // inductive no-drain: the invariant never falls below its start across any
-    // sequence of the invariant-guarded entrypoint's calls.
-    if let Some(e) = entries.iter().find(|e| e.inv) {
-        let fn_id = san(&e.name);
-        println!("-- VALUE INVARIANT (inductive): across any sequence of `{}` calls the", e.name);
-        println!("-- constant product never falls below its start -- no draining by swapping.");
-        println!("inductive Reach : Storage → Storage → Prop where");
-        println!("  | refl (s) : Reach s s");
-        println!("  | step {{s}} (st : Step) : Reach s st.pre → {fn_id} st → Reach s st.post\n");
-        println!("theorem no_drain (s t : Storage) (r : Reach s t) : invProduct s ≤ invProduct t := by");
-        println!("  induction r with");
-        println!("  | refl => omega");
-        println!("  | step st _ h ih => have hp := {fn_id}_keeps_product st h; omega\n");
+    if check {
+        let cs: Vec<String> = entries.iter().map(|e| format!("(\"{}\", {}.check)", e.name, san(&e.name))).collect();
+        println!("def checkers : List (String × (Step → Unk → List (String × Bool) × Storage × List Key × Bool)) :=\n  [{}]\n", cs.join(",\n   "));
     }
     println!("end Contract");
 }
+
+/// The fixed part of every emitted model.
+const LEAN_PRELUDE: &str = r#"-- Auto-emitted by stellar-diver: a relational model of the contract, one
+-- `Step → Prop` per entrypoint (in the style of SorobanAmm.lean), reconstructed
+-- from the bytecode over call arguments, signers, storage and token ledgers.
+--
+-- It is built to OVER-approximate the contract: every successful invocation is
+-- a step its entrypoint admits, for some choice of `u : Unk` (the values the
+-- reconstruction leaves open). So a property proved of every admitted step
+-- holds of the contract. Concretely:
+--   * effects run in execution order as states s1, s2, …, each under the exact
+--     condition its code runs in; a read sees the state at its program point;
+--   * an effect the model doesn't interpret is not dropped: a call into another
+--     contract leaves every token ledger open (`havoc`), an effect inside a
+--     loop or past the analysis depth leaves all storage open;
+--   * conditions to succeed: `require_auth` (the address is among the signers),
+--     panics (`reach → pass`) and `Err` returns; a guard that can't be stated
+--     is dropped, never guessed.
+-- Storage keys: `.var` (unit variant), `.entry` / `.tup` (variants with one /
+-- several fields), `.fld k f` (field f of the #[contracttype] struct at k),
+-- `.has k` (k's presence: set → 1, remove → 0), `.bal t a` (token t's balance
+-- of a). Struct arguments' fields are args named like `config.limit`.
+--
+-- Assumes: tokens the contract calls `transfer` / `balance` on behave per
+-- SEP-41; addresses are encoded as `Addr` in the host's order (`obj_cmp`).
+
+namespace Contract
+
+abbrev Addr := Int
+
+inductive Key where
+  | var   (name : String)
+  | entry (map : String) (k : Addr)
+  | tup   (map : String) (ks : List Int)
+  | fld   (base : Key) (f : String)
+  | has   (k : Key)
+  | bal   (t : Addr) (a : Addr)
+  deriving DecidableEq, Inhabited
+
+abbrev Storage := Key → Int
+def Storage.set (s : Storage) (k : Key) (v : Int) : Storage := fun k' => if k' = k then v else s k'
+
+structure Call where
+  fn      : String
+  caller  : Addr
+  self    : Addr           -- the contract's own address
+  arg     : String → Int   -- numeric args by name
+  argA    : String → Addr  -- address args by name
+  signers : List Addr      -- addresses that authorized the call (require_auth)
+  env     : String → Int   -- ledger info (`sequence`, `timestamp`)
+
+structure Step where
+  call   : Call
+  pre    : Storage
+  post   : Storage
+  writes : List Key
+  ret    : Int
+
+/-- Values the reconstruction leaves open, chosen per step. -/
+structure Unk where
+  i : Nat → Int      -- values
+  g : Nat → Int      -- guard operands
+  b : Nat → Bool     -- branch conditions
+  k : Nat → Key      -- storage keys
+  s : Nat → Storage  -- storage after an effect the model doesn't interpret
+
+/-- token `t`'s balance of `a`. -/
+def bal (t : Addr) (s : Storage) (a : Addr) : Int := s (.bal t a)
+/-- storage after token `t` moves `amt` from `src` to `dst` (a self-transfer nets to zero). -/
+def xfer (t : Addr) (s : Storage) (src dst : Addr) (amt : Int) : Storage :=
+  let s1 := s.set (.bal t src) (bal t s src - amt)
+  s1.set (.bal t dst) (bal t s1 dst + amt)
+/-- storage after a call into another contract the model doesn't interpret: the
+    contract's own storage is unchanged (Soroban forbids re-entry); token
+    ledgers take `h`'s values. -/
+def havoc (s h : Storage) : Storage := fun k => match k with
+  | .bal t a => h (.bal t a)
+  | _ => s k
+/-- `get(k).unwrap_or(0)`: the value at `k`, or 0 when `base` (k's struct) is absent. -/
+def getOr0 (s : Storage) (k : Key) (base : Key := k) : Int := if s (.has base) = 1 then s k else 0
+
+"#;
 
 /// Emit a Lean token-conservation model for an AMM: every SEP-41 transfer (found
 /// transitively, any depth) moves an amount between `ext` (external parties),
@@ -6530,6 +6814,7 @@ fn main() {
     let (mut only_fn, mut callee, mut sym, mut sink_sel, mut raw, mut lean_sm, mut amm_dbg, mut lean_amm, mut expr_dbg, mut lean_pool, mut lean_cpmm, mut storage_schema) =
         (None, "call".to_string(), Some("transfer".to_string()), "all".to_string(), false, false, false, false, false, false, false, false);
     let mut lean_model = false;
+    let mut lean_check = false;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--fn" => only_fn = args.next(),
@@ -6544,6 +6829,7 @@ fn main() {
                 Some("pool") => lean_pool = true,
                 Some("cpmm") => lean_cpmm = true,
                 Some("model") => lean_model = true,
+                Some("check") => (lean_model, lean_check) = (true, true),
                 other => {
                     eprintln!("--lean expects a mode: sm | amm | pool | cpmm | model (got {other:?})\n{LEAN_MODES}");
                     std::process::exit(2);
@@ -6579,11 +6865,6 @@ fn main() {
     let mut pool_entries: Vec<PoolEntry> = vec![];
     let mut cpmm_hits: Vec<(String, String, String, String)> = vec![];
     let mut model_entries: Vec<ModelEntry> = vec![];
-    // the DataKey builder + rodata, for resolving real storage-slot names (model).
-    let m_kb = datakey_builder(&module);
-    let m_usage = m_kb.map(kb_field_usage);
-    let m_kb_pair = m_kb.zip(m_usage.as_ref());
-    let m_segs = rodata_segs(&module);
     for f in module.get_functions() {
         if f.count_basic_blocks() == 0 {
             continue;
@@ -6616,41 +6897,15 @@ fn main() {
                 .filter(|(_, _, t)| !t.is_empty())
                 .map(|(_, n, t)| (n.clone(), t.clone()))
                 .collect();
-            let mut memo = HashMap::new();
-            let facts = summarize(f, &module, &mut memo, 12);
-            let transfers: Vec<(String, String)> = facts
-                .iter()
-                .map(|tf| (party_term(tf.from).to_string(), party_term(tf.to).to_string()))
-                .collect();
-            // token ledgers by recovered transfer order (A first, then B).
-            let tokens: Vec<String> = (0..facts.len())
-                .map(|k| if k % 2 == 0 { "A.Balance".into() } else { "B.Balance".into() })
-                .collect();
-            let stores = entry_storage(f, m_kb_pair, &module, &m_segs);
-            let writes: Vec<(String, bool)> = stores
-                .iter()
-                .filter(|(_, _, w, _)| *w)
-                .map(|(n, p, _, _)| (n.clone(), !p.is_empty()))
-                .collect();
-            let returns = f
-                .get_string_attribute(AttributeLoc::Function, "spec.type")
-                .or_else(|| f.get_string_attribute(AttributeLoc::Return, "spec.type"))
-                .map(|a| a.get_string_value().to_string_lossy().into_owned())
-                .map(|s| !s.is_empty() && s != "void")
-                .unwrap_or(false);
-            let auth = entry_auth(f);
-            let inv = has_product_invariant_trap(f, &module);
-            let (rb, gset) = with_entry(f, || {
+            let facts = entry_facts(f, &module);
+            FACTS.with(|x| *x.borrow_mut() = facts);
+            let (rich, gset) = with_entry(f, || {
                 let rb = rich_body(f, &module);
                 let gs = entry_guards(f, &module);
                 (rb, gs)
             });
-            let (guards, gdecls) = (gset.guards, gset.decls);
-            let rich = (!rb.lets.is_empty() || !rb.writes.is_empty() || rb.ret.is_some()).then_some(rb);
-            model_entries.push(ModelEntry {
-                name, args, transfers, tokens, writes, returns, auth, inv, guards, gdecls, rich,
-                more_auths: entry_auths(f).into_iter().skip(1).collect(),
-            });
+            FACTS.with(|x| x.borrow_mut().clear());
+            model_entries.push(ModelEntry { name, args, guards: gset.guards, rich });
             continue;
         }
 
@@ -6771,7 +7026,7 @@ fn main() {
         emit_lean_amm(&amm_entries);
     }
     if lean_model {
-        emit_lean_model(&model_entries);
+        emit_lean_model(&model_entries, lean_check);
     }
     if lean_pool {
         emit_lean_pool(&pool_entries);
