@@ -1,0 +1,6 @@
+# Build outputs
+**/target/
+**/.lake/
+node_modules/
+__pycache__/
+*.olean
