@@ -10,6 +10,7 @@ under uploads/<Name>/, the contract's blocks in playground/uploads.json (merged 
 vocabulary by server.py).
 """
 
+import hashlib
 import json
 import os
 import pathlib
@@ -39,13 +40,39 @@ def names(filename):
     return name[:60], "up_" + "_".join(w.lower() for w in words)[:60], stem
 
 
-def ingest(filename, data):
-    """Returns {key, title, steps: [{step, ok, seconds, log}]}; raises ValueError with the
-    steps so far when one fails."""
+def slice_sha256():
+    return hashlib.sha256((DIVER / "target/release/slice").read_bytes()).hexdigest()
+
+
+def cached(sha):
+    """A contract already modelled from these exact bytes: a built-in model (shipped with the
+    editor, whatever emitter it came from), or an earlier upload modelled by the current
+    emitter. `None` when the wasm needs modelling."""
+    src = (HERE / "vocab.js").read_text()
+    builtin = json.loads(src[src.index("{"):src.rindex("}") + 1])["contracts"]
+    for key, C in builtin.items():
+        prov = (ROOT / C["source"]).with_suffix(".json")
+        if C.get("kind") == "diver" and prov.exists() and json.loads(prov.read_text()).get("wasm_sha256") == sha:
+            return {"key": key, "title": C["title"], "steps": [], "cached": "built-in"}
+    current = slice_sha256()
+    for key, C in uploaded_contracts().items():
+        p = C.get("provenance", {})
+        if p.get("wasm_sha256") == sha and p.get("slice_sha256") == current and (ROOT / C["source"]).exists():
+            return {"key": key, "title": C["title"], "steps": [], "cached": "upload"}
+    return None
+
+
+def ingest(filename, data, fresh=False):
+    """Returns {key, title, steps: [{step, ok, seconds, log}], cached?}; raises ValueError with
+    the steps so far when one fails. The same bytes are modelled once (see `cached`), unless
+    `fresh`."""
     if len(data) > MAX_WASM:
         raise ValueError(f"the file is larger than {MAX_WASM >> 20} MB")
     if data[:4] != b"\0asm":
         raise ValueError("not a WebAssembly module (it does not start with \\0asm)")
+    sha = hashlib.sha256(data).hexdigest()
+    if not fresh and (hit := cached(sha)):
+        return hit
     name, key, stem = names(filename)
     work = ROOT / "uploads" / name
     work.mkdir(parents=True, exist_ok=True)
@@ -66,12 +93,14 @@ def ingest(filename, data):
             raise IngestError(f"{step} failed", steps)
 
     with LOCK:
+        if not fresh and (hit := cached(sha)):   # modelled while we waited for the lock
+            return hit
         with open(ll, "w") as out:
             run("lift the wasm to LLVM IR (stellar-diver)", [str(DIVER / "target/release/stellar-diver"), str(wasm), "--inline"], stdout=out)
         run("recover the storage interface (slice --storage-schema)", [str(DIVER / "target/release/slice"), str(ll), "--storage-schema"])
         schema = ll.with_suffix(".storage.json")
         cmd = [sys.executable, str(ROOT / "scripts/import_diver.py"), str(ll), name, key, "--dir", "Uploads",
-               "--vocab", str(UPLOADS), "--title", f"{stem} (uploaded, stellar-diver model)"]
+               "--vocab", str(UPLOADS), "--title", f"{stem} (uploaded, stellar-diver model)", "--wasm", str(wasm)]
         if schema.exists():
             cmd += ["--storage", str(schema)]
         run("emit the Lean model (slice --lean model) and build it", cmd, timeout=900)

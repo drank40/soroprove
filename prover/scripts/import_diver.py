@@ -23,6 +23,10 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 DIVER = pathlib.Path(os.environ.get("DIVER_HOME", ROOT.parent / "lifter"))   # soroprove's lifter/
 
 
+def file_sha256(path):
+    return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+
+
 def vocabulary(src, name, key, storage, mod="Diver", title=None):
     """Blocks for everything the model names: storage keys, maps, token ledgers, entry
     points, arguments, and the values each entry point derives."""
@@ -110,15 +114,18 @@ def main():
     ap.add_argument("--dir", default="Diver")
     ap.add_argument("--vocab", default=str(ROOT / "playground/vocab.js"))
     ap.add_argument("--title")
+    ap.add_argument("--wasm", help="the .wasm the .ll was lifted from (recorded, for caching uploads)")
     a = ap.parse_args()
     out = subprocess.run([a.slice, a.ll, "--lean", "model"], capture_output=True, text=True, check=True).stdout
     dst = ROOT / "StellarLean" / a.dir / f"{a.name}.lean"
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(out)
     rev = subprocess.run(["git", "-C", str(DIVER), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
-    (dst.with_suffix(".json")).write_text(json.dumps({
-        "source": str(pathlib.Path(a.ll).resolve()), "slice": rev,
-        "sha256": hashlib.sha256(out.encode()).hexdigest()}, indent=2) + "\n")
+    prov = {"source": str(pathlib.Path(a.ll).resolve()), "slice": rev,
+            "slice_sha256": file_sha256(a.slice), "sha256": hashlib.sha256(out.encode()).hexdigest()}
+    if a.wasm:
+        prov["wasm_sha256"] = file_sha256(a.wasm)
+    (dst.with_suffix(".json")).write_text(json.dumps(prov, indent=2) + "\n")
     subprocess.run(["lake", "build", f"StellarLean.{a.dir}.{a.name}", "StellarLean.DiverAnswer"], cwd=ROOT, check=True)
     storage = None
     if a.storage:
@@ -127,6 +134,7 @@ def main():
             ty = sl["value_type"] if not sl["key_params"] else f'{", ".join(sl["key_params"])} → {sl["value_type"]}'
             storage[sl["key"]] = [sl["durability"], ty]
     C = vocabulary(out, a.name, a.key, storage, a.dir, a.title)
+    C["provenance"] = {k: prov[k] for k in ("slice_sha256", "wasm_sha256") if k in prov}
     if storage:
         for b in C["diver"]["ledgers"]:
             storage[b] = [f"{C['diver']['ledgers'][b]} ledger (SEP-41)", "Address → i128"]

@@ -490,6 +490,7 @@
         $('#ingest-error').textContent = `${out.error || res.statusText}${last ? `\n\n${last.log}` : ''}`;
         return;
       }
+      if (out.cached) $('#ingest-steps').innerHTML = `<li class="ok">already modelled (${esc(out.cached)}): ${esc(out.title)}</li>`;
       // The vocabulary now has the new contract: reload onto it.
       location.hash = new URLSearchParams({ c: out.key }).toString();
       location.reload();

@@ -1,5 +1,7 @@
 {
-  "source": "/home/renny/doc/work/stellar/stellar-diver/lean-examples/liquidity_pool.ll",
+  "source": "lifter/lean-examples/liquidity_pool.ll",
   "slice": "dfdfe44",
-  "sha256": "7e880d0a8952a5e2ca054a47942aac88988819544350f34869ff68c3e5d2bece"
+  "sha256": "7e880d0a8952a5e2ca054a47942aac88988819544350f34869ff68c3e5d2bece",
+  "wasm": "examples/liquidity_pool.wasm",
+  "wasm_sha256": "268203e246c59502154bb82a5536bbe2528f4c5e5a9b51698b73b84901b0f28c"
 }

@@ -88,13 +88,30 @@ def main():
                 time.sleep(0.2)
 
         print("1. upload")
+        wasm = pathlib.Path(a.wasm).read_bytes()
+        up = lambda name, data, q="": call(base, f"/upload?name={name}{q}", data, "application/wasm")
         t0 = time.time()
-        st, out = call(base, f"/upload?name={pathlib.Path(a.wasm).name}", pathlib.Path(a.wasm).read_bytes(), "application/wasm")
-        check(f"upload, lift, model and build ({time.time() - t0:.1f}s)", st == 200, json.dumps(out)[:800])
+        st, out = up(pathlib.Path(a.wasm).name, wasm, "&fresh=1")
+        check(f"upload, lift, model and build ({time.time() - t0:.1f}s)", st == 200 and not out.get("cached"), json.dumps(out)[:800])
         if st != 200:
             return
         key = out["key"]
         check("the new contract is in the page's vocabulary", key in urllib.request.urlopen(base + "/uploads.js").read().decode())
+        # The same bytes are modelled once: shipped models first, then earlier uploads.
+        t0 = time.time()
+        st, out = up("again.wasm", wasm)
+        check(f"the same wasm again opens the shipped model ({time.time() - t0:.2f}s)",
+              st == 200 and out.get("cached") == "built-in" and out["key"] == "lpDiver", json.dumps(out)[:300])
+        t0 = time.time()
+        st, out = up("comet.wasm", (TOP / "examples/comet.wasm").read_bytes())
+        check(f"Comet opens the shipped model, without running slice ({time.time() - t0:.2f}s)",
+              st == 200 and out.get("cached") == "built-in" and out["key"] == "cometDiver", json.dumps(out)[:300])
+        token = (TOP / "examples/token.wasm").read_bytes()
+        st, first = up("token.wasm", token, "&fresh=1")
+        t0 = time.time()
+        st, out = up("token_copy.wasm", token)
+        check(f"an uploaded wasm, uploaded again, opens that upload ({time.time() - t0:.2f}s)",
+              st == 200 and out.get("cached") == "upload" and out["key"] == first.get("key"), json.dumps(out)[:300])
 
         print("2. answer")
         ths = [{"name": "tokens_fixed", "target": "contract", "tactic": "answer", "stmt": TOKENS_FIXED},

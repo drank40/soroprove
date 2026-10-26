@@ -7,8 +7,9 @@ GET  /          the playground (files of this folder)
 GET  /health    {"lean": true} when `lake` is on the PATH, {"vibe": …} when `claude` is
 POST /check     {"contract": key, "theorems": [{"name", "target", "stmt", "tactic"}]}
                 -> {"results": [{"name", "status", "messages"}], "elapsed"}
-POST /upload?name=F.wasm   the wasm as the body: lift it, emit its Lean model, build it,
-                and add the contract (ingest.py) -> {"key", "title", "steps"}
+POST /upload?name=F.wasm[&fresh=1]   the wasm as the body: lift it, emit its Lean model,
+                build it, and add the contract (ingest.py) -> {"key", "title", "steps", "cached"?};
+                bytes already modelled return that contract at once, unless fresh=1
 GET  /uploads.js   adds the uploaded contracts to the page's vocabulary
 POST /vibe      {"contract", "theorem": {"name", "target", "stmt"}, "reading", "budget"}
                 -> {"id"}: a Claude agent looks for a proof or a counterexample (vibe.py)
@@ -314,9 +315,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if n > ingest.MAX_WASM:
                 return self.reply(413, {"error": "the file is too large"})
             data = self.rfile.read(n)
-            name = urllib.parse.parse_qs(url.query).get("name", ["contract.wasm"])[0]
+            q = urllib.parse.parse_qs(url.query)
+            name = q.get("name", ["contract.wasm"])[0]
             try:
-                return self.reply(200, ingest.ingest(name, data))
+                return self.reply(200, ingest.ingest(name, data, fresh=q.get("fresh", ["0"])[0] == "1"))
             except ingest.IngestError as e:
                 return self.reply(422, {"error": str(e), "steps": e.steps})
             except ValueError as e:

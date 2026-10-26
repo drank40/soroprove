@@ -1,5 +1,7 @@
 {
-  "source": "/home/renny/doc/work/stellar/stellar-diver/lean-examples/comet.ll",
+  "source": "lifter/lean-examples/comet.ll",
   "slice": "dfdfe44",
-  "sha256": "c22bfb5daf995378eccdf5213ae7b43bf5d3cf15d61c426a384ed4de0e6b3a0e"
+  "sha256": "c22bfb5daf995378eccdf5213ae7b43bf5d3cf15d61c426a384ed4de0e6b3a0e",
+  "wasm": "examples/comet.wasm",
+  "wasm_sha256": "8abc28913035c07411ed5d134e6bfeab4723d97ddd4d1a22a0605d35c94d1a36"
 }
