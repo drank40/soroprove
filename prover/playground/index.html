@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SoroProve</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Bevelled edges on every block, the way Scratch 1.4 drew them -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <filter id="bevel" x="-2%" y="-5%" width="104%" height="110%">
+      <feOffset in="SourceAlpha" dx="-1" dy="-1.5" result="up"/>
+      <feComposite in="SourceAlpha" in2="up" operator="out" result="lowEdge"/>
+      <feFlood flood-color="#000" flood-opacity=".38"/>
+      <feComposite in2="lowEdge" operator="in" result="shade"/>
+      <feOffset in="SourceAlpha" dx="1" dy="1.5" result="down"/>
+      <feComposite in="SourceAlpha" in2="down" operator="out" result="highEdge"/>
+      <feFlood flood-color="#fff" flood-opacity=".5"/>
+      <feComposite in2="highEdge" operator="in" result="light"/>
+      <feMerge><feMergeNode in="SourceGraphic"/><feMergeNode in="shade"/><feMergeNode in="light"/></feMerge>
+    </filter>
+  </svg>
+  <header class="menu">
+    <div class="logo"><span class="logo-mark">⊨</span><span class="logo-text">SOROPROVE</span></div>
+    <label class="menu-item">Contract
+      <select id="contract"></select>
+    </label>
+    <div id="mode" class="seg" title="Block labels">
+      <button data-mode="lean">Lean</button><button data-mode="words">Words</button>
+    </div>
+    <button class="menu-item" id="new">+ Theorem</button>
+    <button class="menu-item" id="open-import">Import Lean…</button>
+    <button class="menu-item" id="tidy">Clean up</button>
+    <button class="menu-item" id="share" title="Copy a link that opens these theorems as blocks">Share</button>
+    <button class="menu-item" id="upload" title="Model a contract from its compiled .wasm (or drop the file on the page)">Upload WASM…</button>
+    <input type="file" id="upload-file" accept=".wasm,application/wasm" hidden>
+    <span class="spacer"></span>
+    <label class="menu-item" id="budget-box" title="How long the vibe prover may search, per theorem">Vibe budget
+      <input id="budget" type="number" min="10" max="1800" step="10" value="120"> s</label>
+    <button id="check" class="go" disabled>Check in Lean</button>
+  </header>
+
+  <main>
+    <div id="blockly"></div>
+    <aside class="stage">
+      <nav class="tabs">
+        <button data-tab="code" class="on">Lean</button>
+        <button data-tab="reading">Reading</button>
+        <button data-tab="results">Results</button>
+        <button data-tab="vibe">Vibe</button>
+      </nav>
+      <section id="pane-code" class="pane">
+        <div class="pane-bar">
+          <span>Would go in <code id="source"></code></span>
+          <span><button id="copy">Copy</button><button id="download">Download</button></span>
+        </div>
+        <pre id="code"></pre>
+      </section>
+      <section id="pane-reading" class="pane" hidden>
+        <ul id="reading" class="list"></ul>
+      </section>
+      <section id="pane-results" class="pane" hidden>
+        <ul id="results" class="list"></ul>
+      </section>
+      <section id="pane-vibe" class="pane" hidden>
+        <div id="vibe"><p class="empty">Set a theorem's proof to <b>vibe</b> and press “Check in Lean”:
+          a Claude agent searches for a proof or a counterexample within the budget, and every
+          version it writes is checked by Lean here, live.</p></div>
+      </section>
+      <footer class="legend">
+        <span><i class="sh hex"></i>question</span>
+        <span><i class="sh round"></i>storage value</span>
+        <span><i class="sh sq"></i>who · argument · entry point</span>
+      </footer>
+    </aside>
+  </main>
+
+  <div id="dropzone" hidden><div>Drop a contract <b>.wasm</b> to model it</div></div>
+  <dialog id="ingest">
+    <h2>Modelling <span id="ingest-name"></span></h2>
+    <ol id="ingest-steps"></ol>
+    <pre id="ingest-error"></pre>
+    <div class="actions"><button id="ingest-close">Close</button></div>
+  </dialog>
+
+  <dialog id="import">
+    <h2>Import Lean</h2>
+    <p>Paste theorem statements (the part before <code>:=</code> is enough), for example
+      <code>swap_pays_out : contract ⊨ (changesBy BalanceA[caller] out).given (calls "swap" ∧ₛ buysA)</code></p>
+    <textarea id="import-text" rows="8" spellcheck="false"></textarea>
+    <pre id="import-error"></pre>
+    <div class="actions">
+      <button id="import-cancel">Cancel</button>
+      <button id="import-ok" class="go">Make blocks</button>
+    </div>
+  </dialog>
+
+  <script src="node_modules/blockly/blockly.min.js"></script>
+  <script src="vocab.js"></script>
+  <script src="uploads.js"></script>
+  <script src="lean.js"></script>
+  <script src="vibe.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

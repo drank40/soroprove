@@ -1,0 +1,7 @@
+/.lake
+playground/node_modules
+# Contracts made from uploaded wasm (playground/ingest.py)
+uploads/
+StellarLean/Uploads/
+playground/uploads.json
+__pycache__/
