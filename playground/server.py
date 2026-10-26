@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Serve the playground and check theorems with Lean.
 
-    python3 playground/server.py [port]
+    python3 playground/server.py [port] [host]    (host defaults to 127.0.0.1)
 
 GET  /          the playground (files of this folder)
 GET  /health    {"lean": true} when `lake` is on the PATH
@@ -10,8 +10,8 @@ POST /check     {"contract": key, "theorems": [{"name", "target", "stmt", "tacti
 
 Lean runs whatever a file asks, so /check never takes Lean source: it takes
 statements and accepts only the tokens the blocks can produce (vocabulary of
-the contract, glue, numbers), then writes the file itself. It also listens on
-localhost only and refuses requests from other origins.
+the contract, glue, numbers), then writes the file itself. It listens on
+localhost by default and accepts requests from any origin (CORS is open).
 """
 
 import http.server
@@ -154,7 +154,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
         super().end_headers()
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
 
     def reply(self, code, obj):
         body = json.dumps(obj).encode()
@@ -172,9 +179,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path != "/check":
             return self.reply(404, {"error": "not found"})
-        origin = self.headers.get("Origin")
-        if origin and origin != f"http://{self.headers.get('Host')}":
-            return self.reply(403, {"error": "other origins may not ask for checks"})
         if not self.headers.get("Content-Type", "").startswith("application/json"):
             return self.reply(415, {"error": "send JSON"})
         try:
@@ -189,6 +193,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"Theorem blocks: http://localhost:{port}/", flush=True)
+    host = sys.argv[2] if len(sys.argv) > 2 else "127.0.0.1"
+    srv = http.server.ThreadingHTTPServer((host, port), Handler)
+    print(f"Theorem blocks: http://{'localhost' if host in ('127.0.0.1', '0.0.0.0') else host}:{port}/"
+          f" (listening on {host})", flush=True)
     srv.serve_forever()

@@ -12,15 +12,15 @@
 */
 (function (root) {
   const CAT = {
-    theorem:   { name: 'Theorem',      colour: '#FFBF00' },
-    glue:      { name: 'Glue',         colour: '#59C059' },
-    change:    { name: 'Changes',      colour: '#4C97FF' },
-    cond:      { name: 'Conditions',   colour: '#5CB1D6' },
-    storage:   { name: 'Storage',      colour: '#FF8C1A' },
-    who:       { name: 'Who',          colour: '#9966FF' },
-    arg:       { name: 'Arguments',    colour: '#CF63CF' },
-    entry:     { name: 'Entry points', colour: '#FFAB19' },
-    invariant: { name: 'Invariants',   colour: '#0FBD8C' },
+    theorem:   { name: 'Theorem',      colour: '#E1A91A' },
+    glue:      { name: 'Glue',         colour: '#5CB712' },
+    change:    { name: 'Changes',      colour: '#4A6CD4' },
+    cond:      { name: 'Conditions',   colour: '#2CA5E2' },
+    storage:   { name: 'Storage',      colour: '#EE7D16' },
+    who:       { name: 'Who',          colour: '#8A55D7' },
+    arg:       { name: 'Arguments',    colour: '#BB42C3' },
+    entry:     { name: 'Entry points', colour: '#CC5B22' },
+    invariant: { name: 'Invariants',   colour: '#0E9A6C' },
   };
 
   const ATOM = 1024, APP = 1000;
@@ -34,18 +34,21 @@
     const has = (f) => C.features.includes(f);
 
     add({ type: `${key}.theorem`, cat: 'theorem', out: null,
-      lean: 'theorem %1 : %2 ⊨ %3 := by %4', words: 'claim %1 : every successful call to %2 : %3 proof %4',
+      lean: 'theorem %1 : %2 ⊨ %3 %4 %5 := by %6',
+      words: 'claim %1 : after every successful call to %2 %3 %4 %5 proved by %6',
       args: [{ k: 'text', name: 'NAME', value: 'my_question' },
              { k: 'drop', name: 'TARGET', options: C.targets.map(([t, w]) => [t, t]) },
+             { k: 'row', name: 'ROW1' },
              inp('Q', ['Q']),
+             { k: 'row', name: 'ROW2' },
              { k: 'drop', name: 'TACTIC', options: C.tactics.map((t) => [t, t]) }],
       g: 'theorem', tip: 'A question about the contract. Its proof is the answer.' });
 
     // Glue
-    add({ type: 'and', cat: 'glue', out: 'Q', lean: '%1 ∧ₛ %2', words: '%1 and %2',
+    add({ type: 'and', cat: 'glue', out: 'Q', lean: '%1 AND %2', words: '%1 AND %2',
       args: [inp('P', ['Q']), inp('R', ['Q'])], g: 'infix', op: '∧ₛ', prec: 35,
       say: '{P} and {R}', tip: 'Both checks hold for the same call.' });
-    add({ type: 'or', cat: 'glue', out: 'Q', lean: '%1 ∨ₛ %2', words: '%1 or %2',
+    add({ type: 'or', cat: 'glue', out: 'Q', lean: '%1 OR %2', words: '%1 OR %2',
       args: [inp('P', ['Q']), inp('R', ['Q'])], g: 'infix', op: '∨ₛ', prec: 30,
       say: '{P} or {R}', tip: 'At least one of the two checks holds.' });
     add({ type: 'given', cat: 'glue', out: 'Q', lean: '%1 .given %2', words: '%1 whenever %2',
@@ -54,7 +57,7 @@
     add({ type: 'except', cat: 'glue', out: 'Q', lean: '%1 .except %2', words: '%1 unless %2',
       args: [inp('P', ['Q']), inp('G', ['Q'])], g: 'method', m: 'except',
       say: '{P}, unless {G}', tip: 'P must hold, except on calls where G holds.' });
-    add({ type: 'forall', cat: 'glue', out: 'Q', lean: '∀ₛ %1 , %2', words: 'for every address %1 : %2',
+    add({ type: 'forall', cat: 'glue', out: 'Q', lean: 'FOR EACH %1 , %2', words: 'FOR EACH %1 , %2',
       args: [{ k: 'text', name: 'VAR', value: 'user' }, inp('P', ['Q'])], g: 'forall',
       say: 'for every address {VAR}: {P}',
       tip: 'The check holds for every address plugged in for the variable. Use the variable with the "user" block in Who.' });
@@ -131,7 +134,7 @@
         say: words, tip: `The fixed address ${name}.` });
     add({ type: 'user', cat: 'who', out: 'A', lean: '%1', words: 'address %1',
       args: [{ k: 'text', name: 'NAME', value: 'user' }], g: 'bound', say: '{NAME}',
-      tip: 'The address bound by an enclosing "∀ₛ" block (the names must match).' });
+      tip: 'The address bound by an enclosing "FOR EACH" block (the names must match).' });
 
     // Arguments
     for (const [name, rust] of C.amounts)
@@ -185,7 +188,7 @@
       }
       case 'bound': {
         const v = f('NAME');
-        if (!scope.includes(v)) ctx.problems.push(`"${v}" is not bound by an enclosing ∀ₛ block`);
+        if (!scope.includes(v)) ctx.problems.push(`"${v}" is not bound by an enclosing FOR EACH block`);
         code = v; prec = ATOM; break;
       }
       case 'neg': code = `(- ${sub('D', ATOM)} ·)`; prec = ATOM; break;
@@ -327,7 +330,8 @@
       }
       if (map && peek() === '.total') { next(); return node(specs[`${key}.total.${t}`]); }
       if (byText[t]) return node(byText[t]);
-      if (scope.includes(t)) return node(specs.user, {}, { NAME: t });
+      // A variable; the editor flags it when no ∀ₛ binds it.
+      if (scope.includes(t) || /^[a-z][A-Za-z0-9_]*$/.test(t)) return node(specs.user, {}, { NAME: t });
       throw new Error(`"${t}" is not a block of this contract`);
     }
     const q = expr(0);
