@@ -251,6 +251,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def vibe_ok(self):
         url = urllib.parse.urlparse(self.path)
         token = self.headers.get("X-Vibe-Token") or urllib.parse.parse_qs(url.query).get("token", [None])[0]
+        if os.environ.get("VIBE_OPEN") == "1":   # a public demo: anyone may upload and run vibe
+            return True
         want = os.environ.get("VIBE_TOKEN")
         if want:
             return token == want
