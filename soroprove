@@ -35,7 +35,7 @@ lift_examples() {
 build_prover() {
   say "prover: Lean library, stellar-diver models, editor"
   (cd prover && lake build && lake build $(ls StellarLean/Diver/*.lean | sed 's|\.lean$||; s|/|.|g'))
-  (cd prover/playground && npm install --silent --no-audit --no-fund)
+  (cd prover/playground && npm ci --silent --no-audit --no-fund)
 }
 
 build_runtime() {

@@ -1,0 +1,19 @@
+# The editor, as a system service run by the `soroprove` user (who owns the checkout).
+#   cp soroprove.service /etc/systemd/system/ && systemctl enable --now soroprove
+# /home/soroprove/.config/soroprove/env must set VIBE_TOKEN (uploads and vibe jobs need it
+# once the editor is public: vibe runs on the Claude subscription logged in as `soroprove`).
+[Unit]
+Description=Soroprove editor
+After=network-online.target
+
+[Service]
+User=soroprove
+EnvironmentFile=/home/soroprove/.config/soroprove/env
+Environment=PATH=/home/soroprove/.elan/bin:/home/soroprove/.cargo/bin:/home/soroprove/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/home/soroprove/soroprove
+ExecStart=/home/soroprove/soroprove/soroprove serve 8765 127.0.0.1
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
