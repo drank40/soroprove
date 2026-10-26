@@ -47,8 +47,12 @@ SET_OPTION = re.compile(r"\bset_option\b(?!\s+maxHeartbeats\s+\d+\s+in\b)")
 
 
 def load_vocab():
+    """vocab.js and the contracts made from uploaded wasm (as server.py sees them)."""
+    import ingest
     src = (HERE / "vocab.js").read_text()
-    return json.loads(src[src.index("{"):src.rindex("}") + 1])
+    V = json.loads(src[src.index("{"):src.rindex("}") + 1])
+    V["contracts"].update(ingest.uploaded_contracts())
+    return V
 
 
 def strip_comments(s):
