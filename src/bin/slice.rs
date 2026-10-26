@@ -2250,7 +2250,6 @@ struct ModelEntry {
     auth: Option<String>,               // the arg whose `require_auth()` gates the call
     inv: bool,                          // guards a trap with a constant-product (x*y) check
     guards: Vec<String>,                // all recovered trap (panic) guards, as relations
-    gdecls: Vec<String>,                // opaque Step-terms the guards name
 }
 
 /// The arg whose `require_auth()` the entrypoint calls — the signer gate. The
@@ -2424,173 +2423,128 @@ fn gate_vals(cond: BasicValueEnum) -> Option<(RelOp, BasicValueEnum, BasicValueE
     None
 }
 
-/// Does `h` (transitively) read contract storage — i.e. is it a getter?
-fn fn_gets<'c>(h: FunctionValue<'c>, module: &inkwell::module::Module<'c>, memo: &mut HashMap<String, bool>) -> bool {
-    let name = h.get_name().to_string_lossy().into_owned();
-    if let Some(&b) = memo.get(&name) {
-        return b;
-    }
-    memo.insert(name.clone(), false); // recursion guard
-    let mut r = false;
-    for i in all_instrs(h) {
-        let Some(n) = callee_name(i) else { continue };
-        if n.contains("get_contract_data") || n.contains("has_contract_data") {
-            r = true;
-            break;
-        }
-        if let Some(g) = module.get_function(&n) {
-            if g.count_basic_blocks() > 0 && g != h && fn_gets(g, module, memo) {
-                r = true;
-                break;
-            }
-        }
-    }
-    memo.insert(name, r);
-    r
-}
-
-/// One side of a recovered guard, resolved to a model term.
-enum MTerm {
-    Arg(String, bool),   // a call argument (name, is-address)
-    Slot(String, bool),  // a prior storage read (DataKey name, is-mapping)
-    Pool,                // the pool's own address
-    Const(i64),          // a literal
-    Opaque,              // a value the pass does not interpret
-}
-impl MTerm {
-    /// A named entity (argument or storage slot), i.e. a contract-level quantity
-    /// — as opposed to a constant or an uninterpreted computed value.
-    fn named(&self) -> bool {
-        matches!(self, MTerm::Arg(..) | MTerm::Slot(..))
-    }
-    fn render(&self, oc: &mut usize, decls: &mut Vec<String>, fnid: &str) -> String {
-        match self {
-            MTerm::Arg(n, true) => format!("st.call.argA \"{n}\""),
-            MTerm::Arg(n, false) => format!("st.call.arg \"{n}\""),
-            MTerm::Slot(n, true) => format!("st.pre (.entry \"{n}\" c)"),
-            MTerm::Slot(n, false) => format!("st.pre (.var \"{n}\")"),
-            MTerm::Pool => "pool".to_string(),
-            MTerm::Const(k) => k.to_string(),
-            MTerm::Opaque => {
-                *oc += 1;
-                let name = format!("{fnid}_g{oc}");
-                decls.push(name.clone());
-                format!("{name} st")
-            }
-        }
-    }
-}
-
-/// Resolve a guard operand to a model term: an argument, a prior storage read
-/// (real `DataKey` name), the pool, a constant, or an uninterpreted value.
-fn mterm<'c>(
-    v: BasicValueEnum<'c>,
-    f: FunctionValue<'c>,
-    args: &Args<'c>,
-    module: &inkwell::module::Module<'c>,
-    kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
-    segs: &[(u64, Vec<u8>)],
-    gets: &mut HashMap<String, bool>,
-) -> MTerm {
-    if let Some((_, n, t)) = args.iter().find(|(pv, _, _)| *pv == v) {
-        return MTerm::Arg(n.clone(), t == "Address");
-    }
-    if let BasicValueEnum::IntValue(c) = v {
-        if c.is_const() {
-            if let Some(k) = c.get_sign_extended_constant() {
-                return MTerm::Const(k);
-            }
-        }
-    }
-    if let Some(i) = as_instr(v) {
-        let nm = callee_name(i).unwrap_or_default();
-        if nm.contains("get_current_contract_address") {
-            return MTerm::Pool;
-        }
-        if nm.contains("from_payload") || nm.contains("val.payload") || nm.contains("obj_to_i128") {
-            if let Some(Operand::Value(o)) = i.get_operand(0) {
-                return mterm(o, f, args, module, kb, segs, gets);
-            }
-        }
-        if nm.contains("get_contract_data") || nm.contains("has_contract_data") {
-            if let Some(Operand::Value(k)) = i.get_operand(0) {
-                let (name, params) = storage_key(k, f, args, kb, module, segs);
-                if name != "?" {
-                    return MTerm::Slot(name, !params.is_empty());
-                }
-            }
-        }
-        // a getter helper called with a constant DataKey discriminant.
-        if let Some(h) = module.get_function(&nm) {
-            if h.count_basic_blocks() > 0 && fn_gets(h, module, gets) {
-                for k in 0..i.get_num_operands().saturating_sub(1) {
-                    if let Some(Operand::Value(BasicValueEnum::IntValue(c))) = i.get_operand(k) {
-                        if c.is_const() {
-                            if let (Some(d), Some(kbv)) = (c.get_sign_extended_constant(), kb) {
-                                if let KeyRef::Slot(name, params) = disc_slot(d, Some(kbv), module, segs) {
-                                    return MTerm::Slot(name, !params.is_empty());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    MTerm::Opaque
-}
 
 /// The MEANINGFUL trap (panic) guards of `f`, generically: every branch that
-/// gates a panic, recovered as a relation over resolved model terms, keeping
-/// only those that constrain a contract-level quantity — i.e. at least one side
-/// is an argument or a storage slot. This drops the low-level plumbing (Val tag
-/// checks `= 77`, i128 sign/overflow checks `= -1` / `> 2^62`, and the
-/// uninterpreted i128-arithmetic internals) that every entrypoint is full of.
-/// Returns (rendered guards, opaque Step-term declarations).
-fn entry_guards<'c>(
-    f: FunctionValue<'c>,
-    module: &inkwell::module::Module<'c>,
-    kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
-    segs: &[(u64, Vec<u8>)],
-) -> (Vec<String>, Vec<String>) {
+/// gates a panic, each side reconstructed as an expression over the call's
+/// arguments and storage reads (via `value_expr`, the storage-write
+/// reconstructor), keeping only guards that mention such a quantity. This drops
+/// the low-level plumbing (Val tag checks, i128 sign/overflow checks, and the
+/// uninterpreted arithmetic internals) that every entrypoint is full of.
+fn entry_guards<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> Vec<String> {
     let cfg = Cfg::build(f);
     let ipdom = ipostdoms(&cfg);
     let cd = control_deps(&cfg, &ipdom);
     let args = arg_table(f);
-    let fnid = {
-        let c = f.get_name().to_string_lossy().into_owned();
-        c.chars().map(|ch| if ch.is_alphanumeric() { ch } else { '_' }).collect::<String>()
-    };
-    let (mut gets, mut oc, mut decls, mut out, mut seen) =
-        (HashMap::new(), 0usize, vec![], vec![], HashSet::new());
+    let mut vmemo: HashMap<String, Option<Expr>> = HashMap::new();
+    let (mut out, mut seen): (Vec<String>, HashSet<String>) = (vec![], HashSet::new());
     for s in find_sinks(&cfg, &[SinkKind::Trap], "call", None) {
         let slice = backward_slice(&cfg, &cd, &s.vals, &[s.instr]);
         for (_, cond) in classify(&slice, s.instr).guards {
+            // split only And/Or, keeping the i128 select-compare idiom atomic so
+            // gate_vals recovers it as one relation (not its limb sub-compares).
             let mut leaves = vec![];
-            bool_leaves(cond, 8, &mut leaves);
+            bool_and_or(cond, 8, &mut leaves);
             for leaf in leaves {
                 let Some((op, l, r)) = gate_vals(leaf) else { continue };
-                let (lt, rt) = (
-                    mterm(l, f, &args, module, kb, segs, &mut gets),
-                    mterm(r, f, &args, module, kb, segs, &mut gets),
-                );
-                // keep only guards that constrain a named contract quantity.
-                if !lt.named() && !rt.named() {
+                // drop equality gates: those are Val-tag checks (`= 77`), i128
+                // sign/overflow checks (`= -1` / `= 0`), and limb sign-extension —
+                // the contract's real guards are all ordering comparisons.
+                if matches!(op, RelOp::Eq) {
                     continue;
                 }
-                let g = format!(
-                    "{} {} {}",
-                    lt.render(&mut oc, &mut decls, &fnid),
-                    op.lean(),
-                    rt.render(&mut oc, &mut decls, &fnid),
-                );
+                // reconstruct each side over args + storage with value_expr (the
+                // same reconstructor used for storage writes).
+                let le = simplify(value_expr(l, f, module, &mut vmemo, 40));
+                let re = simplify(value_expr(r, f, module, &mut vmemo, 40));
+                if !(expr_has_named(&le) || expr_has_named(&re)) {
+                    continue;
+                }
+                // drop i128 signed-overflow checks: `And(Xor(a-b,a), Xor(a,b)) < 0`.
+                if matches!(op, RelOp::Lt) && is_zero(&re) && is_sub_overflow(&le) {
+                    continue;
+                }
+                // collapse the i128 sign-extension `phi(x, AShr(x,63))` back to `x`.
+                let (le, re) = (i128_sext(&le), i128_sext(&re));
+                let g = format!("{} {} {}", render_expr(&le, &args), op.lean(), render_expr(&re, &args));
                 if seen.insert(g.clone()) {
                     out.push(g);
                 }
             }
         }
     }
-    (out, decls)
+    out
+}
+
+/// Split an i1 into its And/Or leaves (but NOT Select — the i128 compare idiom
+/// `select (icmp eq hi) cmplo cmphi` must stay whole for gate_vals to read it).
+fn bool_and_or<'c>(v: BasicValueEnum<'c>, depth: u32, out: &mut Vec<BasicValueEnum<'c>>) {
+    if depth > 0 {
+        if let Some(i) = as_instr(v) {
+            if is_bool(v) && matches!(i.get_opcode(), InstructionOpcode::And | InstructionOpcode::Or) {
+                for k in 0..i.get_num_operands() {
+                    if let Some(Operand::Value(o)) = i.get_operand(k) {
+                        if is_bool(o) {
+                            bool_and_or(o, depth - 1, out);
+                        }
+                    }
+                }
+                return;
+            }
+        }
+    }
+    out.push(v);
+}
+
+fn is_zero(e: &Expr) -> bool {
+    matches!(e, Expr::Const(0))
+}
+
+/// Recognize the i128 sign-extension of the hi limb, `phi(x, AShr(x, 63))`, and
+/// collapse it to `x` (so an i128 argument/value reads as itself, not its limb).
+fn i128_sext(e: &Expr) -> Expr {
+    if let Expr::Opaque(op, xs) = e {
+        if op == "phi" && xs.len() == 2 {
+            if let Expr::Opaque(a, ax) = &xs[1] {
+                if a == "AShr" && ax.len() == 2 && ax[0] == xs[0] && matches!(ax[1], Expr::Const(63)) {
+                    return i128_sext(&xs[0]);
+                }
+            }
+        }
+    }
+    match e {
+        Expr::Bin(o, a, b) => Expr::Bin(*o, Box::new(i128_sext(a)), Box::new(i128_sext(b))),
+        Expr::VecGet(a, b) => Expr::VecGet(Box::new(i128_sext(a)), Box::new(i128_sext(b))),
+        Expr::Opaque(l, xs) => Expr::Opaque(l.clone(), xs.iter().map(i128_sext).collect()),
+        other => other.clone(),
+    }
+}
+
+/// The signed-subtraction-overflow idiom `And(Xor(a-b, a), Xor(a, b))` (its sign
+/// bit is the overflow flag) — a compiler-inserted check, not a contract guard.
+fn is_sub_overflow(e: &Expr) -> bool {
+    if let Expr::Opaque(op, xs) = e {
+        if op == "And" && xs.len() == 2 {
+            if let (Expr::Opaque(x1, a1), Expr::Opaque(x2, a2)) = (&xs[0], &xs[1]) {
+                if x1 == "Xor" && x2 == "Xor" && a1.len() == 2 && a2.len() == 2 {
+                    // one Xor is (a-b)^a, the other is a^b, sharing a and b.
+                    if let Expr::Bin('-', sa, _sb) = &a1[0] {
+                        return **sa == a1[1] && (a2[0] == a1[1] || a2[1] == a1[1]);
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Does a reconstructed expression mention an argument or a storage slot?
+fn expr_has_named(e: &Expr) -> bool {
+    match e {
+        Expr::Param(_) | Expr::Slot(..) => true,
+        Expr::Bin(_, a, b) | Expr::VecGet(a, b) => expr_has_named(a) || expr_has_named(b),
+        Expr::Opaque(_, xs) => xs.iter().any(expr_has_named),
+        Expr::Const(_) => false,
+    }
 }
 
 /// The storage slots an entrypoint touches, with real `DataKey` names:
@@ -2865,12 +2819,7 @@ fn emit_lean_model(entries: &[ModelEntry]) {
             }
         }
         println!("-/");
-        // opaque Step-terms the recovered guards name (computed values the pass
-        // does not interpret: fee terms, products, derived amounts).
-        for d in &e.gdecls {
-            println!("opaque {d} : Step → Int");
-        }
-        // opaque recovered-but-uninterpreted terms
+        // opaque recovered-but-uninterpreted terms (transfer amounts, stored values)
         for k in 0..e.transfers.len() {
             println!("opaque {fn_id}_amt{k} : Step → Int");
         }
@@ -4048,9 +3997,9 @@ fn main() {
                 .unwrap_or(false);
             let auth = entry_auth(f);
             let inv = has_product_invariant_trap(f);
-            let (guards, gdecls) = entry_guards(f, &module, m_kb_pair, &m_segs);
+            let guards = entry_guards(f, &module);
             model_entries.push(ModelEntry {
-                name, args, transfers, tokens, writes, returns, auth, inv, guards, gdecls,
+                name, args, transfers, tokens, writes, returns, auth, inv, guards,
             });
             continue;
         }
