@@ -130,7 +130,7 @@ Suppose that we wanna prove the reserve solvency of an AMM. This is pretty simpl
 
 You can play around with the proof using the [permalink here](https://soroprove.marziano.top/#c=lpDiver&w=W3sidHlwZSI6ImxwRGl2ZXIudGhlb3JlbSIsImZpZWxkcyI6eyJOQU1FIjoicmVzZXJ2ZXNfc3RheV9iYWNrZWQiLCJUQVJHRVQiOiJoaXN0b3J5IiwiVEFDVElDIjoiYW5zd2VyIn0sImlucHV0cyI6eyJRIjp7ImJsb2NrIjp7InR5cGUiOiJhbmQiLCJpbnB1dHMiOnsiUCI6eyJibG9jayI6eyJ0eXBlIjoiY21wLmFuZSIsImlucHV0cyI6eyJMIjp7ImJsb2NrIjp7InR5cGUiOiJscERpdmVyLnZhci5Ub2tlbkEifX0sIlIiOnsiYmxvY2siOnsidHlwZSI6ImxwRGl2ZXIudmFyLlRva2VuQiJ9fX19fSwiUiI6eyJibG9jayI6eyJ0eXBlIjoiYW5kIiwiaW5wdXRzIjp7IlAiOnsiYmxvY2siOnsidHlwZSI6ImNtcC5sZSIsImlucHV0cyI6eyJMIjp7ImJsb2NrIjp7InR5cGUiOiJscERpdmVyLnZhci5SZXNlcnZlQSJ9fSwiUiI6eyJibG9jayI6eyJ0eXBlIjoibHBEaXZlci5tYXAuQmFsYW5jZUEiLCJpbnB1dHMiOnsiVyI6eyJibG9jayI6eyJ0eXBlIjoibHBEaXZlci5hZGRyLnBvb2wifX19fX19fX0sIlIiOnsiYmxvY2siOnsidHlwZSI6ImNtcC5sZSIsImlucHV0cyI6eyJMIjp7ImJsb2NrIjp7InR5cGUiOiJscERpdmVyLnZhci5SZXNlcnZlQiJ9fSwiUiI6eyJibG9jayI6eyJ0eXBlIjoibHBEaXZlci5tYXAuQmFsYW5jZUIiLCJpbnB1dHMiOnsiVyI6eyJibG9jayI6eyJ0eXBlIjoibHBEaXZlci5hZGRyLnBvb2wifX19fX19fX19fX19fX19fV0)
 
-[image of the simple property](./amm.png)
+[image of the simple property](pitch/assets/amm.png)
 
 
 ## More complex proofs
@@ -159,7 +159,7 @@ What we do in our smaller sandbox is :
 The exciting part here is that, as long as we know that our model has a determinstic provenance from the WASM, and the invariant to be proven is unchanged and not cheesed away, then we don't really care about how we prove something and we can trust the system with a great degree of abstraction.
 
 
-[let him reason...](./reason.png)
+[let him reason...](pitch/assets/reason.png)
 
 
 ## A final example
@@ -172,7 +172,7 @@ Book–balance consistency asks that the pool's accounting moves with its money:
 
 We state it as a change over one call (books after minus before, equal to balance after minus before), not as "books equal balances". Anyone can send tokens to the pool without calling it, so its real balance can sit above its books without anything being wrong. What must never happen is a swap that moves the two by different amounts. Comparing changes is also what makes the statement about a single call, so a refutation points at one transaction.
 
-[screenshot of the property](./comet.png)
+[screenshot of the property](pitch/assets/comet.png)
 
 Of course, this model is not **complete** , so any counterexample should be checked against the original program to be confirmed, but we can know for sure that if there is a hole in terms of token handling, we will also find it in our abstract Lean model.
 
