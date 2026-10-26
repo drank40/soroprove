@@ -116,7 +116,7 @@ end __constructor
 
 /-- `__constructor(admin: Address)`: it succeeds exactly when `__constructor.Spec` holds.
     Its effects, in execution order:
-    * `__constructor.s1`: write `Admin`
+    * `__constructor.s1`: write `Admin` := `__constructor.admin st`
 -/
 structure __constructor.Spec (st : Step) : Prop where
   fn : st.call.fn = "__constructor"
@@ -145,16 +145,28 @@ namespace mint
 @[simp] def contract (st : Step) : Addr := st.call.argA "contract"
 @[simp] def minter (st : Step) : Addr := st.call.argA "minter"
 @[simp] def to (st : Step) : Addr := st.call.argA "to"
+@[simp] def pre_Minter_epoch_length (st : Step) : Int :=
+  st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))
+@[simp] def pre_Minter_limit (st : Step) : Int :=
+  st.pre (Minter.limit (mint.contract st) (mint.minter st))
+@[simp] def pre_has_Minter (st : Step) : Int :=
+  st.pre (.has (Minter (mint.contract st) (mint.minter st)))
+@[simp] def key_MinterStats_consumed_limit (st : Step) : Key :=
+  MinterStats.consumed_limit (mint.contract st) (mint.minter st) (mint.pre_Minter_epoch_length st) (Int.tdiv (st.call.env "sequence") (mint.pre_Minter_epoch_length st))
+@[simp] def key_MinterStats (st : Step) : Key :=
+  MinterStats (mint.contract st) (mint.minter st) (mint.pre_Minter_epoch_length st) (Int.tdiv (st.call.env "sequence") (mint.pre_Minter_epoch_length st))
+@[simp] def new_MinterStats_consumed_limit (st : Step) : Int :=
+  (getOr0 st.pre (mint.key_MinterStats_consumed_limit st) (base := (mint.key_MinterStats st))) + (mint.amount st)
 @[simp] def s1 (st : Step) : Storage :=
-  if ¬((mint.amount st) < 0) ∧ ¬((st.pre Admin) = (mint.minter st)) ∧ ¬(¬((st.pre (.has (Minter (mint.contract st) (mint.minter st)))) = 1)) ∧ ¬(((getOr0 st.pre (MinterStats.consumed_limit (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))) (base := (MinterStats (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))))) + (mint.amount st)) > (st.pre (Minter.limit (mint.contract st) (mint.minter st)))) then ((st.pre).set (MinterStats.consumed_limit (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))) ((getOr0 st.pre (MinterStats.consumed_limit (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))) (base := (MinterStats (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))))) + (mint.amount st))).set (.has (MinterStats (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st)))))) 1 else st.pre
+  if (mint.amount st) ≥ 0 ∧ (st.pre Admin) ≠ (mint.minter st) ∧ (mint.pre_has_Minter st) = 1 ∧ (mint.new_MinterStats_consumed_limit st) ≤ (mint.pre_Minter_limit st) then ((st.pre).set (mint.key_MinterStats_consumed_limit st) (mint.new_MinterStats_consumed_limit st)).set (.has (mint.key_MinterStats st)) 1 else st.pre
 @[simp] def s2 (st : Step) (u : Unk) : Storage :=
-  if ((¬((mint.amount st) < 0)) ∧ ((st.pre Admin) = (mint.minter st))) ∨ ((¬((mint.amount st) < 0)) ∧ (¬((st.pre Admin) = (mint.minter st))) ∧ (¬(¬((st.pre (.has (Minter (mint.contract st) (mint.minter st)))) = 1))) ∧ (¬(((getOr0 st.pre (MinterStats.consumed_limit (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))) (base := (MinterStats (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))))) + (mint.amount st)) > (st.pre (Minter.limit (mint.contract st) (mint.minter st)))))) then havoc (mint.s1 st) (u.s 1) else (mint.s1 st)
+  if (((mint.amount st) ≥ 0) ∧ ((st.pre Admin) = (mint.minter st))) ∨ (((mint.amount st) ≥ 0) ∧ ((st.pre Admin) ≠ (mint.minter st)) ∧ ((mint.pre_has_Minter st) = 1) ∧ ((mint.new_MinterStats_consumed_limit st) ≤ (mint.pre_Minter_limit st))) then havoc (mint.s1 st) (u.s 1) else (mint.s1 st)
 end mint
 
 /-- `mint(contract: Address, minter: Address, to: Address, amount: i128)`: it succeeds exactly when `mint.Spec` holds.
     Its effects, in execution order:
-    * `mint.s1`: write `MinterStats (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))`, when `¬((mint.amount st) < 0) ∧ ¬((st.pre Admin) = (mint.minter st)) ∧ ¬(¬((st.pre (.has (Minter (mint.contract st) (mint.minter st)))) = 1)) ∧ ¬(((getOr0 st.pre (MinterStats.consumed_limit (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))) (base := (MinterStats (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))))) + (mint.amount st)) > (st.pre (Minter.limit (mint.contract st) (mint.minter st))))`
-    * `mint.s2`: a call into another contract: token ledgers open, when `((¬((mint.amount st) < 0)) ∧ ((st.pre Admin) = (mint.minter st))) ∨ ((¬((mint.amount st) < 0)) ∧ (¬((st.pre Admin) = (mint.minter st))) ∧ (¬(¬((st.pre (.has (Minter (mint.contract st) (mint.minter st)))) = 1))) ∧ (¬(((getOr0 st.pre (MinterStats.consumed_limit (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))) (base := (MinterStats (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))))) + (mint.amount st)) > (st.pre (Minter.limit (mint.contract st) (mint.minter st))))))`
+    * `mint.s1`: write `mint.key_MinterStats_consumed_limit st` := `mint.new_MinterStats_consumed_limit st`, when `(mint.amount st) ≥ 0 ∧ (st.pre Admin) ≠ (mint.minter st) ∧ (st.pre (.has (Minter (mint.contract st) (mint.minter st)))) = 1 ∧ ((getOr0 st.pre (MinterStats.consumed_limit (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))) (base := (MinterStats (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))))) + (mint.amount st)) ≤ (st.pre (Minter.limit (mint.contract st) (mint.minter st)))`
+    * `mint.s2`: a call into another contract: token ledgers open, when `(((mint.amount st) ≥ 0) ∧ ((st.pre Admin) = (mint.minter st))) ∨ (((mint.amount st) ≥ 0) ∧ ((st.pre Admin) ≠ (mint.minter st)) ∧ ((st.pre (.has (Minter (mint.contract st) (mint.minter st)))) = 1) ∧ (((getOr0 st.pre (MinterStats.consumed_limit (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))) (base := (MinterStats (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))))) + (mint.amount st)) ≤ (st.pre (Minter.limit (mint.contract st) (mint.minter st)))))`
 -/
 structure mint.Spec (st : Step) (u : Unk) : Prop where
   fn : st.call.fn = "mint"
@@ -163,10 +175,10 @@ structure mint.Spec (st : Step) (u : Unk) : Prop where
   /-- `mint.minter st` authorized the call (`require_auth`) -/
   auth_minter : (mint.minter st) ∈ st.call.signers
   /-- the call returns `Ok` (an `Err` fails it) -/
-  ok : (((¬((mint.amount st) < 0)) ∧ ((st.pre Admin) = (mint.minter st))) ∨ ((¬((mint.amount st) < 0)) ∧ (¬((st.pre Admin) = (mint.minter st))) ∧ (¬(¬((st.pre (.has (Minter (mint.contract st) (mint.minter st)))) = 1))) ∧ (¬(((getOr0 st.pre (MinterStats.consumed_limit (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))) (base := (MinterStats (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))))) + (mint.amount st)) > (st.pre (Minter.limit (mint.contract st) (mint.minter st)))))))
+  ok : ((((mint.amount st) ≥ 0) ∧ ((st.pre Admin) = (mint.minter st))) ∨ (((mint.amount st) ≥ 0) ∧ ((st.pre Admin) ≠ (mint.minter st)) ∧ ((mint.pre_has_Minter st) = 1) ∧ ((mint.new_MinterStats_consumed_limit st) ≤ (mint.pre_Minter_limit st))))
   post : st.post = (mint.s2 st u)
-  writes : st.writes = [(MinterStats.consumed_limit (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))), .has (MinterStats (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st)))))]
-  ret : st.ret = (if ((¬((mint.amount st) < 0)) ∧ ((st.pre Admin) = (mint.minter st))) ∨ ((¬((mint.amount st) < 0)) ∧ (¬((st.pre Admin) = (mint.minter st))) ∧ (¬(¬((st.pre (.has (Minter (mint.contract st) (mint.minter st)))) = 1))) ∧ (¬(((getOr0 st.pre (MinterStats.consumed_limit (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))) (base := (MinterStats (mint.contract st) (mint.minter st) (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))) (Int.tdiv (st.call.env "sequence") (st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))))))) + (mint.amount st)) > (st.pre (Minter.limit (mint.contract st) (mint.minter st)))))) then 2 else (if (mint.amount st) < 0 then 12884901891 else (if ¬((st.pre (.has (Minter (mint.contract st) (mint.minter st)))) = 1) then 4294967299 else 8589934595)))
+  writes : st.writes = [(mint.key_MinterStats_consumed_limit st), .has (mint.key_MinterStats st)]
+  ret : st.ret = (if (((mint.amount st) ≥ 0) ∧ ((st.pre Admin) = (mint.minter st))) ∨ (((mint.amount st) ≥ 0) ∧ ((st.pre Admin) ≠ (mint.minter st)) ∧ ((mint.pre_has_Minter st) = 1) ∧ ((mint.new_MinterStats_consumed_limit st) ≤ (mint.pre_Minter_limit st))) then 2 else (if (mint.amount st) < 0 then 12884901891 else (if (mint.pre_has_Minter st) ≠ 1 then 4294967299 else 8589934595)))
 
 def mint : Step → Prop := fun st => ∃ u : Unk, mint.Spec st u
 
@@ -183,7 +195,7 @@ structure minter.Spec (st : Step) (u : Unk) : Prop where
   notReentrant : st.call.caller ≠ pool st
   post : st.post = st.pre
   writes : st.writes = []
-  ret : st.ret = (if ¬(¬((st.pre (.has (Minter (minter.contract st) (minter.minter st)))) = 1)) then (u.i 1) else 4294967299)
+  ret : st.ret = (if (st.pre (.has (Minter (minter.contract st) (minter.minter st)))) = 1 then (u.i 1) else 4294967299)
 
 def minter : Step → Prop := fun st => ∃ u : Unk, minter.Spec st u
 
@@ -195,7 +207,7 @@ end set_admin
 
 /-- `set_admin(new_admin: Address)`: it succeeds exactly when `set_admin.Spec` holds.
     Its effects, in execution order:
-    * `set_admin.s1`: write `Admin`
+    * `set_admin.s1`: write `Admin` := `set_admin.new_admin st`
 -/
 structure set_admin.Spec (st : Step) : Prop where
   fn : st.call.fn = "set_admin"
@@ -214,13 +226,17 @@ namespace set_minter
 @[simp] def config.limit (st : Step) : Int := st.call.arg "config.limit"
 @[simp] def contract (st : Step) : Addr := st.call.argA "contract"
 @[simp] def minter (st : Step) : Addr := st.call.argA "minter"
+@[simp] def key_Minter_epoch_length (st : Step) : Key :=
+  Minter.epoch_length (set_minter.contract st) (set_minter.minter st)
+@[simp] def key_Minter_limit (st : Step) : Key :=
+  Minter.limit (set_minter.contract st) (set_minter.minter st)
 @[simp] def s1 (st : Step) : Storage :=
-  (((st.pre).set (Minter.epoch_length (set_minter.contract st) (set_minter.minter st)) (set_minter.config.epoch_length st)).set (Minter.limit (set_minter.contract st) (set_minter.minter st)) (set_minter.config.limit st)).set (.has (Minter (set_minter.contract st) (set_minter.minter st))) 1
+  (((st.pre).set (set_minter.key_Minter_epoch_length st) (set_minter.config.epoch_length st)).set (set_minter.key_Minter_limit st) (set_minter.config.limit st)).set (.has (Minter (set_minter.contract st) (set_minter.minter st))) 1
 end set_minter
 
 /-- `set_minter(contract: Address, minter: Address, config: MinterConfig)`: it succeeds exactly when `set_minter.Spec` holds.
     Its effects, in execution order:
-    * `set_minter.s1`: write `Minter (set_minter.contract st) (set_minter.minter st)`
+    * `set_minter.s1`: write `set_minter.key_Minter_epoch_length st` := `set_minter.config.epoch_length st`, `set_minter.key_Minter_limit st` := `set_minter.config.limit st`
 -/
 structure set_minter.Spec (st : Step) : Prop where
   fn : st.call.fn = "set_minter"
@@ -229,7 +245,7 @@ structure set_minter.Spec (st : Step) : Prop where
   /-- `st.pre Admin` authorized the call (`require_auth`) -/
   auth_Admin : (st.pre Admin) ∈ st.call.signers
   post : st.post = (set_minter.s1 st)
-  writes : st.writes = [(Minter.epoch_length (set_minter.contract st) (set_minter.minter st)), (Minter.limit (set_minter.contract st) (set_minter.minter st)), .has (Minter (set_minter.contract st) (set_minter.minter st))]
+  writes : st.writes = [(set_minter.key_Minter_epoch_length st), (set_minter.key_Minter_limit st), .has (Minter (set_minter.contract st) (set_minter.minter st))]
   ret : st.ret = 2
 
 abbrev set_minter : Step → Prop := fun st => set_minter.Spec st

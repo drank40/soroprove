@@ -120,7 +120,7 @@ end create
 
 /-- `create(seller: Address, sell_token: Address, buy_token: Address, sell_price: u32, buy_price: u32)`: it succeeds exactly when `create.Spec` holds.
     Its effects, in execution order:
-    * `create.s1`: write `Offer`
+    * `create.s1`: write `Offer.buy_price` := `create.buy_price st`, `Offer.buy_token` := `create.buy_token st`, `Offer.sell_price` := `create.sell_price st`, `Offer.sell_token` := `create.sell_token st`, `Offer.seller` := `create.seller st`
 -/
 structure create.Spec (st : Step) : Prop where
   fn : st.call.fn = "create"
@@ -157,15 +157,15 @@ namespace trade
 @[simp] def buyer (st : Step) : Addr := st.call.argA "buyer"
 @[simp] def min_sell_token_amount (st : Step) : Int := st.call.arg "min_sell_token_amount"
 @[simp] def amt1 (st : Step) : Int :=
-  (trade.buy_token_amount st)
+  trade.buy_token_amount st
 @[simp] def s1 (st : Step) : Storage :=
   xfer (st.pre Offer.buy_token) st.pre (trade.buyer st) (pool st) (trade.amt1 st)
 @[simp] def amt2 (_st : Step) (u : Unk) : Int :=
-  (u.i 1)
+  u.i 1
 @[simp] def s2 (st : Step) (u : Unk) : Storage :=
   xfer (st.pre Offer.sell_token) (trade.s1 st) (pool st) (trade.buyer st) (trade.amt2 st u)
 @[simp] def amt3 (st : Step) : Int :=
-  (trade.buy_token_amount st)
+  trade.amt1 st
 @[simp] def s3 (st : Step) (u : Unk) : Storage :=
   xfer (st.pre Offer.buy_token) (trade.s2 st u) (pool st) (st.pre Offer.seller) (trade.amt3 st)
 end trade
@@ -205,7 +205,7 @@ end updt_price
 
 /-- `updt_price(sell_price: u32, buy_price: u32)`: it succeeds exactly when `updt_price.Spec` holds.
     Its effects, in execution order:
-    * `updt_price.s1`: write `Offer`
+    * `updt_price.s1`: write `Offer.buy_price` := `updt_price.buy_price st`, `Offer.buy_token` := `st.pre Offer.buy_token`, `Offer.sell_price` := `updt_price.sell_price st`, `Offer.sell_token` := `st.pre Offer.sell_token`, `Offer.seller` := `st.pre Offer.seller`
 -/
 structure updt_price.Spec (st : Step) : Prop where
   fn : st.call.fn = "updt_price"
@@ -227,7 +227,7 @@ namespace withdraw
 @[simp] def amount (st : Step) : Int := st.call.arg "amount"
 @[simp] def token (st : Step) : Addr := st.call.argA "token"
 @[simp] def amt1 (st : Step) : Int :=
-  (withdraw.amount st)
+  withdraw.amount st
 @[simp] def s1 (st : Step) : Storage :=
   xfer (withdraw.token st) st.pre (pool st) (st.pre Offer.seller) (withdraw.amt1 st)
 end withdraw

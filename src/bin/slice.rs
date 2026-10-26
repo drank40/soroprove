@@ -4714,9 +4714,15 @@ fn lean_cond(
             Some(format!("(if {c} then {a} else {b})"))
         }
         Expr::Opaque(l, xs) if l == "@false" && xs.is_empty() => Some("False".into()),
-        Expr::Opaque(l, xs) if l == "@not" && xs.len() == 1 => {
-            Some(format!("¬({})", lean_cond(&xs[0], args, opmap, oc, decls, fnid)?))
-        }
+        Expr::Opaque(l, xs) if l == "@not" && xs.len() == 1 => match &xs[0] {
+            // `¬(a < b)` reads as `b ≤ a`, `¬¬c` as `c`.
+            x @ Expr::Opaque(il, _) if il.starts_with("ICmp_") && !matches!(negate_bool(x), Expr::Opaque(ref n, _) if n == "@not") => {
+                lean_cond(&negate_bool(x), args, opmap, oc, decls, fnid)
+            }
+            Expr::Opaque(il, ys) if il == "@not" && ys.len() == 1 => lean_cond(&ys[0], args, opmap, oc, decls, fnid),
+            Expr::Opaque(il, ys) if il == "@isfalse" && ys.len() == 1 => Some(format!("{} ≠ 0", lean_guard_term(&ys[0], args, opmap, oc, decls, fnid))),
+            x => Some(format!("¬({})", lean_cond(x, args, opmap, oc, decls, fnid)?)),
+        },
         Expr::Opaque(l, xs) if l == "@isfalse" && xs.len() == 1 => {
             Some(format!("{} = 0", lean_guard_term(&xs[0], args, opmap, oc, decls, fnid)))
         }
@@ -5682,8 +5688,8 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
         let parts: Vec<String> = cs
             .iter()
             .map(|c| match c {
-                Expr::Opaque(l, x) if l == "@not" && x.len() == 1 => match lean_cond(&x[0], &args, opmap, oc, decls, &tid) {
-                    Some(s) => format!("¬({s})"),
+                Expr::Opaque(l, x) if l == "@not" && x.len() == 1 => match lean_cond(c, &args, opmap, oc, decls, &tid) {
+                    Some(s) => s,
                     None => format!("¬({})", unknown(oc)),
                 },
                 c => lean_cond(c, &args, opmap, oc, decls, &tid).unwrap_or_else(|| unknown(oc)),
@@ -5693,6 +5699,7 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
     };
     let (mut defs, mut writes, mut events): (Vec<(String, &'static str, String)>, Vec<String>, Vec<String>) = (vec![], vec![], vec![]);
     let mut conjs_tx: Vec<(String, String)> = vec![];
+    let mut upd_vals: Vec<(String, String)> = vec![];
     let mut unk_key = false;
     let mut cur = "st.pre".to_string();
     let mut nstate = 0;
@@ -5768,14 +5775,58 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
         }
         // the key's presence: set → 1, remove → 0.
         sets.push((format!(".has ({key})"), Expr::Const(if del { 0 } else { 1 })));
+        // a long key gets a name: `key_MinterStats` (fields: `key_MinterStats_consumed_limit`).
+        let mut name_key = |k: &str, defs: &mut Vec<(String, &'static str, String)>| -> String {
+            if k.len() <= 60 || !k.contains(' ') {
+                return k.to_string();
+            }
+            let name = format!("key_{}", key_name(k));
+            if !defs.iter().any(|d| d.0 == name) {
+                defs.push((name.clone(), "Key", k.to_string()));
+            }
+            format!("@D:{name}@")
+        };
+        let sets: Vec<(String, Expr)> = sets
+            .into_iter()
+            .map(|(k, v)| match k.strip_prefix(".has (").and_then(|r| r.strip_suffix(')')) {
+                Some(root) => (format!(".has ({})", name_key(root, &mut defs)), v),
+                None => (name_key(&k, &mut defs), v),
+            })
+            .collect();
         let mut upd = cur.clone();
         for (key, v) in &sets {
-            let val = lean_guard_term(v, &args, &mut opmap, &mut oc, &mut decls, &tid);
+            let mut val = lean_guard_term(v, &args, &mut opmap, &mut oc, &mut decls, &tid);
+            // a computed value gets a name, after its key: `new_ReserveA`.
+            let simple = !val.contains(' ') || (val.starts_with('(') && val.matches(' ').count() == 1);
+            if !simple {
+                let k = key.strip_prefix("@D:key_").and_then(|k| k.strip_suffix('@')).unwrap_or(key);
+                let base = format!("new_{}", key_name(k));
+                let mut name = base.clone();
+                let mut k = 1;
+                while defs.iter().any(|d| d.0 == name) {
+                    k += 1;
+                    name = format!("{base}_{k}");
+                }
+                defs.push((name.clone(), "Int", val));
+                val = format!("@D:{name}@");
+            }
+            if !key.starts_with(".has") {
+                upd_vals.push((key.clone(), val.clone()));
+            }
             upd = format!("({upd}).set ({key}) ({val})");
             if !writes.contains(key) {
                 writes.push(key.clone());
             }
         }
+        // the event says what was stored: `ReserveA := new_ReserveA`, or the fields.
+        if !del {
+            let vals: Vec<&(String, Expr)> = sets.iter().filter(|(k, _)| !k.starts_with(".has")).collect();
+            let shown: Vec<String> = upd_vals.iter().take(vals.len()).map(|(k, v)| format!("`{k}` := `{v}`")).collect();
+            if let Some(ev) = events.last_mut() {
+                *ev = format!("write {}{when}", shown.join(", "));
+            }
+        }
+        upd_vals.clear();
         nstate += 1;
         defs.push((format!("s{nstate}"), "Storage", next(upd, &cur)));
         cur = format!("@D:s{nstate}@");
@@ -5860,19 +5911,6 @@ fn emit_lean_model(entries: &[ModelEntry], check: bool) {
         let fn_id = san(&e.name);
         let ns = lean_ident(&fn_id);
         let rb = &e.rich;
-        // named defs: which depend on the open values `u` (directly or through earlier ones).
-        let mut open: Vec<(String, bool)> = vec![];
-        for (n, _, body) in &rb.defs {
-            let o = body.contains("(u.") || open.iter().any(|(m, o)| *o && body.contains(&format!("@D:{m}@")));
-            open.push((n.clone(), o));
-        }
-        let resolve = |t: &str| {
-            let mut t = t.to_string();
-            for (n, o) in &open {
-                t = t.replace(&format!("@D:{n}@"), &if *o { format!("({ns}.{n} st u)") } else { format!("({ns}.{n} st)") });
-            }
-            tidy(&t)
-        };
         // the conjuncts, labelled (the checker evaluates exactly these).
         let mut conjs: Vec<(String, String)> = vec![
             ("fn".into(), format!("st.call.fn = \"{}\"", e.name)),
@@ -5884,9 +5922,99 @@ fn emit_lean_model(entries: &[ModelEntry], check: bool) {
                 conjs.push((format!("gate: {}", g.comment), g.lean.clone()));
             }
         }
+        // a named amount's / value's term is referred to by name wherever it
+        // recurs (as a whole parenthesized term, so precedence can't change).
+        let mut defs = rb.defs.clone();
+        let (mut rpost, mut rret, mut rwrites) = (rb.post.clone(), rb.ret.clone(), format!("[{}]", rb.writes.join(", ")));
+        // a pre-state read that recurs is named after its key: `pre_Minter_epoch_length`.
+        {
+            let all: String = defs.iter().map(|d| d.2.clone()).chain(conjs.iter().map(|c| c.1.clone())).chain([rpost.clone(), rret.clone()]).collect::<Vec<_>>().join("\n");
+            let mut reads: BTreeMap<String, usize> = BTreeMap::new();
+            for (i, _) in all.match_indices("(st.pre (") {
+                let b: Vec<char> = all[i..].chars().collect();
+                let mut depth = 0;
+                let mut end = None;
+                for (k, c) in b.iter().enumerate() {
+                    match c {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = Some(k);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(k) = end {
+                    let t: String = b[..=k].iter().collect();
+                    if t.len() > 40 && !t.contains("@D:") {
+                        *reads.entry(t).or_default() += 1;
+                    }
+                }
+            }
+            let mut named: Vec<(String, &'static str, String)> = vec![];
+            for (t, n) in reads {
+                if n < 2 {
+                    continue;
+                }
+                let key = &t["(st.pre (".len()..t.len() - 2];
+                let base = format!("pre_{}", key_name(key));
+                let mut name = base.clone();
+                let mut k = 1;
+                while named.iter().any(|d| d.0 == name) || defs.iter().any(|d| d.0 == name) {
+                    k += 1;
+                    name = format!("{base}_{k}");
+                }
+                let by = format!("@D:{name}@");
+                for d in defs.iter_mut() {
+                    d.2 = d.2.replace(&t, &by);
+                }
+                for c in conjs.iter_mut() {
+                    c.1 = c.1.replace(&t, &by);
+                }
+                for x in [&mut rpost, &mut rret, &mut rwrites] {
+                    *x = x.replace(&t, &by);
+                }
+                named.push((name, "Int", t[1..t.len() - 1].to_string()));
+            }
+            named.extend(defs);
+            defs = named;
+        }
+        for j in 0..defs.len() {
+            let (n, ty, body) = defs[j].clone();
+            if ty == "Storage" || !body.contains(' ') {
+                continue;
+            }
+            let pat = if body.starts_with('(') && unparen(&body) != body { body.clone() } else { format!("({body})") };
+            let by = format!("@D:{n}@");
+            for d in defs.iter_mut().skip(j + 1) {
+                d.2 = d.2.replace(&pat, &by);
+            }
+            for c in conjs.iter_mut() {
+                c.1 = c.1.replace(&pat, &by);
+            }
+            for t in [&mut rpost, &mut rret, &mut rwrites] {
+                *t = t.replace(&pat, &by);
+            }
+        }
+        // named defs: which depend on the open values `u` (directly or through earlier ones).
+        let mut open: Vec<(String, bool)> = vec![];
+        for (n, _, body) in &defs {
+            let o = body.contains("(u.") || open.iter().any(|(m, o)| *o && body.contains(&format!("@D:{m}@")));
+            open.push((n.clone(), o));
+        }
+        let resolve = |t: &str| {
+            let mut t = t.to_string();
+            for (n, o) in &open {
+                t = t.replace(&format!("@D:{n}@"), &if *o { format!("({ns}.{n} st u)") } else { format!("({ns}.{n} st)") });
+            }
+            tidy(&t)
+        };
         let conjs: Vec<(String, String)> = conjs.into_iter().map(|(l, p)| (l, resolve(&p))).collect();
-        let (post, ret) = (resolve(&rb.post), resolve(&rb.ret));
-        let writes = resolve(&format!("[{}]", rb.writes.join(", ")));
+        let (post, ret) = (resolve(&rpost), resolve(&rret));
+        let writes = resolve(&rwrites);
         // inputs: the scalar ABI args, and every input the model refers to.
         let mut inputs: BTreeMap<String, bool> = INPUTS.with(|m| m.borrow().get(&fn_id).cloned().unwrap_or_default());
         for (n, t) in &e.args {
@@ -5896,14 +6024,14 @@ fn emit_lean_model(entries: &[ModelEntry], check: bool) {
                 inputs.entry(n.clone()).or_insert(false);
             }
         }
-        if !inputs.is_empty() || !rb.defs.is_empty() {
+        if !inputs.is_empty() || !defs.is_empty() {
             println!("namespace {ns}");
             for (n, addr) in &inputs {
                 let path: Vec<String> = n.split('.').map(lean_ident).collect();
                 let (ty, get) = if *addr { ("Addr", "argA") } else { ("Int", "arg") };
                 println!("@[simp] def {} (st : Step) : {ty} := st.call.{get} \"{n}\"", path.join("."));
             }
-            for ((n, ty, body), (_, o)) in rb.defs.iter().zip(&open) {
+            for ((n, ty, body), (_, o)) in defs.iter().zip(&open) {
                 let u = if *o { " (u : Unk)" } else { "" };
                 let b = resolve(body);
                 // `st` as a whole word (an open value alone doesn't read it).
@@ -5912,7 +6040,7 @@ fn emit_lean_model(entries: &[ModelEntry], check: bool) {
                     ok(b[..i].chars().last()) && ok(b[i + 2..].chars().next())
                 });
                 let st = if uses_st { "st" } else { "_st" };
-                println!("@[simp] def {n} ({st} : Step){u} : {ty} :=\n  {b}");
+                println!("@[simp] def {n} ({st} : Step){u} : {ty} :=\n  {}", unparen(&b));
             }
             println!("end {ns}\n");
         }
@@ -6040,6 +6168,20 @@ fn auth_who(p: &str) -> String {
         None => before,
     };
     unparen(who)
+}
+
+/// An identifier for a rendered key: its layout name (`Minter.limit c m` ->
+/// `Minter_limit`, `.has (Minter c m)` -> `has_Minter`).
+fn key_name(k: &str) -> String {
+    let t = k.trim_start_matches(['(', '.']);
+    let (head, rest) = t.split_once(' ').unwrap_or((t, ""));
+    let id = |s: &str| s.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect::<String>().trim_matches('_').to_string();
+    if head == "has" {
+        format!("has_{}", key_name(rest))
+    } else {
+        let h = id(head);
+        if h.is_empty() { "v".into() } else { h }
+    }
 }
 
 /// `t` without one pair of enclosing parentheses, if it has them.

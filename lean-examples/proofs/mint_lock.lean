@@ -10,18 +10,11 @@ theorem set_minter_by_admin (st : Step) (h : set_minter st) :
   refine ⟨h.auth_Admin, ?_⟩
   rw [h.post]; simp
 
-/-- A non-admin mint succeeds only for a configured minter, within its epoch limit. -/
+/-- A non-admin mint succeeds only for a configured minter, and only if the
+    epoch's consumed limit stays within the configured limit. -/
 theorem mint_within_limit (st : Step) (h : mint st) (hm : st.pre Admin ≠ mint.minter st) :
-    let len := st.pre (Minter.epoch_length (mint.contract st) (mint.minter st))
-    let epoch := Int.tdiv (st.call.env "sequence") len
-    st.pre (.has (Minter (mint.contract st) (mint.minter st))) = 1 ∧
-    getOr0 st.pre (MinterStats.consumed_limit (mint.contract st) (mint.minter st) len epoch)
-        (base := MinterStats (mint.contract st) (mint.minter st) len epoch) + mint.amount st
-      ≤ st.pre (Minter.limit (mint.contract st) (mint.minter st)) := by
+    mint.pre_has_Minter st = 1 ∧ mint.new_MinterStats_consumed_limit st ≤ mint.pre_Minter_limit st := by
   obtain ⟨u, h⟩ := h
-  have hok := h.ok
-  simp only [mint.contract, mint.minter, mint.amount, Minter, Minter.limit, Minter.epoch_length, MinterStats,
-    MinterStats.consumed_limit, Admin] at hok hm ⊢
-  rcases hok with ⟨_, hadm⟩ | ⟨_, _, hhas, hlim⟩
+  rcases h.ok with ⟨_, hadm⟩ | ⟨_, _, hhas, hlim⟩
   · exact absurd hadm hm
-  · exact ⟨by simpa using hhas, by omega⟩
+  · exact ⟨hhas, hlim⟩

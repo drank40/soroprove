@@ -113,7 +113,7 @@ def getOr0 (s : Storage) (k : Key) (base : Key := k) : Int := if s (.has base) =
 namespace claim
 @[simp] def claimant (st : Step) : Addr := st.call.argA "claimant"
 @[simp] def amt1 (st : Step) : Int :=
-  (st.pre Balance.amount)
+  st.pre Balance.amount
 @[simp] def s1 (st : Step) : Storage :=
   xfer (st.pre Balance.token) st.pre (pool st) (claim.claimant st) (claim.amt1 st)
 @[simp] def s2 (st : Step) : Storage :=
@@ -136,7 +136,7 @@ structure claim.Spec (st : Step) (u : Unk) : Prop where
   /-- the call panics unless this holds -/
   gate1 : (st.pre (.has Balance)) = 1
   /-- the call panics unless this holds -/
-  gate2 : ¬(if (u.g 1) = 0 then (if ¬((u.g 2) = 0) then 0 else (if ((u.g 3) = 0) ∧ (((u.g 4) ≠ 64) ∧ ((u.g 5) ≠ 6)) then 0 else (st.pre Balance.time_bound.timestamp))) < (st.call.env "timestamp") else (if ¬((u.g 6) = 0) then 0 else (if ((u.g 7) = 0) ∧ (((u.g 8) ≠ 64) ∧ ((u.g 9) ≠ 6)) then 0 else (st.pre Balance.time_bound.timestamp))) > (st.call.env "timestamp"))
+  gate2 : ¬(if (u.g 1) = 0 then (if (u.g 2) ≠ 0 then 0 else (if ((u.g 3) = 0) ∧ (((u.g 4) ≠ 64) ∧ ((u.g 5) ≠ 6)) then 0 else (st.pre Balance.time_bound.timestamp))) < (st.call.env "timestamp") else (if (u.g 6) ≠ 0 then 0 else (if ((u.g 7) = 0) ∧ (((u.g 8) ≠ 64) ∧ ((u.g 9) ≠ 6)) then 0 else (st.pre Balance.time_bound.timestamp))) > (st.call.env "timestamp"))
   post : st.post = (claim.s2 st)
   writes : st.writes = [.bal (st.pre Balance.token) (pool st), .bal (st.pre Balance.token) (claim.claimant st), .has Balance]
   ret : st.ret = 2
@@ -151,11 +151,13 @@ namespace deposit
 @[simp] def time_bound.timestamp (st : Step) : Int := st.call.arg "time_bound.timestamp"
 @[simp] def token (st : Step) : Addr := st.call.argA "token"
 @[simp] def amt1 (st : Step) : Int :=
-  (deposit.amount st)
+  deposit.amount st
 @[simp] def s1 (st : Step) : Storage :=
   xfer (deposit.token st) st.pre (deposit.«from» st) (pool st) (deposit.amt1 st)
+@[simp] def new_Balance_time_bound_timestamp (st : Step) (u : Unk) : Int :=
+  if (u.i 2) ≠ 0 then 1 else (deposit.time_bound.timestamp st)
 @[simp] def s2 (st : Step) (u : Unk) : Storage :=
-  ((((((deposit.s1 st).set Balance.amount (deposit.amount st)).set Balance.claimants (deposit.claimants st)).set Balance.time_bound.kind (u.i 1)).set Balance.time_bound.timestamp (if ¬((u.i 2) = 0) then 1 else (deposit.time_bound.timestamp st))).set Balance.token (deposit.token st)).set (.has Balance) 1
+  ((((((deposit.s1 st).set Balance.amount (deposit.amt1 st)).set Balance.claimants (deposit.claimants st)).set Balance.time_bound.kind (u.i 1)).set Balance.time_bound.timestamp (deposit.new_Balance_time_bound_timestamp st u)).set Balance.token (deposit.token st)).set (.has Balance) 1
 @[simp] def s3 (st : Step) (u : Unk) : Storage :=
   ((deposit.s2 st u).set Init 2).set (.has Init) 1
 end deposit
@@ -163,8 +165,8 @@ end deposit
 /-- `deposit(from: Address, token: Address, amount: i128, claimants: Vec<Address>, time_bound: TimeBound)`: it succeeds exactly when `deposit.Spec` holds.
     Its effects, in execution order:
     * `deposit.s1`: transfer `deposit.amt1 st` of token `deposit.token st` from `deposit.«from» st` to `pool st`
-    * `deposit.s2`: write `Balance`
-    * `deposit.s3`: write `Init`
+    * `deposit.s2`: write `Balance.amount` := `deposit.amount st`, `Balance.claimants` := `deposit.claimants st`, `Balance.time_bound.kind` := `u.i 1`, `Balance.time_bound.timestamp` := `deposit.new_Balance_time_bound_timestamp st u`, `Balance.token` := `deposit.token st`
+    * `deposit.s3`: write `Init` := `2`
 -/
 structure deposit.Spec (st : Step) (u : Unk) : Prop where
   fn : st.call.fn = "deposit"

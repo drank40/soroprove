@@ -109,27 +109,27 @@ namespace swap
 @[simp] def token_a (st : Step) : Addr := st.call.argA "token_a"
 @[simp] def token_b (st : Step) : Addr := st.call.argA "token_b"
 @[simp] def amt1 (st : Step) : Int :=
-  (swap.amount_a st)
+  swap.amount_a st
 @[simp] def s1 (st : Step) : Storage :=
   xfer (swap.token_a st) st.pre (swap.a st) (pool st) (swap.amt1 st)
 @[simp] def amt2 (st : Step) : Int :=
-  (swap.min_a_for_b st)
+  swap.min_a_for_b st
 @[simp] def s2 (st : Step) : Storage :=
   xfer (swap.token_a st) (swap.s1 st) (pool st) (swap.b st) (swap.amt2 st)
 @[simp] def amt3 (st : Step) : Int :=
-  ((swap.amount_a st) - (swap.min_a_for_b st))
+  (swap.amt1 st) - (swap.amt2 st)
 @[simp] def s3 (st : Step) : Storage :=
   xfer (swap.token_a st) (swap.s2 st) (pool st) (swap.a st) (swap.amt3 st)
 @[simp] def amt4 (st : Step) : Int :=
-  (swap.amount_b st)
+  swap.amount_b st
 @[simp] def s4 (st : Step) : Storage :=
   xfer (swap.token_b st) (swap.s3 st) (swap.b st) (pool st) (swap.amt4 st)
 @[simp] def amt5 (st : Step) : Int :=
-  (swap.min_b_for_a st)
+  swap.min_b_for_a st
 @[simp] def s5 (st : Step) : Storage :=
   xfer (swap.token_b st) (swap.s4 st) (pool st) (swap.a st) (swap.amt5 st)
 @[simp] def amt6 (st : Step) : Int :=
-  ((swap.amount_b st) - (swap.min_b_for_a st))
+  (swap.amt4 st) - (swap.amt5 st)
 @[simp] def s6 (st : Step) : Storage :=
   xfer (swap.token_b st) (swap.s5 st) (pool st) (swap.b st) (swap.amt6 st)
 end swap
@@ -164,9 +164,9 @@ structure swap.Spec (st : Step) : Prop where
   /-- `swap.b st` authorized the call (`require_auth`) -/
   auth_b : (swap.b st) ∈ st.call.signers
   /-- the call panics unless this holds -/
-  gate1 : (swap.min_b_for_a st) ≤ (swap.amount_b st)
+  gate1 : (swap.amt5 st) ≤ (swap.amt4 st)
   /-- the call panics unless this holds -/
-  gate2 : (swap.amount_a st) ≥ (swap.min_a_for_b st)
+  gate2 : (swap.amt1 st) ≥ (swap.amt2 st)
   post : st.post = (swap.s6 st)
   writes : st.writes = [.bal (swap.token_a st) (swap.a st), .bal (swap.token_a st) (pool st), .bal (swap.token_a st) (swap.b st), .bal (swap.token_b st) (swap.b st), .bal (swap.token_b st) (pool st), .bal (swap.token_b st) (swap.a st)]
   ret : st.ret = 2

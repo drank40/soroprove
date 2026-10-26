@@ -124,8 +124,8 @@ end __constructor
 
 /-- `__constructor(admin: Address, decimal: u32, name: String, symbol: String)`: it succeeds exactly when `__constructor.Spec` holds.
     Its effects, in execution order:
-    * `__constructor.s1`: write `Admin`
-    * `__constructor.s2`: write `METADATA`
+    * `__constructor.s1`: write `Admin` := `__constructor.admin st`
+    * `__constructor.s2`: write `METADATA.decimal` := `u.i 1`, `METADATA.name` := `__constructor.name st`, `METADATA.symbol` := `__constructor.symbol st`
 -/
 structure __constructor.Spec (st : Step) (u : Unk) : Prop where
   fn : st.call.fn = "__constructor"
@@ -152,7 +152,7 @@ structure allowance.Spec (st : Step) : Prop where
   notReentrant : st.call.caller ≠ pool st
   post : st.post = st.pre
   writes : st.writes = []
-  ret : st.ret = (if ¬((st.pre (.has (Allowance (allowance.«from» st) (allowance.spender st)))) = 1) then 0 else (if ¬((st.call.env "sequence") > (st.pre (Allowance.live_until_ledger (allowance.«from» st) (allowance.spender st)))) then (st.pre (Allowance.amount (allowance.«from» st) (allowance.spender st))) else 0))
+  ret : st.ret = (if (st.pre (.has (Allowance (allowance.«from» st) (allowance.spender st)))) ≠ 1 then 0 else (if (st.call.env "sequence") ≤ (st.pre (Allowance.live_until_ledger (allowance.«from» st) (allowance.spender st))) then (st.pre (Allowance.amount (allowance.«from» st) (allowance.spender st))) else 0))
 
 abbrev allowance : Step → Prop := fun st => allowance.Spec st
 
@@ -161,13 +161,17 @@ namespace approve
 @[simp] def «from» (st : Step) : Addr := st.call.argA "from"
 @[simp] def live_until_ledger (st : Step) : Int := st.call.arg "live_until_ledger"
 @[simp] def spender (st : Step) : Addr := st.call.argA "spender"
+@[simp] def key_Allowance_amount (st : Step) : Key :=
+  Allowance.amount (approve.«from» st) (approve.spender st)
+@[simp] def key_Allowance_live_until_ledger (st : Step) : Key :=
+  Allowance.live_until_ledger (approve.«from» st) (approve.spender st)
 @[simp] def s1 (st : Step) (u : Unk) : Storage :=
-  (((st.pre).set (Allowance.amount (approve.«from» st) (approve.spender st)) (u.i 1)).set (Allowance.live_until_ledger (approve.«from» st) (approve.spender st)) (approve.live_until_ledger st)).set (.has (Allowance (approve.«from» st) (approve.spender st))) 1
+  (((st.pre).set (approve.key_Allowance_amount st) (u.i 1)).set (approve.key_Allowance_live_until_ledger st) (approve.live_until_ledger st)).set (.has (Allowance (approve.«from» st) (approve.spender st))) 1
 end approve
 
 /-- `approve(from: Address, spender: Address, amount: i128, live_until_ledger: u32)`: it succeeds exactly when `approve.Spec` holds.
     Its effects, in execution order:
-    * `approve.s1`: write `Allowance (approve.«from» st) (approve.spender st)`
+    * `approve.s1`: write `approve.key_Allowance_amount st` := `u.i 1`, `approve.key_Allowance_live_until_ledger st` := `approve.live_until_ledger st`
 -/
 structure approve.Spec (st : Step) (u : Unk) : Prop where
   fn : st.call.fn = "approve"
@@ -176,7 +180,7 @@ structure approve.Spec (st : Step) (u : Unk) : Prop where
   /-- `approve.«from» st` authorized the call (`require_auth`) -/
   auth_from : (approve.«from» st) ∈ st.call.signers
   post : st.post = (approve.s1 st u)
-  writes : st.writes = [(Allowance.amount (approve.«from» st) (approve.spender st)), (Allowance.live_until_ledger (approve.«from» st) (approve.spender st)), .has (Allowance (approve.«from» st) (approve.spender st))]
+  writes : st.writes = [(approve.key_Allowance_amount st), (approve.key_Allowance_live_until_ledger st), .has (Allowance (approve.«from» st) (approve.spender st))]
   ret : st.ret = 2
 
 def approve : Step → Prop := fun st => ∃ u : Unk, approve.Spec st u
@@ -200,13 +204,15 @@ abbrev balance : Step → Prop := fun st => balance.Spec st
 namespace burn
 @[simp] def amount (st : Step) : Int := st.call.arg "amount"
 @[simp] def «from» (st : Step) : Addr := st.call.argA "from"
+@[simp] def new_Balance (st : Step) : Int :=
+  (getOr0 st.pre (Balance (burn.«from» st))) - (burn.amount st)
 @[simp] def s1 (st : Step) : Storage :=
-  ((st.pre).set (Balance (burn.«from» st)) ((getOr0 st.pre (Balance (burn.«from» st))) - (burn.amount st))).set (.has (Balance (burn.«from» st))) 1
+  ((st.pre).set (Balance (burn.«from» st)) (burn.new_Balance st)).set (.has (Balance (burn.«from» st))) 1
 end burn
 
 /-- `burn(from: Address, amount: i128)`: it succeeds exactly when `burn.Spec` holds.
     Its effects, in execution order:
-    * `burn.s1`: write `Balance (burn.«from» st)`
+    * `burn.s1`: write `Balance (burn.«from» st)` := `burn.new_Balance st`
 -/
 structure burn.Spec (st : Step) : Prop where
   fn : st.call.fn = "burn"
@@ -228,16 +234,34 @@ namespace burn_from
 @[simp] def amount (st : Step) : Int := st.call.arg "amount"
 @[simp] def «from» (st : Step) : Addr := st.call.argA "from"
 @[simp] def spender (st : Step) : Addr := st.call.argA "spender"
+@[simp] def pre_Allowance_amount (st : Step) : Int :=
+  st.pre (Allowance.amount (burn_from.«from» st) (burn_from.spender st))
+@[simp] def pre_Allowance_live_until_ledger (st : Step) : Int :=
+  st.pre (Allowance.live_until_ledger (burn_from.«from» st) (burn_from.spender st))
+@[simp] def pre_has_Allowance (st : Step) : Int :=
+  st.pre (.has (Allowance (burn_from.«from» st) (burn_from.spender st)))
+@[simp] def key_Allowance_amount (st : Step) : Key :=
+  Allowance.amount (burn_from.«from» st) (burn_from.spender st)
+@[simp] def key_Allowance_live_until_ledger (st : Step) : Key :=
+  Allowance.live_until_ledger (burn_from.«from» st) (burn_from.spender st)
+@[simp] def key_Allowance (st : Step) : Key :=
+  Allowance (burn_from.«from» st) (burn_from.spender st)
+@[simp] def new_Allowance_amount (st : Step) : Int :=
+  (if (burn_from.pre_has_Allowance st) ≠ 1 then 0 else (if (st.call.env "sequence") ≤ (burn_from.pre_Allowance_live_until_ledger st) then (burn_from.pre_Allowance_amount st) else 0)) - (burn_from.amount st)
+@[simp] def new_Allowance_live_until_ledger (st : Step) : Int :=
+  getOr0 st.pre (burn_from.key_Allowance_live_until_ledger st) (base := (burn_from.key_Allowance st))
 @[simp] def s1 (st : Step) : Storage :=
-  if ¬((burn_from.amount st) = 0) then (((st.pre).set (Allowance.amount (burn_from.«from» st) (burn_from.spender st)) ((if ¬((st.pre (.has (Allowance (burn_from.«from» st) (burn_from.spender st)))) = 1) then 0 else (if ¬((st.call.env "sequence") > (st.pre (Allowance.live_until_ledger (burn_from.«from» st) (burn_from.spender st)))) then (st.pre (Allowance.amount (burn_from.«from» st) (burn_from.spender st))) else 0)) - (burn_from.amount st))).set (Allowance.live_until_ledger (burn_from.«from» st) (burn_from.spender st)) (getOr0 st.pre (Allowance.live_until_ledger (burn_from.«from» st) (burn_from.spender st)) (base := (Allowance (burn_from.«from» st) (burn_from.spender st))))).set (.has (Allowance (burn_from.«from» st) (burn_from.spender st))) 1 else st.pre
+  if (burn_from.amount st) ≠ 0 then (((st.pre).set (burn_from.key_Allowance_amount st) (burn_from.new_Allowance_amount st)).set (burn_from.key_Allowance_live_until_ledger st) (burn_from.new_Allowance_live_until_ledger st)).set (.has (burn_from.key_Allowance st)) 1 else st.pre
+@[simp] def new_Balance (st : Step) : Int :=
+  (getOr0 (burn_from.s1 st) (Balance (burn_from.«from» st))) - (burn_from.amount st)
 @[simp] def s2 (st : Step) : Storage :=
-  ((burn_from.s1 st).set (Balance (burn_from.«from» st)) ((getOr0 (burn_from.s1 st) (Balance (burn_from.«from» st))) - (burn_from.amount st))).set (.has (Balance (burn_from.«from» st))) 1
+  ((burn_from.s1 st).set (Balance (burn_from.«from» st)) (burn_from.new_Balance st)).set (.has (Balance (burn_from.«from» st))) 1
 end burn_from
 
 /-- `burn_from(spender: Address, from: Address, amount: i128)`: it succeeds exactly when `burn_from.Spec` holds.
     Its effects, in execution order:
-    * `burn_from.s1`: write `Allowance (burn_from.«from» st) (burn_from.spender st)`, when `¬((burn_from.amount st) = 0)`
-    * `burn_from.s2`: write `Balance (burn_from.«from» st)`
+    * `burn_from.s1`: write `burn_from.key_Allowance_amount st` := `burn_from.new_Allowance_amount st`, `burn_from.key_Allowance_live_until_ledger st` := `burn_from.new_Allowance_live_until_ledger st`, when `(burn_from.amount st) ≠ 0`
+    * `burn_from.s2`: write `Balance (burn_from.«from» st)` := `burn_from.new_Balance st`
 -/
 structure burn_from.Spec (st : Step) : Prop where
   fn : st.call.fn = "burn_from"
@@ -248,11 +272,11 @@ structure burn_from.Spec (st : Step) : Prop where
   /-- the call panics unless this holds -/
   gate1 : (burn_from.amount st) > -1
   /-- the call panics unless this holds -/
-  gate2 : (if ¬((st.pre (.has (Allowance (burn_from.«from» st) (burn_from.spender st)))) = 1) then 0 else (if ((st.pre (.has (Allowance (burn_from.«from» st) (burn_from.spender st)))) = 1) ∧ (¬((st.call.env "sequence") > (st.pre (Allowance.live_until_ledger (burn_from.«from» st) (burn_from.spender st))))) then (st.pre (Allowance.amount (burn_from.«from» st) (burn_from.spender st))) else 0)) ≥ (burn_from.amount st)
+  gate2 : (if (burn_from.pre_has_Allowance st) ≠ 1 then 0 else (if ((burn_from.pre_has_Allowance st) = 1) ∧ ((st.call.env "sequence") ≤ (burn_from.pre_Allowance_live_until_ledger st)) then (burn_from.pre_Allowance_amount st) else 0)) ≥ (burn_from.amount st)
   /-- the call panics unless this holds -/
   gate3 : (getOr0 (burn_from.s1 st) (Balance (burn_from.«from» st))) ≥ (burn_from.amount st)
   post : st.post = (burn_from.s2 st)
-  writes : st.writes = [(Allowance.amount (burn_from.«from» st) (burn_from.spender st)), (Allowance.live_until_ledger (burn_from.«from» st) (burn_from.spender st)), .has (Allowance (burn_from.«from» st) (burn_from.spender st)), (Balance (burn_from.«from» st)), .has (Balance (burn_from.«from» st))]
+  writes : st.writes = [(burn_from.key_Allowance_amount st), (burn_from.key_Allowance_live_until_ledger st), .has (burn_from.key_Allowance st), (Balance (burn_from.«from» st)), .has (Balance (burn_from.«from» st))]
   ret : st.ret = 2
 
 abbrev burn_from : Step → Prop := fun st => burn_from.Spec st
@@ -272,13 +296,15 @@ abbrev decimals : Step → Prop := fun st => decimals.Spec st
 namespace mint
 @[simp] def amount (st : Step) : Int := st.call.arg "amount"
 @[simp] def to (st : Step) : Addr := st.call.argA "to"
+@[simp] def new_Balance (st : Step) : Int :=
+  (getOr0 st.pre (Balance (mint.to st))) + (mint.amount st)
 @[simp] def s1 (st : Step) : Storage :=
-  ((st.pre).set (Balance (mint.to st)) ((getOr0 st.pre (Balance (mint.to st))) + (mint.amount st))).set (.has (Balance (mint.to st))) 1
+  ((st.pre).set (Balance (mint.to st)) (mint.new_Balance st)).set (.has (Balance (mint.to st))) 1
 end mint
 
 /-- `mint(to: Address, amount: i128)`: it succeeds exactly when `mint.Spec` holds.
     Its effects, in execution order:
-    * `mint.s1`: write `Balance (mint.to st)`
+    * `mint.s1`: write `Balance (mint.to st)` := `mint.new_Balance st`
 -/
 structure mint.Spec (st : Step) : Prop where
   fn : st.call.fn = "mint"
@@ -314,7 +340,7 @@ end set_admin
 
 /-- `set_admin(new_admin: Address)`: it succeeds exactly when `set_admin.Spec` holds.
     Its effects, in execution order:
-    * `set_admin.s1`: write `Admin`
+    * `set_admin.s1`: write `Admin` := `set_admin.new_admin st`
 -/
 structure set_admin.Spec (st : Step) : Prop where
   fn : st.call.fn = "set_admin"
@@ -344,16 +370,20 @@ namespace transfer
 @[simp] def amount (st : Step) : Int := st.call.arg "amount"
 @[simp] def «from» (st : Step) : Addr := st.call.argA "from"
 @[simp] def to_muxed (st : Step) : Addr := st.call.argA "to_muxed"
+@[simp] def new_Balance (st : Step) : Int :=
+  (getOr0 st.pre (Balance (transfer.«from» st))) - (transfer.amount st)
 @[simp] def s1 (st : Step) : Storage :=
-  ((st.pre).set (Balance (transfer.«from» st)) ((getOr0 st.pre (Balance (transfer.«from» st))) - (transfer.amount st))).set (.has (Balance (transfer.«from» st))) 1
+  ((st.pre).set (Balance (transfer.«from» st)) (transfer.new_Balance st)).set (.has (Balance (transfer.«from» st))) 1
+@[simp] def new_Balance_2 (st : Step) : Int :=
+  (getOr0 (transfer.s1 st) (Balance (transfer.to_muxed st))) + (transfer.amount st)
 @[simp] def s2 (st : Step) : Storage :=
-  ((transfer.s1 st).set (Balance (transfer.to_muxed st)) ((getOr0 (transfer.s1 st) (Balance (transfer.to_muxed st))) + (transfer.amount st))).set (.has (Balance (transfer.to_muxed st))) 1
+  ((transfer.s1 st).set (Balance (transfer.to_muxed st)) (transfer.new_Balance_2 st)).set (.has (Balance (transfer.to_muxed st))) 1
 end transfer
 
 /-- `transfer(from: Address, to_muxed: MuxedAddress, amount: i128)`: it succeeds exactly when `transfer.Spec` holds.
     Its effects, in execution order:
-    * `transfer.s1`: write `Balance (transfer.«from» st)`
-    * `transfer.s2`: write `Balance (transfer.to_muxed st)`
+    * `transfer.s1`: write `Balance (transfer.«from» st)` := `transfer.new_Balance st`
+    * `transfer.s2`: write `Balance (transfer.to_muxed st)` := `transfer.new_Balance_2 st`
 -/
 structure transfer.Spec (st : Step) : Prop where
   fn : st.call.fn = "transfer"
@@ -376,19 +406,39 @@ namespace transfer_from
 @[simp] def «from» (st : Step) : Addr := st.call.argA "from"
 @[simp] def spender (st : Step) : Addr := st.call.argA "spender"
 @[simp] def to (st : Step) : Addr := st.call.argA "to"
+@[simp] def pre_Allowance_amount (st : Step) : Int :=
+  st.pre (Allowance.amount (transfer_from.«from» st) (transfer_from.spender st))
+@[simp] def pre_Allowance_live_until_ledger (st : Step) : Int :=
+  st.pre (Allowance.live_until_ledger (transfer_from.«from» st) (transfer_from.spender st))
+@[simp] def pre_has_Allowance (st : Step) : Int :=
+  st.pre (.has (Allowance (transfer_from.«from» st) (transfer_from.spender st)))
+@[simp] def key_Allowance_amount (st : Step) : Key :=
+  Allowance.amount (transfer_from.«from» st) (transfer_from.spender st)
+@[simp] def key_Allowance_live_until_ledger (st : Step) : Key :=
+  Allowance.live_until_ledger (transfer_from.«from» st) (transfer_from.spender st)
+@[simp] def key_Allowance (st : Step) : Key :=
+  Allowance (transfer_from.«from» st) (transfer_from.spender st)
+@[simp] def new_Allowance_amount (st : Step) : Int :=
+  (if (transfer_from.pre_has_Allowance st) ≠ 1 then 0 else (if (st.call.env "sequence") ≤ (transfer_from.pre_Allowance_live_until_ledger st) then (transfer_from.pre_Allowance_amount st) else 0)) - (transfer_from.amount st)
+@[simp] def new_Allowance_live_until_ledger (st : Step) : Int :=
+  getOr0 st.pre (transfer_from.key_Allowance_live_until_ledger st) (base := (transfer_from.key_Allowance st))
 @[simp] def s1 (st : Step) : Storage :=
-  if ¬((transfer_from.amount st) = 0) then (((st.pre).set (Allowance.amount (transfer_from.«from» st) (transfer_from.spender st)) ((if ¬((st.pre (.has (Allowance (transfer_from.«from» st) (transfer_from.spender st)))) = 1) then 0 else (if ¬((st.call.env "sequence") > (st.pre (Allowance.live_until_ledger (transfer_from.«from» st) (transfer_from.spender st)))) then (st.pre (Allowance.amount (transfer_from.«from» st) (transfer_from.spender st))) else 0)) - (transfer_from.amount st))).set (Allowance.live_until_ledger (transfer_from.«from» st) (transfer_from.spender st)) (getOr0 st.pre (Allowance.live_until_ledger (transfer_from.«from» st) (transfer_from.spender st)) (base := (Allowance (transfer_from.«from» st) (transfer_from.spender st))))).set (.has (Allowance (transfer_from.«from» st) (transfer_from.spender st))) 1 else st.pre
+  if (transfer_from.amount st) ≠ 0 then (((st.pre).set (transfer_from.key_Allowance_amount st) (transfer_from.new_Allowance_amount st)).set (transfer_from.key_Allowance_live_until_ledger st) (transfer_from.new_Allowance_live_until_ledger st)).set (.has (transfer_from.key_Allowance st)) 1 else st.pre
+@[simp] def new_Balance (st : Step) : Int :=
+  (getOr0 (transfer_from.s1 st) (Balance (transfer_from.«from» st))) - (transfer_from.amount st)
 @[simp] def s2 (st : Step) : Storage :=
-  ((transfer_from.s1 st).set (Balance (transfer_from.«from» st)) ((getOr0 (transfer_from.s1 st) (Balance (transfer_from.«from» st))) - (transfer_from.amount st))).set (.has (Balance (transfer_from.«from» st))) 1
+  ((transfer_from.s1 st).set (Balance (transfer_from.«from» st)) (transfer_from.new_Balance st)).set (.has (Balance (transfer_from.«from» st))) 1
+@[simp] def new_Balance_2 (st : Step) : Int :=
+  (getOr0 (transfer_from.s2 st) (Balance (transfer_from.to st))) + (transfer_from.amount st)
 @[simp] def s3 (st : Step) : Storage :=
-  ((transfer_from.s2 st).set (Balance (transfer_from.to st)) ((getOr0 (transfer_from.s2 st) (Balance (transfer_from.to st))) + (transfer_from.amount st))).set (.has (Balance (transfer_from.to st))) 1
+  ((transfer_from.s2 st).set (Balance (transfer_from.to st)) (transfer_from.new_Balance_2 st)).set (.has (Balance (transfer_from.to st))) 1
 end transfer_from
 
 /-- `transfer_from(spender: Address, from: Address, to: Address, amount: i128)`: it succeeds exactly when `transfer_from.Spec` holds.
     Its effects, in execution order:
-    * `transfer_from.s1`: write `Allowance (transfer_from.«from» st) (transfer_from.spender st)`, when `¬((transfer_from.amount st) = 0)`
-    * `transfer_from.s2`: write `Balance (transfer_from.«from» st)`
-    * `transfer_from.s3`: write `Balance (transfer_from.to st)`
+    * `transfer_from.s1`: write `transfer_from.key_Allowance_amount st` := `transfer_from.new_Allowance_amount st`, `transfer_from.key_Allowance_live_until_ledger st` := `transfer_from.new_Allowance_live_until_ledger st`, when `(transfer_from.amount st) ≠ 0`
+    * `transfer_from.s2`: write `Balance (transfer_from.«from» st)` := `transfer_from.new_Balance st`
+    * `transfer_from.s3`: write `Balance (transfer_from.to st)` := `transfer_from.new_Balance_2 st`
 -/
 structure transfer_from.Spec (st : Step) : Prop where
   fn : st.call.fn = "transfer_from"
@@ -399,11 +449,11 @@ structure transfer_from.Spec (st : Step) : Prop where
   /-- the call panics unless this holds -/
   gate1 : (transfer_from.amount st) > -1
   /-- the call panics unless this holds -/
-  gate2 : (if ¬((st.pre (.has (Allowance (transfer_from.«from» st) (transfer_from.spender st)))) = 1) then 0 else (if ((st.pre (.has (Allowance (transfer_from.«from» st) (transfer_from.spender st)))) = 1) ∧ (¬((st.call.env "sequence") > (st.pre (Allowance.live_until_ledger (transfer_from.«from» st) (transfer_from.spender st))))) then (st.pre (Allowance.amount (transfer_from.«from» st) (transfer_from.spender st))) else 0)) ≥ (transfer_from.amount st)
+  gate2 : (if (transfer_from.pre_has_Allowance st) ≠ 1 then 0 else (if ((transfer_from.pre_has_Allowance st) = 1) ∧ ((st.call.env "sequence") ≤ (transfer_from.pre_Allowance_live_until_ledger st)) then (transfer_from.pre_Allowance_amount st) else 0)) ≥ (transfer_from.amount st)
   /-- the call panics unless this holds -/
   gate3 : (getOr0 (transfer_from.s1 st) (Balance (transfer_from.«from» st))) ≥ (transfer_from.amount st)
   post : st.post = (transfer_from.s3 st)
-  writes : st.writes = [(Allowance.amount (transfer_from.«from» st) (transfer_from.spender st)), (Allowance.live_until_ledger (transfer_from.«from» st) (transfer_from.spender st)), .has (Allowance (transfer_from.«from» st) (transfer_from.spender st)), (Balance (transfer_from.«from» st)), .has (Balance (transfer_from.«from» st)), (Balance (transfer_from.to st)), .has (Balance (transfer_from.to st))]
+  writes : st.writes = [(transfer_from.key_Allowance_amount st), (transfer_from.key_Allowance_live_until_ledger st), .has (transfer_from.key_Allowance st), (Balance (transfer_from.«from» st)), .has (Balance (transfer_from.«from» st)), (Balance (transfer_from.to st)), .has (Balance (transfer_from.to st))]
   ret : st.ret = 2
 
 abbrev transfer_from : Step → Prop := fun st => transfer_from.Spec st

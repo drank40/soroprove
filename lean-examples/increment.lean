@@ -104,13 +104,15 @@ def getOr0 (s : Storage) (k : Key) (base : Key := k) : Int := if s (.has base) =
 @[simp] def COUNTER : Key := .var "COUNTER"
 
 namespace increment
+@[simp] def new_COUNTER (st : Step) : Int :=
+  (getOr0 st.pre COUNTER) + 1
 @[simp] def s1 (st : Step) : Storage :=
-  ((st.pre).set COUNTER ((getOr0 st.pre COUNTER) + 1)).set (.has COUNTER) 1
+  ((st.pre).set COUNTER (increment.new_COUNTER st)).set (.has COUNTER) 1
 end increment
 
 /-- `increment()`: it succeeds exactly when `increment.Spec` holds.
     Its effects, in execution order:
-    * `increment.s1`: write `COUNTER`
+    * `increment.s1`: write `COUNTER` := `increment.new_COUNTER st`
 -/
 structure increment.Spec (st : Step) : Prop where
   fn : st.call.fn = "increment"
@@ -118,7 +120,7 @@ structure increment.Spec (st : Step) : Prop where
   notReentrant : st.call.caller ≠ pool st
   post : st.post = (increment.s1 st)
   writes : st.writes = [COUNTER, .has COUNTER]
-  ret : st.ret = ((getOr0 st.pre COUNTER) + 1)
+  ret : st.ret = (increment.new_COUNTER st)
 
 abbrev increment : Step → Prop := fun st => increment.Spec st
 
