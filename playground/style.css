@@ -208,3 +208,64 @@ dialog textarea {
   .stage { width: auto; height: 40%; }
   .menu { overflow-x: auto; }
 }
+
+/* Proof by vibe */
+#budget-box input { width: 52px; font: inherit; padding: 1px 3px; border: 1px solid #77787B; border-radius: 3px; }
+#vibe { padding: 8px; }
+#vibe .empty { color: var(--muted); line-height: 1.5; }
+.vjob {
+  margin-bottom: 10px; padding: 8px 10px; background: linear-gradient(#FFFFFF, #F1F2F3);
+  border: 1px solid #A7A9AC; border-radius: 6px; box-shadow: inset 0 1px 0 #fff, 0 1px 1px rgba(0,0,0,.15);
+}
+.vjob header { display: flex; align-items: center; gap: 8px; }
+.vjob header b { font-size: 13px; }
+.vjob .pill { padding: 1px 8px; border-radius: 9px; font-size: 10px; font-weight: bold; color: #fff; background: #8E8F92; }
+.vjob.st-running .pill { background: #E1A91A; animation: pulse 1.2s ease-in-out infinite; }
+.vjob.st-proved .pill { background: var(--go); }
+.vjob.st-refuted .pill { background: #D9372B; }
+.vjob.st-undecided .pill, .vjob.st-failed .pill { background: #6D6E71; }
+@keyframes pulse { 50% { opacity: .55; } }
+.vjob .stop { margin-left: auto; border: 1px solid #77787B; border-radius: 4px; background: var(--btn); font-size: 10px; padding: 1px 8px; }
+.budget { position: relative; height: 14px; margin: 6px 0; border: 1px solid #A7A9AC; border-radius: 7px; background: #E4E5E7; overflow: hidden; }
+.budget div { height: 100%; background: linear-gradient(#9AD6F5, #2CA5E2); transition: width .4s linear; }
+.st-proved .budget div { background: linear-gradient(#9BE38F, var(--go)); }
+.st-refuted .budget div { background: linear-gradient(#F3A39C, #D9372B); }
+.budget span { position: absolute; inset: 0; text-align: center; font-size: 9.5px; line-height: 12px; color: #222; }
+.vstmt { display: block; margin: 4px 0 6px; padding: 3px 5px; white-space: pre-wrap; word-break: break-word; }
+.vcheck { padding: 5px 7px; margin: 4px 0; border-radius: 4px; background: #EEF0F2; font-weight: bold; font-size: 11px; }
+.vcheck small { font-weight: normal; color: var(--muted); }
+.vcheck.busy { color: #8A6A00; background: #FFF6D6; }
+.vcheck.v-proved { background: #E3F6DF; color: #1F6E1C; }
+.vcheck.v-refuted { background: #FBE4E2; color: #A1271E; }
+.vcheck.v-error { background: #FFF0E0; color: #A55A00; }
+.vcheck pre { margin: 4px 0 0; font: 10.5px/1.4 var(--mono); white-space: pre-wrap; font-weight: normal; color: #333; }
+.vcheck .hint { display: block; }
+.vproof {
+  margin: 6px 0; padding: 6px 0; max-height: 340px; overflow: auto; font: 11px/1.5 var(--mono); background: #fff;
+  border: 1px solid #A7A9AC; box-shadow: inset 0 1px 3px rgba(0,0,0,.2); white-space: pre;
+}
+.vproof .ln { display: block; padding-right: 8px; }
+.vproof .ln i { display: inline-block; width: 30px; padding-right: 8px; text-align: right; color: #AAA; font-style: normal; user-select: none; }
+.vproof .ln.err { background: #FDECEA; text-decoration: underline wavy #D9372B; text-underline-offset: 3px; cursor: help; }
+.vproof .cm { color: #888; padding-left: 8px; }
+.vlog summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+.vlog > div { max-height: 200px; overflow: auto; font-size: 10.5px; line-height: 1.45; white-space: pre-wrap; }
+.vlog i { color: #AAA; font-style: normal; }
+.vlog .tool { color: #2C6E9E; font-family: var(--mono); }
+.cex { margin: 8px 0; padding: 8px; border: 2px solid #D9372B; border-radius: 6px; background: #FFF8F7; }
+.cex-title { font-weight: bold; color: #A1271E; margin-bottom: 6px; }
+.cex-call { font: 11.5px/1.6 var(--mono); padding: 4px 6px; background: #fff; border: 1px solid #E3C3C0; border-radius: 4px; }
+.cex-call .fn { color: #CC5B22; font-weight: bold; }
+.cex-call .by { color: var(--muted); margin-left: 6px; }
+.addr { color: #8A55D7; font-weight: bold; }
+.addr small { font-weight: normal; color: #8A55D7; opacity: .8; }
+.unset { color: #AAA; font-style: italic; }
+.cex-store { width: 100%; margin-top: 6px; border-collapse: collapse; font-size: 11px; }
+.cex-store th { text-align: left; color: var(--muted); font-weight: normal; border-bottom: 1px solid #E3C3C0; padding: 2px 4px; }
+.cex-store td { padding: 3px 4px; border-bottom: 1px solid #F1E2E0; vertical-align: top; }
+.cex-store td small { color: var(--muted); }
+.cex-store .arrow { color: #AAA; text-align: center; }
+.cex-store tr.chg { background: #FFE9A8; }
+.cex-store tr.chg .arrow { color: #A1271E; font-weight: bold; }
+.cex-claim { margin-top: 6px; font-size: 11px; color: #555; }
+.cex-holders { margin-top: 5px; font-size: 11px; color: #555; }

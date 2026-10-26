@@ -4,9 +4,17 @@
     python3 playground/server.py [port] [host]    (host defaults to 127.0.0.1)
 
 GET  /          the playground (files of this folder)
-GET  /health    {"lean": true} when `lake` is on the PATH
+GET  /health    {"lean": true} when `lake` is on the PATH, {"vibe": …} when `claude` is
 POST /check     {"contract": key, "theorems": [{"name", "target", "stmt", "tactic"}]}
                 -> {"results": [{"name", "status", "messages"}], "elapsed"}
+POST /vibe      {"contract", "theorem": {"name", "target", "stmt"}, "reading", "budget"}
+                -> {"id"}: a Claude agent looks for a proof or a counterexample (vibe.py)
+GET  /vibe/ID/events   the job's events, as server-sent events
+POST /vibe/ID/stop
+
+Vibe jobs run on the Claude subscription of whoever runs the server, so they need
+the token in $VIBE_TOKEN (header X-Vibe-Token or ?token=), or, when it is unset, a
+direct request from this machine (not through a proxy such as ngrok).
 
 Lean runs whatever a file asks, so /check never takes Lean source: it takes
 statements and accepts only the tokens the blocks can produce (vocabulary of
@@ -16,6 +24,7 @@ localhost by default and accepts requests from any origin (CORS is open).
 
 import http.server
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -24,10 +33,13 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
+
+import vibe
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
-LOCK = threading.Lock()
+LOCK = vibe.LEAN_LOCK   # one Lean at a time, shared with the vibe checker
 
 
 def load_vocab():
@@ -97,6 +109,8 @@ def check(vocab, req):
         raise ValueError("send 1 to 30 theorems")
     for th in ths:
         validate(vocab, C, th)
+        if th["tactic"] == "vibe":
+            raise ValueError("vibe theorems go to /vibe")
 
     lines = list(C["prelude"]) + [""]
     spans = []
@@ -171,12 +185,74 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def vibe_ok(self):
+        url = urllib.parse.urlparse(self.path)
+        token = self.headers.get("X-Vibe-Token") or urllib.parse.parse_qs(url.query).get("token", [None])[0]
+        want = os.environ.get("VIBE_TOKEN")
+        if want:
+            return token == want
+        proxied = any(self.headers.get(h) for h in ("X-Forwarded-For", "X-Forwarded-Host", "Forwarded"))
+        return self.client_address[0] in ("127.0.0.1", "::1") and not proxied
+
     def do_GET(self):
-        if self.path == "/health":
-            return self.reply(200, {"lean": shutil.which("lake") is not None})
+        url = urllib.parse.urlparse(self.path)
+        if url.path == "/health":
+            return self.reply(200, {"lean": shutil.which("lake") is not None,
+                                    "vibe": {"available": shutil.which("claude") is not None,
+                                             "token": bool(os.environ.get("VIBE_TOKEN")),
+                                             "allowed": self.vibe_ok()}})
+        m = re.fullmatch(r"/vibe/([0-9a-f]{12})/events", url.path)
+        if m:
+            if not self.vibe_ok():
+                return self.reply(403, {"error": "vibe needs the token"})
+            job = vibe.JOBS.get(m[1])
+            if job is None:
+                return self.reply(404, {"error": "no such job"})
+            return self.stream(job)
         return super().do_GET()
 
+    def stream(self, job):
+        """Server-sent events: every event of the job so far, then new ones until it is done."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        sent = 0
+        try:
+            while True:
+                with job.cond:
+                    if sent >= len(job.events):
+                        job.cond.wait(timeout=15)
+                    new = job.events[sent:]
+                sent += len(new)
+                for ev in new:
+                    self.wfile.write(f"data: {json.dumps(ev)}\n\n".encode())
+                if not new:
+                    self.wfile.write(b": keep-alive\n\n")
+                self.wfile.flush()
+                if any(ev["type"] == "done" for ev in new):
+                    return
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def do_POST(self):
+        url = urllib.parse.urlparse(self.path)
+        m = re.fullmatch(r"/vibe/([0-9a-f]{12})/stop", url.path)
+        if url.path == "/vibe" or m:
+            if not self.vibe_ok():
+                return self.reply(403, {"error": "vibe needs the token"})
+            if m:
+                job = vibe.JOBS.get(m[1])
+                if job:
+                    job.stop("undecided")
+                return self.reply(200, {"ok": bool(job)})
+            try:
+                n = int(self.headers.get("Content-Length", "0"))
+                req = json.loads(self.rfile.read(min(n, 200_000)))
+                job = vibe.start_job(load_vocab(), req, validate, req.get("reading"))
+                return self.reply(200, {"id": job.id, "budget": job.budget})
+            except ValueError as e:
+                return self.reply(400, {"error": str(e)})
         if self.path != "/check":
             return self.reply(404, {"error": "not found"})
         if not self.headers.get("Content-Type", "").startswith("application/json"):

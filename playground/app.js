@@ -235,7 +235,7 @@
     const b = id && ws.getBlockById(id);
     if (b) { b.select(); ws.centerOnBlock(b.id); }
   });
-  for (const sel of ['#reading', '#results'])
+  for (const sel of ['#reading', '#results', '#vibe'])
     $(sel).addEventListener('click', (e) => {
       const li = e.target.closest('[data-t]');
       const b = li && ws.getBlockById(li.dataset.t);
@@ -336,6 +336,7 @@
   let leanAvailable = false;
   fetch('/health').then((r) => r.json()).then((h) => {
     leanAvailable = !!h.lean;
+    if (!h.vibe?.available) $('#budget-box').title = 'claude was not found by the server: vibe proofs are unavailable';
     $('#check').disabled = !leanAvailable;
     if (!leanAvailable) $('#check').title = 'lake was not found by the server';
   }).catch(() => {
@@ -352,8 +353,13 @@
                    unproved: ['✗', 'Not proved'], error: ['!', 'Lean error'], incomplete: ['…', 'Incomplete'] };
 
   $('#check').addEventListener('click', async () => {
-    const ready = current.filter((t) => !t.problems.length);
+    const complete = current.filter((t) => !t.problems.length);
+    // Theorems proved "by vibe" go to the agent; the Vibe tab follows them live.
+    const vibes = complete.filter((t) => t.tactic === 'vibe');
+    const ready = complete.filter((t) => t.tactic !== 'vibe');
+    for (const t of vibes) Vibe.start({ ...t, plainStmt: L.plain(t.stmt) });
     const rows = current.filter((t) => t.problems.length).map((t) => ({ t, r: { status: 'incomplete', messages: [...new Set(t.problems)] } }));
+    if (vibes.length && !ready.length && !rows.length) { showTab('vibe'); return; }
     showTab('results');
     if (!ready.length) { render(rows); return; }
     const btn = $('#check');
@@ -391,6 +397,7 @@
     }
   }
 
+  Vibe.init({ ws, contractKey: () => contract, C, showTab, store });
   clearResults();
   load(store.get(key(), null));
   showTab('code');
