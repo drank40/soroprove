@@ -136,7 +136,7 @@ pub(crate) fn decode_lm(
         // The values are runtime Vals, not decoded here. A named struct is a
         // map whose keys are its field names (soroban-sdk-macros): when the
         // key set is exactly one spec struct's field set, this is that struct.
-        "map.map_unpack_to_linear_memory" => {
+        "map.map_unpack_to_linear_memory" | "map.sparse_map_unpack_to_linear_memory" => {
             let keys = slices(u(1)?, u(3)?)?;
             keys_out.push((u(1)?, keys.iter().map(|k| k.trim_matches('"').to_string()).collect()));
             return None;
@@ -147,7 +147,7 @@ pub(crate) fn decode_lm(
             keys_out.push((u(1)?, names.iter().map(|k| k.trim_matches('"').to_string()).collect()));
             return None;
         }
-        "map.map_new_from_linear_memory" => {
+        "map.map_new_from_linear_memory" | "map.sparse_map_new_from_linear_memory" => {
             let keys = slices(u(0)?, u(2)?)?;
             let mut sorted: Vec<String> = keys.iter().map(|k| k.trim_matches('"').to_string()).collect();
             keys_out.push((u(0)?, sorted.clone()));

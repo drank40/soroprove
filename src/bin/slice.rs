@@ -897,6 +897,33 @@ fn report_sink<'c>(
 
 // ======================= effects + Lean emission =======================
 
+/// `f`'s instructions in EXECUTION order: blocks in reverse postorder of the
+/// CFG (a topological order, loops aside), not their layout order.
+fn rpo_instrs<'c>(f: FunctionValue<'c>) -> Vec<InstructionValue<'c>> {
+    let cfg = Cfg::build(f);
+    let n = cfg.blocks.len();
+    let (mut seen, mut post) = (vec![false; n], vec![]);
+    // iterative DFS: (block, next successor index)
+    let mut stack = if n > 0 { vec![(0usize, 0usize)] } else { vec![] };
+    if n > 0 {
+        seen[0] = true;
+    }
+    while let Some((b, k)) = stack.pop() {
+        if let Some(&s) = cfg.succ[b].get(k) {
+            stack.push((b, k + 1));
+            if !seen[s] {
+                seen[s] = true;
+                stack.push((s, 0));
+            }
+        } else {
+            post.push(b);
+        }
+    }
+    post.reverse();
+    post.extend((0..n).filter(|&b| !seen[b]));
+    post.into_iter().flat_map(|b| cfg.blocks[b].get_instructions()).collect()
+}
+
 fn all_instrs<'c>(f: FunctionValue<'c>) -> Vec<InstructionValue<'c>> {
     let mut v = vec![];
     for bb in f.get_basic_blocks() {
@@ -1657,6 +1684,18 @@ fn ptr_base_off(p: BasicValueEnum) -> (String, i64) {
 fn addr_base_off(a: BasicValueEnum) -> (String, i64) {
     if let Some(i) = as_instr(a) {
         match i.get_opcode() {
+            // a phi whose incomings all agree (`phi [trunc %0, …], [trunc %0, …]`).
+            InstructionOpcode::Phi => {
+                if let Ok(phi) = inkwell::values::PhiValue::try_from(i) {
+                    let ins: Vec<(String, i64)> = (0..phi.count_incoming())
+                        .filter_map(|k| phi.get_incoming(k))
+                        .map(|(x, _)| if as_instr(x).is_some_and(|j| j.get_opcode() == InstructionOpcode::Phi) { (fmt(x), 0) } else { addr_base_off(x) })
+                        .collect();
+                    if !ins.is_empty() && ins.iter().all(|x| *x == ins[0]) {
+                        return ins[0].clone();
+                    }
+                }
+            }
             InstructionOpcode::Add => {
                 if let (Some(Operand::Value(x)), Some(Operand::Value(BasicValueEnum::IntValue(c)))) =
                     (i.get_operand(0), i.get_operand(1))
@@ -1681,6 +1720,75 @@ fn addr_base_off(a: BasicValueEnum) -> (String, i64) {
         }
     }
     (fmt(a), 0)
+}
+
+/// The constant of a `U32Val` (`from_payload(n << 32 | 4)`), if `v` is one.
+fn u32_val(v: BasicValueEnum) -> Option<u64> {
+    u32_val_in(v, &|x| x)
+}
+
+/// `u32_val`, resolving phis on the way with `pick` (e.g. to one switch case).
+fn u32_val_in<'c>(v: BasicValueEnum<'c>, pick: &dyn Fn(BasicValueEnum<'c>) -> BasicValueEnum<'c>) -> Option<u64> {
+    let i = as_instr(v).filter(|i| callee_has(*i, "from_payload"))?;
+    match i.get_operand(0).and_then(|o| o.value()).map(pick) {
+        Some(BasicValueEnum::IntValue(c)) => c.get_zero_extended_constant().map(|k| k >> 32),
+        _ => None,
+    }
+}
+
+/// The linear-memory address a `U32Val` pointer argument carries
+/// (`from_payload(addr << 32 | 4)`), as base + offset.
+fn val_addr(v: BasicValueEnum) -> Option<(String, i64)> {
+    val_addr_in(v, &|x| x)
+}
+
+/// `val_addr`, resolving phis on the way with `pick`.
+fn val_addr_in<'c>(v: BasicValueEnum<'c>, pick: &dyn Fn(BasicValueEnum<'c>) -> BasicValueEnum<'c>) -> Option<(String, i64)> {
+    let i = as_instr(v).filter(|i| callee_has(*i, "from_payload"))?;
+    let Some(Operand::Value(x)) = i.get_operand(0) else { return None };
+    let or = as_instr(pick(x)).filter(|o| o.get_opcode() == InstructionOpcode::Or)?;
+    let (Some(Operand::Value(sh)), Some(Operand::Value(BasicValueEnum::IntValue(tag)))) = (or.get_operand(0), or.get_operand(1)) else { return None };
+    let sh = as_instr(sh).filter(|s| s.get_opcode() == InstructionOpcode::Shl)?;
+    let (Some(Operand::Value(a)), Some(Operand::Value(BasicValueEnum::IntValue(k)))) = (sh.get_operand(0), sh.get_operand(1)) else { return None };
+    (tag.get_zero_extended_constant() == Some(4) && k.get_zero_extended_constant() == Some(32)).then(|| addr_base_off(pick(a)))
+}
+
+/// A host call that writes guest linear memory (`map/vec_unpack_to_linear_memory`,
+/// `*_copy_to_linear_memory`): Some(Some((dest, bytes))), or Some(None) when the
+/// destination can't be decoded (it may write anywhere). None: not such a call.
+#[allow(clippy::type_complexity)]
+fn linmem_dest(i: InstructionValue) -> Option<Option<((String, i64), i64)>> {
+    let n = callee_name(i)?;
+    let (pos, len, unit) = if n.contains("map_unpack_to_linear_memory") {
+        (2, 3, 8)
+    } else if n.contains("vec_unpack_to_linear_memory") {
+        (1, 2, 8)
+    } else if n.contains("copy_to_linear_memory") {
+        (2, 3, 1)
+    } else {
+        return None;
+    };
+    let op = |k: u32| match i.get_operand(k) { Some(Operand::Value(x)) => Some(x), _ => None };
+    Some(match (op(pos).and_then(val_addr), op(len).and_then(u32_val)) {
+        (Some(a), Some(l)) => Some((a, l as i64 * unit)),
+        _ => None,
+    })
+}
+
+/// The field names (sorted, as Soroban stores them) of the `#[contracttype]`
+/// struct whose key table is at `pos` — the front end's `soroban.keys` metadata.
+fn struct_keys(module: &inkwell::module::Module, pos: u64) -> Option<Vec<String>> {
+    for node in module.get_global_metadata("soroban.keys") {
+        for v in node.get_node_values()? {
+            let BasicMetadataValueEnum::MetadataValue(mv) = v else { continue };
+            let s = String::from_utf8_lossy(mv.get_string_value()?).into_owned();
+            let mut it = s.split(' ');
+            if it.next().and_then(|p| p.parse::<u64>().ok()) == Some(pos) {
+                return Some(it.map(String::from).collect());
+            }
+        }
+    }
+    None
 }
 
 /// Does this pointer bottom out at an `alloca` (through geps)? Only then can we
@@ -1747,7 +1855,13 @@ fn block_rd<'c>(b: BasicBlock<'c>, stop: Option<InstructionValue<'c>>, ptr: Basi
         // a call handed a pointer into the same frame region may write the slot
         // through it (i128 results / getters return via out-pointer). Clobber iff
         // the callee writes at our offset through that pointer (or we can't tell).
-        if i.get_opcode() == InstructionOpcode::Call {
+        if let Some(d) = linmem_dest(i) {
+            match d {
+                Some(((b, o), len)) if b == target.0 && o < target.1 + 8 && target.1 < o + len => cur = Some(None),
+                Some(_) => {}
+                None => cur = Some(None),
+            }
+        } else if i.get_opcode() == InstructionOpcode::Call {
             let callee = inkwell::values::CallSiteValue::try_from(i).ok().and_then(|cs| cs.get_called_fn_value());
             let nargs = i.get_num_operands().saturating_sub(1);
             for k in 0..nargs {
@@ -1877,7 +1991,7 @@ fn value_expr<'c>(
     // rich mode explores callees through out-pointers: memoize by LLVM value
     // identity (unique per function) with a cycle guard, or it is exponential.
     use inkwell::values::AsValueRef;
-    let key = v.as_value_ref() as usize;
+    let key = (v.as_value_ref() as usize, g.as_value_ref() as usize);
     if let Some(e) = RICH_MEMO.with(|m| m.borrow().get(&key).cloned()) {
         return e;
     }
@@ -1885,7 +1999,7 @@ fn value_expr<'c>(
     let mut e = fold_rich(simplify(value_expr_raw(v, g, module, memo, depth)));
     // shared subterms are cloned at every use, so trees can grow exponentially;
     // a guard operand worth naming is small — collapse anything huge.
-    if expr_size(&e, 400) >= 400 {
+    if expr_size(&e, 1500) >= 1500 {
         e = Expr::Opaque("big".into(), vec![]);
     }
     RICH_MEMO.with(|m| m.borrow_mut().insert(key, e.clone()));
@@ -2033,45 +2147,19 @@ fn phi_gated<'c>(
     if arms.len() < 2 {
         return None;
     }
-    // the splitting branches.
-    let mut splits: Vec<(usize, BasicValueEnum<'c>, usize, usize)> = vec![]; // (D, cond, F, T)
-    for d in 0..cfg.blocks.len() {
-        let Some(t) = cfg.blocks[d].get_terminator() else { continue };
-        if t.get_opcode() != InstructionOpcode::Br || cfg.succ[d].len() != 2 {
-            continue;
-        }
-        let Some(Operand::Value(c)) = t.get_operand(0) else { continue };
-        if !is_bool(c) {
-            continue;
-        }
-        let (fb, tb) = (cfg.succ[d][0], cfg.succ[d][1]);
-        if forces_trap(cfg.blocks[fb], 6) || forces_trap(cfg.blocks[tb], 6) {
-            continue;
-        }
-        let r = |x: usize| x == ij || reaches(x, ij, &cfg);
-        if r(fb) && r(tb) {
-            splits.push((d, c, fb, tb));
-        }
-    }
-    // each arm's condition: the edge of each split that leads to its block.
+    // each arm's exact condition: reaching its incoming block, then that edge.
+    let mut rmemo = HashMap::new();
     let mut conds: Vec<Vec<Expr>> = vec![];
     for (_, b) in &arms {
-        let mut cs = vec![];
-        for (d, c, fb, tb) in &splits {
-            let pol = if *b == *d {
-                // the arm comes straight from the split: the edge into the join.
-                if *tb == ij && *fb != ij { Some(true) } else if *fb == ij && *tb != ij { Some(false) } else { None }
-            } else {
-                let rt = *tb == *b || reaches(*tb, *b, &cfg);
-                let rf = *fb == *b || reaches(*fb, *b, &cfg);
-                match (rt, rf) { (true, false) => Some(true), (false, true) => Some(false), _ => None }
-            };
-            if let Some(p) = pol {
-                let ce = fold_rich(simplify(value_expr(*c, g, module, memo, depth)));
-                cs.push(if p { ce } else { Expr::Opaque("@not".into(), vec![ce]) });
+        let ds = reach_dnf(&cfg, *b, &mut rmemo, &mut HashSet::new())?;
+        let mut c = vec![dnf_expr(g, &cfg, &ds, module, memo)?];
+        if let Some(e) = edge_cond(g, &cfg, *b, ij, module, memo) {
+            if cfg.succ[*b].iter().filter(|&&s| !forces_trap(cfg.blocks[s], 6)).count() > 1 {
+                c.push(e);
             }
         }
-        conds.push(cs);
+        c.retain(|x| !matches!(x, Expr::Opaque(l, v) if l == "@true" && v.is_empty()));
+        conds.push(c);
     }
     // every arm but the last needs a distinguishing condition.
     if conds[..conds.len() - 1].iter().any(|c| c.is_empty()) {
@@ -2159,6 +2247,22 @@ fn value_expr_raw<'c>(
             }
             return if name.contains("has_contract_data") { Expr::Opaque("@has".into(), vec![slot]) } else { slot };
         }
+        // rich mode: a `#[contracttype]` struct packed from linear memory
+        // (keys_pos, vals_pos, n): its field values, by name.
+        if rich() && name.contains("map_new_from_linear_memory") {
+            let names = o(0).and_then(u32_val).and_then(|p| struct_keys(module, p));
+            let (Some(names), Some(at)) = (names, o(1).and_then(val_addr)) else { return Expr::Opaque("@struct".into(), vec![]) };
+            let cfg = Cfg::build(g);
+            let Some(blk) = ins.get_parent().and_then(|bb| cfg.bidx(bb)) else { return Expr::Opaque("@struct".into(), vec![]) };
+            let vals: Vec<Expr> = (0..names.len())
+                .map(|k| {
+                    let mut seen = MemCtx::default();
+                    mem_before(ins.get_previous_instruction(), blk, &(at.0.clone(), at.1 + 8 * k as i64), g, &cfg, module, memo, depth - 1, &mut seen)
+                        .unwrap_or_else(|| Expr::Opaque("?".into(), vec![]))
+                })
+                .collect();
+            return Expr::Opaque(format!("@struct:{}", names.join(",")), vals);
+        }
         // rich mode: a Vec built from linear memory, as its element values
         // (e.g. the `[current_contract_address]` argument of `balance`).
         if rich() && name.contains("vec_new_from_linear_memory") {
@@ -2195,6 +2299,23 @@ fn value_expr_raw<'c>(
         }
         if rich() && name.contains("get_current_contract_address") {
             return Expr::Opaque("@pool".into(), vec![]);
+        }
+        // ledger info: `e.ledger().sequence()` / `.timestamp()`.
+        if rich() && name.starts_with("context.get_ledger_") && ins.get_num_operands() == 1 {
+            return Expr::Opaque(format!("@env:{}", &name["context.get_ledger_".len()..]), vec![]);
+        }
+        // `v.len()` (a U32Val).
+        if rich() && name == "vec.vec_len" {
+            let x = o(0).map(|x| value_expr(x, g, module, memo, depth - 1)).unwrap_or(Expr::Opaque("?".into(), vec![]));
+            return Expr::Opaque("@len".into(), vec![x]);
+        }
+        // `obj_cmp(a, b)`: the ordering of two host objects (== 0 iff a == b).
+        if rich() && name == "context.obj_cmp" {
+            let a = |k: u32, memo: &mut HashMap<String, Option<Expr>>| {
+                o(k).map(|x| value_expr(x, g, module, memo, depth - 1)).unwrap_or(Expr::Opaque("?".into(), vec![]))
+            };
+            let (x, y) = (a(0, memo), a(1, memo));
+            return Expr::Opaque("@cmp".into(), vec![x, y]);
         }
         if name.contains("get_contract_data") {
             if let Src::Store { dur, params } = store_src(ins, &arg_table(g)) {
@@ -2466,7 +2587,7 @@ thread_local! {
     /// loads of callee-written out-pointer slots. Off by default so the other
     /// emitters and the tests see the established `value_expr` behaviour.
     static RICH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static RICH_MEMO: std::cell::RefCell<HashMap<usize, Expr>> = std::cell::RefCell::new(HashMap::new());
+    static RICH_MEMO: std::cell::RefCell<HashMap<(usize, usize), Expr>> = std::cell::RefCell::new(HashMap::new());
 }
 fn rich() -> bool {
     RICH.with(|r| r.get())
@@ -2495,7 +2616,8 @@ fn outparam_load<'c>(
     let target = ptr_base_off(ptr);
     let cfg = Cfg::build(g);
     let blk = cfg.bidx(load.get_parent()?)?;
-    let mut seen = MemCtx::default();
+    let width = match load.get_type() { inkwell::types::AnyTypeEnum::IntType(t) => (t.get_bit_width() as i64 + 7) / 8, _ => 8 };
+    let mut seen = MemCtx { width, ..Default::default() };
     mem_before(load.get_previous_instruction(), blk, &target, g, &cfg, module, memo, depth, &mut seen)
 }
 
@@ -2526,13 +2648,48 @@ fn mem_before<'c>(
         match i.get_opcode() {
             InstructionOpcode::Store => {
                 if let (Some(Operand::Value(sv)), Some(Operand::Value(sp))) = (i.get_operand(0), i.get_operand(1)) {
-                    if ptr_base_off(sp) == *target {
+                    let (b, o) = ptr_base_off(sp);
+                    if (b.as_str(), o) == (target.0.as_str(), target.1) {
                         return Some(value_expr(sv, g, module, memo, depth));
+                    }
+                    let size = match sv { BasicValueEnum::IntValue(v) => (v.get_type().get_bit_width() as i64 + 7) / 8, _ => 8 };
+                    if b == target.0 && o < target.1 + seen.width.max(1) && target.1 < o + size {
+                        return None; // a partial overwrite of our slot
+                    }
+                    // a store through an address we can't place may hit our slot.
+                    let placed = ptr_is_clean(sp)
+                        || g.get_params().iter().any(|q| fmt(*q) == b)
+                        || (sp.is_pointer_value() && sp.into_pointer_value().as_instruction().is_none());
+                    if b != target.0 && !placed {
+                        return None;
                     }
                 }
             }
             InstructionOpcode::Call => {
                 let Some(cn) = callee_name(i) else { continue };
+                // a host unpack of a struct (map) / Vec into linear memory: the slot
+                // is one named field (element) of it.
+                if let Some(d) = linmem_dest(i) {
+                    let ((b, o), len) = d?;
+                    if b != target.0 || target.1 + 8 <= o || o + len <= target.1 {
+                        continue;
+                    }
+                    let delta = target.1 - o;
+                    if delta % 8 != 0 {
+                        return None;
+                    }
+                    let op = |k: u32| match i.get_operand(k) { Some(Operand::Value(x)) => Some(x), _ => None };
+                    let src = value_expr(op(0)?, g, module, memo, depth);
+                    let idx = (delta / 8) as usize;
+                    if cn.contains("map_unpack_to_linear_memory") {
+                        let names = op(1).and_then(u32_val).and_then(|p| struct_keys(module, p))?;
+                        return Some(Expr::Opaque(format!("@field:{}", names.get(idx)?), vec![src]));
+                    }
+                    if cn.contains("vec_unpack_to_linear_memory") {
+                        return Some(Expr::VecGet(Box::new(src), Box::new(Expr::Const(idx as i64))));
+                    }
+                    return None; // raw bytes
+                }
                 // memset(dst, byte, len) / memcpy(dst, src, len) covering our slot.
                 if cn.starts_with("llvm.memset") || cn.starts_with("llvm.memcpy") || cn.starts_with("llvm.memmove") {
                     if let (Some(Operand::Value(dst)), Some(Operand::Value(x)), Some(Operand::Value(BasicValueEnum::IntValue(len)))) =
@@ -2597,7 +2754,9 @@ fn mem_before<'c>(
     if !seen.active.insert(blk) {
         return None; // loop
     }
-    let preds: Vec<usize> = (0..cfg.succ.len()).filter(|&u| cfg.succ[u].contains(&blk)).collect();
+    let preds: Vec<usize> = (0..cfg.succ.len())
+        .filter(|&u| cfg.succ[u].contains(&blk) && seen.allow.as_ref().is_none_or(|a| a.contains(&u)))
+        .collect();
     let mut vals: Vec<Expr> = vec![];
     let mut ok = !preds.is_empty();
     for p in preds {
@@ -2641,6 +2800,8 @@ fn mem_before<'c>(
 struct MemCtx {
     active: HashSet<usize>,
     done: HashMap<usize, Option<Expr>>,
+    allow: Option<HashSet<usize>>, // only these blocks are on the paths considered (one switch case)
+    width: i64,                    // bytes read at the target (0: unknown)
 }
 
 /// Substitute a callee-relative expression at call site `call`: callee reads
@@ -2672,13 +2833,13 @@ fn subst_call<'c>(
                         let (b, o) = if a.is_pointer_value() { ptr_base_off(a) } else { addr_base_off(a) };
                         // the pointer is itself our param: keep propagating outward.
                         if let Some(pj) = (0..g.count_params()).find(|&q| g.get_nth_param(q).map(fmt) == Some(b.clone())) {
-                            return Expr::Opaque("@deref".into(), vec![Expr::Param(pj as usize), Expr::Const(o + off)]);
+                            return done(Expr::Opaque("@deref".into(), vec![Expr::Param(pj as usize), Expr::Const(o + off)]));
                         }
                         let blk = call.get_parent().and_then(|bb| cfg.bidx(bb));
                         if let Some(blk) = blk {
                             let mut seen = MemCtx::default();
                             if let Some(v) = mem_before(call.get_previous_instruction(), blk, &(b, o + off), g, cfg, module, memo, depth, &mut seen) {
-                                return v;
+                                return done(v);
                             }
                         }
                     }
@@ -2687,10 +2848,12 @@ fn subst_call<'c>(
             }
             Expr::Opaque(l, xs) if l == "@load" && xs.len() == 1 => {
                 let a = fold_rich(derefs(&xs[0], call, g, cfg, module, memo, depth));
+                // an address made only of resolved (caller-side) parts.
+                let a = match caller_side(&a) { Some(c) => fold_rich(c), None => a };
                 if let (Some(t), Some(blk)) = (addr_of(&a), call.get_parent().and_then(|bb| cfg.bidx(bb))) {
                     let mut seen = MemCtx::default();
                     if let Some(v) = mem_before(call.get_previous_instruction(), blk, &t, g, cfg, module, memo, depth, &mut seen) {
-                        return v;
+                        return done(v);
                     }
                 }
                 Expr::Opaque("@load".into(), vec![a])
@@ -2699,6 +2862,23 @@ fn subst_call<'c>(
             Expr::VecGet(a, b) => Expr::VecGet(Box::new(derefs(a, call, g, cfg, module, memo, depth)), Box::new(derefs(b, call, g, cfg, module, memo, depth))),
             Expr::Opaque(l, xs) => Expr::Opaque(l.clone(), xs.iter().map(|x| derefs(x, call, g, cfg, module, memo, depth)).collect()),
             other => other.clone(),
+        }
+    }
+    // what `derefs` resolves is already over the CALLER's params: shielded from
+    // the actuals substitution below (`subst` unwraps it).
+    fn done(v: Expr) -> Expr {
+        Expr::Opaque("@done".into(), vec![v])
+    }
+    /// `e` with its `@done` parts unwrapped, if nothing outside them is still
+    /// over the callee's params (else None).
+    fn caller_side(e: &Expr) -> Option<Expr> {
+        match e {
+            Expr::Opaque(l, xs) if l == "@done" && xs.len() == 1 => Some(xs[0].clone()),
+            Expr::Param(_) => None,
+            Expr::Bin(o, a, b) => Some(Expr::Bin(*o, Box::new(caller_side(a)?), Box::new(caller_side(b)?))),
+            Expr::VecGet(a, b) => Some(Expr::VecGet(Box::new(caller_side(a)?), Box::new(caller_side(b)?))),
+            Expr::Opaque(l, xs) => Some(Expr::Opaque(l.clone(), xs.iter().map(caller_side).collect::<Option<_>>()?)),
+            e => Some(e.clone()),
         }
     }
     let e = derefs(e, call, g, cfg, module, memo, depth);
@@ -2784,10 +2964,17 @@ fn builds_symbol(f: FunctionValue) -> bool {
 /// switches on the discriminant and each case builds the variant's Symbol. It
 /// takes the enum either as `(discriminant, field)` integers or by pointer.
 fn is_datakey_builder(f: FunctionValue) -> bool {
-    f.count_basic_blocks() > 0
-        && !f.get_params().is_empty()
-        && all_instrs(f).iter().any(|i| i.get_opcode() == InstructionOpcode::Switch)
-        && builds_symbol(f)
+    f.count_basic_blocks() > 0 && !f.get_params().is_empty() && !kb_cases(f).is_empty() && builds_symbol(f)
+}
+
+/// Does builder `kb` take the enum BY POINTER (it dispatches on a value loaded
+/// through its param) rather than as an integer discriminant?
+fn kb_by_pointer(kb: FunctionValue) -> bool {
+    let Some(p0) = kb.get_nth_param(0) else { return false };
+    let pb = fmt(p0);
+    all_instrs(kb).into_iter().any(|i| i.get_opcode() == InstructionOpcode::Switch
+        && matches!(i.get_operand(0), Some(Operand::Value(v)) if as_instr(v).is_some_and(|l| l.get_opcode() == InstructionOpcode::Load
+            && matches!(l.get_operand(0), Some(Operand::Value(p)) if ptr_base_off(p).0 == pb))))
 }
 
 /// A storage key, kept symbolic: `@key(disc, field, @kb:<builder>)` when it is
@@ -2817,19 +3004,37 @@ fn key_expr<'c>(
                 let kb = Expr::Opaque(format!("@kb:{n}"), vec![]);
                 let arg = |j: u32| match i.get_operand(j) { Some(Operand::Value(x)) => Some(x), _ => None };
                 // by pointer: the enum lives in memory (discriminant, then payload).
-                if b.count_params() == 1 || arg(1).is_none() {
+                if kb_by_pointer(b) {
                     if let Some(a) = arg(0) {
                         let (base, o) = if a.is_pointer_value() { ptr_base_off(a) } else { addr_base_off(a) };
                         let cfg = Cfg::build(g);
                         if let Some(blk) = i.get_parent().and_then(|bb| cfg.bidx(bb)) {
-                            let mut rd = |off: i64, memo: &mut HashMap<String, Option<Expr>>| {
+                            // the enum in our caller's memory (through our pointer param),
+                            // or a constant one in the data section.
+                            let pj = (0..g.count_params()).find(|&q| g.get_nth_param(q).map(fmt) == Some(base.clone()));
+                            let konst = match a { BasicValueEnum::IntValue(c) => c.get_zero_extended_constant(), _ => None };
+                            let segs = rodata_segs(module);
+                            let rd = |off: i64, memo: &mut HashMap<String, Option<Expr>>| {
+                                if let Some(addr) = konst {
+                                    return rodata_u32(&segs, addr + (off - o) as u64).map_or(Expr::Opaque("?".into(), vec![]), |d| Expr::Const(d as i64));
+                                }
                                 let mut seen = MemCtx::default();
                                 mem_before(i.get_previous_instruction(), blk, &(base.clone(), off), g, &cfg, module, memo, depth, &mut seen)
+                                    .or_else(|| pj.map(|j| Expr::Opaque("@deref".into(), vec![Expr::Param(j as usize), Expr::Const(off)])))
                                     .unwrap_or(Expr::Opaque("?".into(), vec![]))
                             };
                             let d = rd(o, memo);
                             let fld = rd(o + 8, memo);
-                            return Expr::Opaque("@key".into(), vec![d, fld, kb]);
+                            // each variant's full payload (`Minter(contract, minter)`),
+                            // as `@case:<disc>(fields…)`, read at this call.
+                            let mut v = vec![d, fld, kb];
+                            for (disc, cb) in kb_cases(b) {
+                                if let Some(fs) = kb_case_fields(b, cb, module, memo, depth) {
+                                    let fs: Vec<Expr> = fs.iter().map(|e| subst_call(e, i, g, &cfg, module, memo, depth)).collect();
+                                    v.push(Expr::Opaque(format!("@case:{}", disc.map_or("*".into(), |d| d.to_string())), fs));
+                                }
+                            }
+                            return Expr::Opaque("@key".into(), v);
                         }
                     }
                 }
@@ -2843,6 +3048,97 @@ fn key_expr<'c>(
         break;
     }
     value_expr(k, g, module, memo, depth)
+}
+
+/// The switch cases of a pointer-taking DataKey builder `kb`: (discriminant, or
+/// None for the default, case block).
+fn kb_cases(kb: FunctionValue) -> Vec<(Option<i64>, BasicBlock)> {
+    let Some(sw) = all_instrs(kb).into_iter().find(|i| i.get_opcode() == InstructionOpcode::Switch) else {
+        // a two-variant enum: `if disc & 1 == 0 { A } else { B }` on the entry.
+        let Some(br) = kb.get_first_basic_block().and_then(|b| b.get_terminator()) else { return vec![] };
+        let (Some(Operand::Value(c)), Some(Operand::Block(f)), Some(Operand::Block(t))) = (br.get_operand(0), br.get_operand(1), br.get_operand(2)) else { return vec![] };
+        let Some(cmp) = as_instr(c).filter(|i| i.get_opcode() == InstructionOpcode::ICmp) else { return vec![] };
+        let and = match (cmp.get_operand(0), cmp.get_operand(1)) {
+            (Some(Operand::Value(a)), Some(Operand::Value(BasicValueEnum::IntValue(z)))) if z.get_zero_extended_constant() == Some(0) => as_instr(a),
+            _ => None,
+        };
+        let is_bit = and.is_some_and(|a| {
+            a.get_opcode() == InstructionOpcode::And
+                && matches!(a.get_operand(1), Some(Operand::Value(BasicValueEnum::IntValue(k))) if k.get_zero_extended_constant() == Some(1))
+                && matches!(a.get_operand(0), Some(Operand::Value(p)) if param_index(p, kb).is_some())
+        });
+        return match (is_bit, cmp.get_icmp_predicate()) {
+            // LLVM lays a conditional branch out as [cond, false, true].
+            (true, Some(inkwell::IntPredicate::EQ)) => vec![(Some(0), t), (Some(1), f)],
+            (true, Some(inkwell::IntPredicate::NE)) => vec![(Some(0), f), (Some(1), t)],
+            _ => vec![],
+        };
+    };
+    let mut out = vec![];
+    if let Some(Operand::Block(db)) = sw.get_operand(1) {
+        out.push((None, db));
+    }
+    let mut k = 2; // switch operands: 0=cond, 1=default, then (value, block) pairs.
+    while k + 1 < sw.get_num_operands() {
+        if let (Some(Operand::Value(BasicValueEnum::IntValue(c))), Some(Operand::Block(b))) = (sw.get_operand(k), sw.get_operand(k + 1)) {
+            if let Some(d) = c.get_sign_extended_constant() {
+                out.push((Some(d), b));
+            }
+        }
+        k += 2;
+    }
+    out
+}
+
+/// The payload of the key Vec `[Symbol(variant), fields…]` that builder `kb`
+/// builds in the case starting at block `case`: the fields, in Vec order, over
+/// `kb`'s params — memory resolved along that case's paths only.
+fn kb_case_fields<'c>(
+    kb: FunctionValue<'c>,
+    case: BasicBlock<'c>,
+    module: &inkwell::module::Module<'c>,
+    memo: &mut HashMap<String, Option<Expr>>,
+    depth: u32,
+) -> Option<Vec<Expr>> {
+    let cfg = Cfg::build(kb);
+    let start = cfg.bidx(case)?;
+    // the case's blocks: everything reachable from it, plus what reaches it.
+    let mut allow: HashSet<usize> = HashSet::new();
+    let mut work = vec![start];
+    while let Some(b) = work.pop() {
+        if allow.insert(b) {
+            work.extend(cfg.succ[b].iter().copied());
+        }
+    }
+    let mut work: Vec<usize> = (0..cfg.blocks.len()).filter(|&u| cfg.succ[u].contains(&start)).collect();
+    while let Some(b) = work.pop() {
+        if allow.insert(b) {
+            work.extend((0..cfg.blocks.len()).filter(|&u| cfg.succ[u].contains(&b)));
+        }
+    }
+    let pick = |v: BasicValueEnum<'c>| -> BasicValueEnum<'c> {
+        let Some(phi) = as_instr(v).and_then(|i| inkwell::values::PhiValue::try_from(i).ok()) else { return v };
+        let ins: Vec<BasicValueEnum> = (0..phi.count_incoming())
+            .filter_map(|k| phi.get_incoming(k))
+            .filter(|(_, b)| cfg.bidx(*b).is_some_and(|b| allow.contains(&b)))
+            .map(|(x, _)| x)
+            .collect();
+        if ins.len() == 1 { ins[0] } else { v }
+    };
+    let vec = allow
+        .iter()
+        .flat_map(|&b| cfg.blocks[b].get_instructions())
+        .find(|i| callee_has(*i, "vec_new_from_linear_memory"))?;
+    let op = |k: u32| match vec.get_operand(k) { Some(Operand::Value(x)) => Some(x), _ => None };
+    let len = u32_val_in(op(1)?, &pick)?;
+    let at = val_addr_in(op(0)?, &pick)?;
+    let blk = cfg.bidx(vec.get_parent()?)?;
+    (1..len as i64)
+        .map(|k| {
+            let mut seen = MemCtx { allow: Some(allow.clone()), ..Default::default() };
+            mem_before(vec.get_previous_instruction(), blk, &(at.0.clone(), at.1 + 8 * k), kb, &cfg, module, memo, depth, &mut seen)
+        })
+        .collect()
 }
 
 /// For a DataKey builder `kb`, which discriminants are data variants (carry a
@@ -2925,7 +3221,7 @@ fn name_slots<'c>(
             };
             // the builder this key came from (a contract can have several).
             let own_kb = match &xs[0] {
-                Expr::Opaque(kl, kx) if kl == "@key" && kx.len() == 3 => match &kx[2] {
+                Expr::Opaque(kl, kx) if kl == "@key" && kx.len() >= 3 => match &kx[2] {
                     Expr::Opaque(n, _) if n.starts_with("@kb:") => module.get_function(&n["@kb:".len()..]),
                     _ => None,
                 },
@@ -2938,8 +3234,8 @@ fn name_slots<'c>(
                 if kl == "@key" && kx.len() >= 2 {
                     let mk = |d: &Expr| {
                         let mut v = vec![Expr::Opaque("@key".into(), {
-                            let mut kv = vec![d.clone(), kx[1].clone()];
-                            kv.extend(kx.get(2).cloned());
+                            let mut kv = vec![d.clone()];
+                            kv.extend(kx[1..].iter().cloned());
                             kv
                         })];
                         v.extend(tag.clone());
@@ -2963,6 +3259,18 @@ fn name_slots<'c>(
                 if kl == "@key" && kx.len() >= 2 {
                     if let Expr::Const(d) = kx[0] {
                         if let Some(name) = datakey_name(kbf, d, module, segs) {
+                            // the variant's full payload, when the builder's case was read.
+                            let case = |c: &str| kx.iter().skip(3).find_map(|x| match x {
+                                Expr::Opaque(l, fs) if l.strip_prefix("@case:") == Some(c) => Some(fs.clone()),
+                                _ => None,
+                            });
+                            if let Some(fs) = case(&d.to_string()).or_else(|| case("*")) {
+                                return match fs.len() {
+                                    0 => Expr::Slot(name, tagn),
+                                    1 => Expr::Opaque(format!("@map:{name}"), std::iter::once(rec(&fs[0])).chain(tag.clone()).collect()),
+                                    _ => Expr::Opaque(format!("@tup:{name}"), vec![Expr::Opaque("@ks".into(), fs.iter().map(rec).collect())].into_iter().chain(tag.clone()).collect()),
+                                };
+                            }
                             let mapping = usage.0.get(&d).copied().unwrap_or(usage.1);
                             return if mapping {
                                 let mut v = vec![rec(&kx[1])];
@@ -2992,6 +3300,10 @@ fn name_slots<'c>(
                     if let Some(name) = sym_name(&els[0]) {
                         if els.len() == 1 {
                             return Expr::Slot(name, tagn);
+                        }
+                        if els.len() > 2 {
+                            let ks = Expr::Opaque("@ks".into(), els[1..].iter().map(rec).collect());
+                            return Expr::Opaque(format!("@tup:{name}"), std::iter::once(ks).chain(tag.clone()).collect());
                         }
                         let mut v = vec![rec(&els[1])];
                         v.extend(tag.clone());
@@ -3048,7 +3360,7 @@ fn ok_condition(e: &Expr) -> Option<Expr> {
 fn is_val_source(e: &Expr) -> bool {
     match e {
         Expr::Slot(..) | Expr::Param(_) => true,
-        Expr::Opaque(l, _) => l.starts_with("@map:"),
+        Expr::Opaque(l, _) => ["@map:", "@field:", "@tup:", "@env:", "@len"].iter().any(|p| l.starts_with(p)),
         // `has(k) ? get(k) : 0` of such a source
         _ => false,
     }
@@ -3095,11 +3407,18 @@ fn eval_bool_fn(e: &Expr, b: &Expr, bit: i64) -> Option<i64> {
 /// `x`; and `Or(a, b) = 0` is `a = 0 ∧ b = 0` (bitwise, exact).
 fn fold_named(e: Expr) -> Expr {
     // the same slot, ignoring at which program point it was read.
+    // (a field read `@field:f(K)` is a read of the struct at K.)
+    fn root(e: &Expr) -> &Expr {
+        match e {
+            Expr::Opaque(l, xs) if l.starts_with("@field:") && xs.len() == 1 => root(&xs[0]),
+            e => e,
+        }
+    }
     let same_slot = |a: &Expr, b: &Expr| -> bool {
-        match (a, b) {
+        match (root(a), root(b)) {
             (Expr::Slot(x, _), Expr::Slot(y, _)) => x == y,
-            (Expr::Opaque(x, xa), Expr::Opaque(y, ya)) if x.starts_with("@map:") && x == y => xa.first() == ya.first(),
-            _ => a == b,
+            (Expr::Opaque(x, xa), Expr::Opaque(y, ya)) if (x.starts_with("@map:") || x.starts_with("@tup:")) && x == y => xa.first() == ya.first(),
+            (a, b) => a == b,
         }
     };
     let is_has_of = |c: &Expr, x: &Expr| -> bool {
@@ -3123,6 +3442,21 @@ fn fold_named(e: Expr) -> Expr {
                 }
             }
         }
+    }
+    // a 0/1 flag `Select(c, a, b)` (consts): `& 1` keeps it; `== k` is `c` / `¬c`.
+    let flag = |x: &Expr| matches!(x, Expr::Opaque(s, v) if s == "Select" && v.len() == 3
+        && matches!((&v[1], &v[2]), (Expr::Const(a), Expr::Const(b)) if a != b && (0..=1).contains(a) && (0..=1).contains(b)));
+    match &e {
+        Expr::Opaque(l, xs) if l == "And" && xs.len() == 2 && xs[1] == Expr::Const(1) && flag(&xs[0]) => return xs[0].clone(),
+        // `c ? c : false` (an i128 `== 0` from two limb tests that fold alike) is `c`.
+        Expr::Opaque(l, xs) if l == "Select" && xs.len() == 3 && xs[0] == xs[1] && xs[2] == Expr::Const(0) => return xs[0].clone(),
+        Expr::Opaque(l, xs) if (l == "ICmp_EQ" || l == "ICmp_NE") && xs.len() == 2 && flag(&xs[0]) && matches!(xs[1], Expr::Const(_)) => {
+            let Expr::Opaque(_, v) = &xs[0] else { unreachable!() };
+            let not = |c: &Expr| match c { Expr::Opaque(n, i) if n == "@not" && i.len() == 1 => i[0].clone(), c => Expr::Opaque("@not".into(), vec![c.clone()]) };
+            let eq = if v[1] == xs[1] { v[0].clone() } else if v[2] == xs[1] { not(&v[0]) } else { return e };
+            return fold_named(if l == "ICmp_EQ" { eq } else { not(&eq) });
+        }
+        _ => {}
     }
     match &e {
         Expr::Opaque(l, xs) if l == "Select" && xs.len() == 3 => {
@@ -3188,17 +3522,27 @@ fn callee_write_offsets(h: FunctionValue, k: usize, fuel: u32) -> Option<Vec<(i6
                 InstructionOpcode::Store => {
                     let Some(Operand::Value(sp)) = i.get_operand(1) else { continue };
                     let (b, o) = ptr_base_off(sp);
+                    let other_param = h.get_params().iter().any(|q| fmt(*q) == b);
+                    let global = sp.is_pointer_value() && sp.into_pointer_value().as_instruction().is_none() && !h.get_params().iter().any(|q| fmt(*q) == fmt(sp));
                     if b == pbase {
                         let size = match i.get_operand(0) {
                             Some(Operand::Value(BasicValueEnum::IntValue(v))) => (v.get_type().get_bit_width() as i64 + 7) / 8,
                             _ => 8,
                         };
                         out.push((o, size));
-                    } else if !ptr_is_clean(sp) && b.contains(&pbase) {
-                        return None; // a dynamic offset off our pointer
+                    } else if !ptr_is_clean(sp) && !other_param && !global {
+                        return None; // a store we can't attribute: it may be through our pointer
                     }
                 }
                 InstructionOpcode::Call => {
+                    if let Some(d) = linmem_dest(i) {
+                        match d {
+                            Some(((b, o), len)) if b == pbase => out.push((o, len)),
+                            Some(_) => {}
+                            None => return None,
+                        }
+                        continue;
+                    }
                     let nargs = i.get_num_operands().saturating_sub(1);
                     for j in 0..nargs {
                         let Some(Operand::Value(a)) = i.get_operand(j) else { continue };
@@ -3295,6 +3639,7 @@ fn callee_store_at<'c>(
 fn subst(e: &Expr, actuals: &[Expr]) -> Expr {
     match e {
         Expr::Param(i) => actuals.get(*i).cloned().unwrap_or(Expr::Opaque("arg".into(), vec![])),
+        Expr::Opaque(l, xs) if l == "@done" && xs.len() == 1 => xs[0].clone(),
         Expr::Bin(op, a, b) => Expr::Bin(*op, Box::new(subst(a, actuals)), Box::new(subst(b, actuals))),
         Expr::VecGet(h, i) => Expr::VecGet(Box::new(subst(h, actuals)), Box::new(subst(i, actuals))),
         Expr::Opaque(l, xs) => Expr::Opaque(l.clone(), xs.iter().map(|x| subst(x, actuals)).collect()),
@@ -3648,7 +3993,7 @@ fn gates_trap_br(cmp: InstructionValue, f: FunctionValue) -> bool {
 /// "both sides computed, neither an arg nor a constant, gating a trap" pins the
 /// `new_inv_a*new_inv_b < old_inv_a*old_inv_b` panic — the invariant the
 /// contract enforces on itself, without reconstructing the formula.
-fn has_product_invariant_trap(f: FunctionValue) -> bool {
+fn has_product_invariant_trap<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> bool {
     if !f_has_trap(f) {
         return false;
     }
@@ -3679,7 +4024,17 @@ fn has_product_invariant_trap(f: FunctionValue) -> bool {
         }
         if let (Some(Operand::Value(av)), Some(Operand::Value(bv))) = (ci.get_operand(0), ci.get_operand(1)) {
             let computed = |x: BasicValueEnum| !is_const_int(x) && !derives_from_arg(x, f, 24);
-            if computed(av) && computed(bv) {
+            // …and both sides really are products (not, say, two timestamps).
+            fn has_mul(e: &Expr) -> bool {
+                match e {
+                    Expr::Bin('*', _, _) => true,
+                    Expr::Bin(_, a, b) | Expr::VecGet(a, b) => has_mul(a) || has_mul(b),
+                    Expr::Opaque(_, xs) => xs.iter().any(has_mul),
+                    _ => false,
+                }
+            }
+            let product = |x: BasicValueEnum<'c>| with_rich(|| has_mul(&value_expr(x, f, module, &mut HashMap::new(), 40)));
+            if computed(av) && computed(bv) && product(av) && product(bv) {
                 return true;
             }
         }
@@ -3704,6 +4059,16 @@ fn gate_vals(cond: BasicValueEnum) -> Option<(RelOp, BasicValueEnum, BasicValueE
         let hv = match i.get_operand(2) { Some(Operand::Value(v)) => v, _ => return None };
         let hi = as_instr(hv)?;
         if hi.get_opcode() != InstructionOpcode::ICmp {
+            return None;
+        }
+        // …whose condition is `hi_a == hi_b` on the same limbs (else it is a plain
+        // boolean `select`, e.g. a match on an enum choosing which test applies).
+        let eq = match i.get_operand(0) { Some(Operand::Value(v)) => as_instr(v)?, _ => return None };
+        fn ops(x: InstructionValue<'_>) -> [Option<BasicValueEnum<'_>>; 2] {
+            [x.get_operand(0), x.get_operand(1)].map(|o| o.and_then(|o| o.value()))
+        }
+        let (e, h) = (ops(eq), ops(hi));
+        if eq.get_icmp_predicate() != Some(EQ) || !(e == h || e == [h[1], h[0]]) {
             return None;
         }
         // operands from the LO-limb compare (the lo limb carries the value; the
@@ -3776,10 +4141,29 @@ fn entry_guards<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) 
         let mut leaves = vec![];
         bool_split(cond, negate, 8, &mut leaves);
         for leaf in leaves {
+            // a boolean `select c, a, b` (one test or another, chosen by c).
+            if gate_vals(leaf).is_none() && as_instr(leaf).is_some_and(|i| i.get_opcode() == InstructionOpcode::Select) {
+                let e = with_rich(|| fold_rich(simplify(value_expr(leaf, f, module, &mut vmemo, 40))));
+                let e = name_slots(&e, module, kb, &segs);
+                if !expr_has_named(&e) || has_cycle(&e) {
+                    continue;
+                }
+                let Some(c) = lean_cond(&e, &args, &mut opmap, &mut oc, &mut decls, &fnid) else { continue };
+                let (comment, lean) = if negate { (format!("¬{}", render_expr(&e, &args)), format!("¬{c}")) } else { (render_expr(&e, &args), c) };
+                if seen.insert(comment.clone()) {
+                    gs.push(Guard { comment, lean });
+                }
+                continue;
+            }
             let Some((op0, l, r)) = gate_vals(leaf) else { continue };
             let op = if negate { op0.negate() } else { op0 };
             if matches!(op, RelOp::Eq | RelOp::Ne) {
-                continue; // Val-tag / sign / overflow equality plumbing
+                // Val-tag / sign / overflow equality plumbing — but a presence test
+                // (`if has(k) { panic }`) is a real guard.
+                let has = with_rich(|| matches!(simplify(value_expr(l, f, module, &mut vmemo, 40)), Expr::Opaque(h, _) if h == "@has"));
+                if !has {
+                    continue;
+                }
             }
             let (le, re) = with_rich(|| {
                 (simplify(value_expr(l, f, module, &mut vmemo, 40)), simplify(value_expr(r, f, module, &mut vmemo, 40)))
@@ -3797,6 +4181,22 @@ fn entry_guards<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) 
                 continue;
             }
             let (le, re) = (i128_sext(&le), i128_sext(&re));
+            if let Some((a, r, b)) = cmp_rel(&le, op.lean(), &re) {
+                let comment = format!("{} {r} {}", render_expr(&a, &args), render_expr(&b, &args));
+                if seen.insert(comment.clone()) {
+                    let lean = format!("{} {r} {}", lean_guard_term(&a, &args, &mut opmap, &mut oc, &mut decls, &fnid), lean_guard_term(&b, &args, &mut opmap, &mut oc, &mut decls, &fnid));
+                    gs.push(Guard { comment, lean });
+                }
+                continue;
+            }
+            if let Some((p, r, k)) = raw_small_cmp(&le, op.lean(), &re, &args) {
+                let comment = format!("{} {r} {k}", render_expr(&p, &args));
+                if seen.insert(comment.clone()) {
+                    let lean = format!("{} {r} {k}", lean_guard_term(&p, &args, &mut opmap, &mut oc, &mut decls, &fnid));
+                    gs.push(Guard { comment, lean });
+                }
+                continue;
+            }
             let comment = format!("{} {} {}", render_expr(&le, &args), op.lean(), render_expr(&re, &args));
             if !seen.insert(comment.clone()) {
                 continue;
@@ -3856,6 +4256,11 @@ fn ledger_term(
     match tok {
         Expr::Slot(n, _) if !matches!(n.as_str(), "instance" | "persistent" | "temporary" | "?") => Some(format!("\"{n}\"")),
         Expr::Opaque(l, _) if l.starts_with("@map:") => None,
+        // a token address held in a struct field: `"Offer.buy_token"`.
+        Expr::Opaque(l, xs) if l.starts_with("@field:") && xs.len() == 1 => {
+            let base = ledger_term(&xs[0], args, opmap, oc, decls, fnid)?;
+            Some(format!("{}.{}\"", base.strip_suffix('"')?, &l["@field:".len()..]))
+        }
         // a token passed as an argument: the ledger is keyed by its address.
         Expr::Param(i) => args.get(*i).map(|(_, n, _)| format!("(toString (st.call.argA \"{n}\"))")),
         Expr::Opaque(l, xs) if l == "Select" && xs.len() == 3 => {
@@ -3888,6 +4293,13 @@ fn lean_cond(
             Some(parts?.iter().map(|p| format!("({p})")).collect::<Vec<_>>().join(" ∨ "))
         }
         Expr::Opaque(l, xs) if l == "@true" && xs.is_empty() => Some("True".into()),
+        // a choice between two tests.
+        Expr::Opaque(l, xs) if l == "Select" && xs.len() == 3 => {
+            let c = lean_cond(&xs[0], args, opmap, oc, decls, fnid)?;
+            let a = lean_cond(&xs[1], args, opmap, oc, decls, fnid)?;
+            let b = lean_cond(&xs[2], args, opmap, oc, decls, fnid)?;
+            Some(format!("(if {c} then {a} else {b})"))
+        }
         Expr::Opaque(l, xs) if l == "@false" && xs.is_empty() => Some("False".into()),
         Expr::Opaque(l, xs) if l == "@not" && xs.len() == 1 => {
             Some(format!("¬({})", lean_cond(&xs[0], args, opmap, oc, decls, fnid)?))
@@ -3895,17 +4307,130 @@ fn lean_cond(
         Expr::Opaque(l, xs) if l == "@isfalse" && xs.len() == 1 => {
             Some(format!("{} = 0", lean_guard_term(&xs[0], args, opmap, oc, decls, fnid)))
         }
+        Expr::Opaque(l, xs) if (l == "ICmp_EQ" || l == "ICmp_NE") && xs.len() == 2
+            && matches!(&xs[0], Expr::Opaque(c, ys) if c == "@cmp" && ys.len() == 2) && xs[1] == Expr::Const(0) =>
+        {
+            let Expr::Opaque(_, ys) = &xs[0] else { unreachable!() };
+            let (a, b) = (lean_guard_term(&ys[0], args, opmap, oc, decls, fnid), lean_guard_term(&ys[1], args, opmap, oc, decls, fnid));
+            Some(format!("{a} {} {b}", if l == "ICmp_EQ" { "=" } else { "≠" }))
+        }
         Expr::Opaque(l, xs) if l.starts_with("ICmp_") && xs.len() == 2 => {
             let rel = match &l["ICmp_".len()..] {
                 "EQ" => "=", "NE" => "≠", "SLT" | "ULT" => "<", "SLE" | "ULE" => "≤",
                 "SGT" | "UGT" => ">", "SGE" | "UGE" => "≥", _ => return None,
             };
+            if let Some((a, r, b)) = cmp_rel(&xs[0], rel, &xs[1]) {
+                return Some(format!("{} {r} {}", lean_guard_term(&a, args, opmap, oc, decls, fnid), lean_guard_term(&b, args, opmap, oc, decls, fnid)));
+            }
+            if let Some((p, r, k)) = raw_small_cmp(&xs[0], rel, &xs[1], args) {
+                return Some(format!("{} {r} {k}", lean_guard_term(&p, args, opmap, oc, decls, fnid)));
+            }
             let a = lean_guard_term(&xs[0], args, opmap, oc, decls, fnid);
             let b = lean_guard_term(&xs[1], args, opmap, oc, decls, fnid);
             Some(format!("{a} {rel} {b}"))
         }
         _ => None,
     }
+}
+
+/// The storage `Key` a read/write addresses — a named slot (`.var`), a map
+/// entry (`.entry`), or a field of a `#[contracttype]` struct stored in one
+/// (`.fld`) — with the state a read of it sees (from its `@at` program point).
+fn lean_key(
+    e: &Expr,
+    args: &Args,
+    opmap: &mut HashMap<String, String>,
+    oc: &mut usize,
+    decls: &mut Vec<String>,
+    fnid: &str,
+) -> Option<(String, String)> {
+    match e {
+        Expr::Slot(n, t) if !matches!(n.as_str(), "instance" | "persistent" | "temporary" | "?") => {
+            Some((format!(".var \"{n}\""), if *t > 0 { state_at(*t - 1) } else { "st.pre".into() }))
+        }
+        // a variant whose payload is a struct (`Allowance(AllowanceDataKey { from,
+        // spender })`): keyed by the struct's fields.
+        Expr::Opaque(l, xs) if l.starts_with("@map:") && (xs.len() == 1 || xs.len() == 2)
+            && matches!(&xs[0], Expr::Opaque(sl, _) if sl.starts_with("@struct:")) =>
+        {
+            let Expr::Opaque(_, fs) = &xs[0] else { unreachable!() };
+            let mut v = vec![Expr::Opaque("@ks".into(), fs.clone())];
+            v.extend(xs.get(1).cloned());
+            lean_key(&Expr::Opaque(format!("@tup:{}", &l["@map:".len()..]), v), args, opmap, oc, decls, fnid)
+        }
+        Expr::Opaque(l, xs) if l.starts_with("@map:") && (xs.len() == 1 || xs.len() == 2) => {
+            let st = match xs.get(1) {
+                Some(Expr::Opaque(a, k)) if a == "@at" => match k.first() { Some(Expr::Const(t)) => state_at(*t as usize), _ => "st.pre".into() },
+                _ => "st.pre".into(),
+            };
+            Some((format!(".entry \"{}\" ({})", &l["@map:".len()..], lean_guard_term(&xs[0], args, opmap, oc, decls, fnid)), st))
+        }
+        Expr::Opaque(l, xs) if l.starts_with("@tup:") && (xs.len() == 1 || xs.len() == 2) => {
+            let Expr::Opaque(_, ks) = &xs[0] else { return None };
+            let st = match xs.get(1) {
+                Some(Expr::Opaque(a, k)) if a == "@at" => match k.first() { Some(Expr::Const(t)) => state_at(*t as usize), _ => "st.pre".into() },
+                _ => "st.pre".into(),
+            };
+            let ks: Vec<String> = ks.iter().map(|k| lean_guard_term(k, args, opmap, oc, decls, fnid)).collect();
+            Some((format!(".tup \"{}\" [{}]", &l["@tup:".len()..], ks.join(", ")), st))
+        }
+        Expr::Opaque(l, xs) if l.starts_with("@field:") && xs.len() == 1 => {
+            let (k, st) = lean_key(&xs[0], args, opmap, oc, decls, fnid)?;
+            Some((format!(".fld ({k}) \"{}\"", &l["@field:".len()..]), st))
+        }
+        _ => None,
+    }
+}
+
+/// `obj_cmp(a, b) ⋈ k` (the host's -1/0/1 object ordering) against a constant,
+/// as the same comparison of `a` and `b` themselves: `cmp(a, b) ≤ -1` is `a < b`.
+fn cmp_rel(l: &Expr, rel: &str, r: &Expr) -> Option<(Expr, &'static str, Expr)> {
+    let (Expr::Opaque(c, ab), Expr::Const(k)) = (l, r) else { return None };
+    if c != "@cmp" || ab.len() != 2 {
+        return None;
+    }
+    // the set of orderings {-1, 0, 1} the comparison admits.
+    let ok: Vec<i64> = (-1..=1)
+        .filter(|&o| match rel { "<" => o < *k, "≤" => o <= *k, ">" => o > *k, "≥" => o >= *k, "=" => o == *k, "≠" => o != *k, _ => false })
+        .collect();
+    let rel = match ok.as_slice() {
+        [-1] => "<", [-1, 0] => "≤", [0] => "=", [1] => ">", [0, 1] => "≥", [-1, 1] => "≠",
+        _ => return None,
+    };
+    Some((ab[0].clone(), rel, ab[1].clone()))
+}
+
+/// A u32 compared as its raw Val (`v·2^32 + 4`) against a constant `c` — a u32
+/// argument or a `vec.len()`: the same test on the value, as `(v, "<" | "≥", k)`.
+/// `raw < c` iff `v < ⌈(c-4)/2^32⌉`, e.g. `raw < 2^32` is `v < 1` (`v = 0`), and
+/// `raw > 11·2^32 - 1` is `v ≥ 11`. (An i32 is only taken against multiples of
+/// 2^32, where the tag cannot matter.)
+fn raw_small_cmp(a: &Expr, rel: &str, b: &Expr, args: &Args) -> Option<(Expr, &'static str, i64)> {
+    let kind = |x: &Expr| match x {
+        Expr::Param(i) => args.get(*i).map(|(_, _, t)| t.as_str()).filter(|t| *t == "u32" || *t == "i32"),
+        Expr::Opaque(l, v) if l == "@len" && v.len() == 1 => Some("u32"),
+        _ => None,
+    };
+    let (p, rel, c) = match (kind(a), kind(b), a, b) {
+        (Some(_), _, _, Expr::Const(c)) => (a, rel, *c),
+        (None, Some(_), Expr::Const(c), _) => (b, match rel { "<" => ">", "≤" => "≥", ">" => "<", "≥" => "≤", r => r }, *c),
+        _ => return None,
+    };
+    let two32 = 1i128 << 32;
+    let ceil = |n: i128| (n + two32 - 1).div_euclid(two32);
+    let lt = |c: i128| ceil(c - 4); // raw < c  ⇔  v < lt(c)
+    let c = c as i128;
+    if kind(p) == Some("i32") && (c == 0 || c % two32 != 0) {
+        return None;
+    }
+    let (r, k) = match rel {
+        "<" => ("<", lt(c)),
+        "≤" => ("<", lt(c + 1)),
+        ">" => ("≥", lt(c + 1)),
+        "≥" => ("≥", lt(c)),
+        _ => return None,
+    };
+    Some((p.clone(), r, i64::try_from(k).ok()?))
 }
 
 fn lean_guard_term(
@@ -3936,19 +4461,29 @@ fn lean_guard_term(
             o,
             lean_guard_term(b, args, opmap, oc, decls, fnid),
         ),
-        // a named storage slot, read in the pre-state.
-        Expr::Slot(n, t) if !matches!(n.as_str(), "instance" | "persistent" | "temporary" | "?") => {
-            let st = if *t > 0 { state_at(*t - 1) } else { "st.pre".into() };
-            format!("({st} (.var \"{n}\"))")
-        }
-        Expr::Opaque(l, xs) if l.starts_with("@map:") && (xs.len() == 1 || xs.len() == 2) => {
-            let st = match xs.get(1) {
-                Some(Expr::Opaque(a, k)) if a == "@at" => match k.first() { Some(Expr::Const(t)) => state_at(*t as usize), _ => "st.pre".into() },
-                _ => "st.pre".into(),
-            };
-            format!("({st} (.entry \"{}\" ({})))", &l["@map:".len()..], lean_guard_term(&xs[0], args, opmap, oc, decls, fnid))
+        // a storage read (a named slot, a map entry, a struct field of one), in
+        // the state at its program point.
+        e if lean_key(e, args, &mut HashMap::new(), &mut 0, &mut vec![], fnid).is_some() => {
+            let (k, st) = lean_key(e, args, opmap, oc, decls, fnid).unwrap();
+            format!("({st} ({k}))")
         }
         Expr::Opaque(l, xs) if l == "@pool" && xs.is_empty() => "pool".into(),
+        // `has(k)`: k's presence bit, as a Soroban bool (1 = present).
+        Expr::Opaque(l, xs) if l == "@has" && xs.len() == 1 && lean_key(&xs[0], args, &mut HashMap::new(), &mut 0, &mut vec![], fnid).is_some() => {
+            let (k, st) = lean_key(&xs[0], args, opmap, oc, decls, fnid).unwrap();
+            format!("({st} (.has ({k})))")
+        }
+        Expr::Opaque(l, xs) if l.starts_with("@env:") && xs.is_empty() => format!("(st.call.env \"{}\")", &l["@env:".len()..]),
+        // the length of a Vec argument: `claimants.len`.
+        Expr::Opaque(l, xs) if l == "@len" && matches!(xs.as_slice(), [Expr::Param(i)] if args.get(*i).is_some()) => {
+            let Expr::Param(i) = &xs[0] else { unreachable!() };
+            format!("st.call.arg \"{}.len\"", args[*i].1)
+        }
+        // a field of a struct ARGUMENT: `config.limit`.
+        Expr::Opaque(l, xs) if l.starts_with("@field:") && matches!(xs.as_slice(), [Expr::Param(i)] if args.get(*i).is_some()) => {
+            let Expr::Param(i) = &xs[0] else { unreachable!() };
+            format!("st.call.arg \"{}.{}\"", args[*i].1, &l["@field:".len()..])
+        }
         // the address carried by an address-like argument (MuxedAddress etc.)
         Expr::Opaque(l, xs) if l == "@addrof" && xs.len() == 1 => match &xs[0] {
             Expr::Param(i) => args.get(*i).map(|(_, n, _)| format!("st.call.argA \"{n}\"")).unwrap_or_else(|| "pool".into()),
@@ -3970,7 +4505,7 @@ fn lean_guard_term(
         }
         Expr::Opaque(l, xs) if l == "@bool" && xs.len() == 1 => lean_guard_term(&xs[0], args, opmap, oc, decls, fnid),
         Expr::Opaque(l, xs) if l == "Select" && xs.len() == 3
-            && matches!(&xs[0], Expr::Opaque(n, _) if n == "@isfalse" || n == "@and" || n == "@not" || n.starts_with("ICmp_"))
+            && matches!(&xs[0], Expr::Opaque(n, _) if n == "@isfalse" || n == "@and" || n == "@or" || n == "@not" || n.starts_with("ICmp_"))
             && lean_cond(&xs[0], args, &mut HashMap::new(), &mut 0, &mut vec![], fnid).is_some() =>
         {
             let c = lean_cond(&xs[0], args, opmap, oc, decls, fnid).unwrap_or_else(|| "False".into());
@@ -4277,7 +4812,7 @@ thread_local! {
 fn with_entry<T>(f: FunctionValue, body: impl FnOnce() -> T) -> T {
     use inkwell::values::AsValueRef;
     let map: HashMap<usize, usize> =
-        all_instrs(f).iter().enumerate().map(|(k, i)| (i.as_value_ref() as usize, k)).collect();
+        rpo_instrs(f).iter().enumerate().map(|(k, i)| (i.as_value_ref() as usize, k)).collect();
     ENTRY.with(|e| *e.borrow_mut() = Some((f.get_name().to_string_lossy().into_owned(), map)));
     let r = body();
     ENTRY.with(|e| *e.borrow_mut() = None);
@@ -4321,20 +4856,176 @@ fn state_at(site: usize) -> String {
     if n == 0 { "st.pre".into() } else { format!("s{n}") }
 }
 
-/// Can block `from` reach block `target` over the CFG?
-fn reaches(from: usize, target: usize, cfg: &Cfg) -> bool {
-    let mut seen = vec![false; cfg.succ.len()];
-    let mut work = vec![from];
-    while let Some(b) = work.pop() {
-        if b == target {
-            return true;
-        }
-        if std::mem::replace(&mut seen[b], true) {
-            continue;
-        }
-        work.extend(cfg.succ[b].iter().copied());
+/// One path's branch decisions: `(block, successor taken)` pairs.
+type PathConj = BTreeSet<(usize, usize)>;
+
+/// Each block's loop (strongly connected component with a cycle), if any.
+fn loop_of(cfg: &Cfg) -> Vec<Option<usize>> {
+    let n = cfg.succ.len();
+    let reach: Vec<Vec<bool>> = (0..n)
+        .map(|b| {
+            let mut seen = vec![false; n];
+            let mut work: Vec<usize> = cfg.succ[b].clone();
+            while let Some(x) = work.pop() {
+                if !std::mem::replace(&mut seen[x], true) {
+                    work.extend(cfg.succ[x].iter().copied());
+                }
+            }
+            seen
+        })
+        .collect();
+    (0..n).map(|b| reach[b][b].then(|| (0..n).find(|&c| reach[b][c] && reach[c][b]).unwrap_or(b))).collect()
+}
+
+/// The exact condition under which `blk` executes, as a disjunction over paths
+/// (from the entry) of the branch edges they take. A branch whose other edge
+/// panics adds nothing (a step only describes non-panicking runs), and paths
+/// that differ only in which way they went at some branch — rejoining after it
+/// — merge. None for a block inside a loop, or past `cap` disjuncts.
+fn reach_dnf(cfg: &Cfg, blk: usize, memo: &mut HashMap<usize, Option<Vec<PathConj>>>, active: &mut HashSet<usize>) -> Option<Vec<PathConj>> {
+    let loops = loop_of(cfg);
+    reach_dnf_in(cfg, &loops, blk, memo, active)
+}
+
+fn reach_dnf_in(cfg: &Cfg, loops: &[Option<usize>], blk: usize, memo: &mut HashMap<usize, Option<Vec<PathConj>>>, active: &mut HashSet<usize>) -> Option<Vec<PathConj>> {
+    if let Some(r) = memo.get(&blk) {
+        return r.clone();
     }
-    false
+    if blk == 0 {
+        return Some(vec![PathConj::new()]);
+    }
+    if loops[blk].is_some() || !active.insert(blk) {
+        return None; // inside a loop: how often / whether it runs is not tracked
+    }
+    let live = |p: usize| -> Vec<usize> {
+        let mut v: Vec<usize> = cfg.succ[p].iter().copied().filter(|&s| !forces_trap(cfg.blocks[s], 6)).collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    // the edges into blk: a loop's exit stands for entering the loop (a loop
+    // with this as its only exit leaves it once it terminates).
+    let mut ins: Vec<(usize, usize)> = vec![];
+    for p in (0..cfg.succ.len()).filter(|&u| cfg.succ[u].contains(&blk)) {
+        match loops[p] {
+            None => ins.push((p, blk)),
+            Some(l) => {
+                let body: Vec<usize> = (0..cfg.succ.len()).filter(|&b| loops[b] == Some(l)).collect();
+                let exits: BTreeSet<usize> = body.iter().flat_map(|&b| live(b)).filter(|&t| loops[t] != Some(l)).collect();
+                if exits.len() != 1 {
+                    return None;
+                }
+                for (q, h) in (0..cfg.succ.len()).filter(|&q| loops[q] != Some(l)).flat_map(|q| cfg.succ[q].iter().map(move |&h| (q, h))) {
+                    if loops[h] == Some(l) && !ins.contains(&(q, h)) {
+                        ins.push((q, h));
+                    }
+                }
+            }
+        }
+    }
+    let mut out: Option<Vec<PathConj>> = Some(vec![]);
+    for (p, t) in ins {
+        let Some(rp) = reach_dnf_in(cfg, loops, p, memo, active) else { out = None; break };
+        let decides = live(p).len() > 1; // a real (non-guard) choice at p
+        for mut d in rp {
+            if decides {
+                d.insert((p, t));
+            }
+            out.as_mut().unwrap().push(d);
+        }
+    }
+    active.remove(&blk);
+    // merge: {R ∪ (p, t)} over every live successor t of p  ==>  R.
+    let out = out.map(|mut ds| {
+        loop {
+            ds.sort();
+            ds.dedup();
+            let mut merged = None;
+            'find: for d in &ds {
+                for &(p, _) in d {
+                    let rest: PathConj = d.iter().copied().filter(|&(q, _)| q != p).collect();
+                    let all = live(p).iter().all(|&t| {
+                        let mut want = rest.clone();
+                        want.insert((p, t));
+                        ds.contains(&want)
+                    });
+                    if all {
+                        merged = Some((p, rest));
+                        break 'find;
+                    }
+                }
+            }
+            let Some((p, rest)) = merged else { break };
+            ds.retain(|d| !(d.iter().any(|&(q, _)| q == p) && d.iter().filter(|&&(q, _)| q != p).copied().collect::<PathConj>() == rest));
+            ds.push(rest);
+        }
+        // absorption: a path condition implied by a weaker one is redundant.
+        let snapshot = ds.clone();
+        ds.retain(|d| !snapshot.iter().any(|e| e != d && e.is_subset(d)));
+        ds
+    });
+    let out = out.filter(|ds| ds.len() <= 16);
+    memo.insert(blk, out.clone());
+    out
+}
+
+/// The condition of branch edge `p → t` of `f`, as an expression.
+fn edge_cond<'c>(f: FunctionValue<'c>, cfg: &Cfg<'c>, p: usize, t: usize, module: &inkwell::module::Module<'c>, memo: &mut HashMap<String, Option<Expr>>) -> Option<Expr> {
+    let term = cfg.blocks[p].get_terminator()?;
+    let Some(Operand::Value(c)) = term.get_operand(0) else { return None };
+    let ce = fold_rich(simplify(value_expr(c, f, module, memo, 40)));
+    // its storage reads see the state at the branch.
+    let ce = match entry_site(f, term) { Some(site) => annotate_at(&ce, site), None => ce };
+    match term.get_opcode() {
+        InstructionOpcode::Br => {
+            let (fb, tb) = (cfg.succ[p][0], cfg.succ[p][1]); // [false, true]
+            if t == tb && t != fb { Some(ce) } else if t == fb && t != tb { Some(Expr::Opaque("@not".into(), vec![ce])) } else { None }
+        }
+        InstructionOpcode::Switch => {
+            let n = term.get_num_operands();
+            let mut hit = vec![];
+            let mut others = vec![];
+            let mut k = 2; // 0 = cond, 1 = default, then (value, block) pairs
+            while k + 1 < n {
+                if let (Some(Operand::Value(BasicValueEnum::IntValue(v))), Some(Operand::Block(b))) = (term.get_operand(k), term.get_operand(k + 1)) {
+                    let v = Expr::Const(v.get_sign_extended_constant()?);
+                    if cfg.bidx(b) == Some(t) { hit.push(v) } else { others.push(v) }
+                }
+                k += 2;
+            }
+            let is_default = matches!(term.get_operand(1), Some(Operand::Block(d)) if cfg.bidx(d) == Some(t));
+            let eqs: Vec<Expr> = hit.into_iter().map(|v| Expr::Opaque("ICmp_EQ".into(), vec![ce.clone(), v])).collect();
+            if is_default {
+                let nes: Vec<Expr> = others.into_iter().map(|v| Expr::Opaque("ICmp_NE".into(), vec![ce.clone(), v])).collect();
+                let d = if nes.len() == 1 { nes[0].clone() } else { Expr::Opaque("@and".into(), nes) };
+                return Some(if eqs.is_empty() { d } else { Expr::Opaque("@or".into(), eqs.into_iter().chain([d]).collect()) });
+            }
+            match eqs.len() {
+                0 => None,
+                1 => eqs.into_iter().next(),
+                _ => Some(Expr::Opaque("@or".into(), eqs)),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// A path-condition DNF as one expression (`@true` for "always").
+fn dnf_expr<'c>(f: FunctionValue<'c>, cfg: &Cfg<'c>, ds: &[PathConj], module: &inkwell::module::Module<'c>, memo: &mut HashMap<String, Option<Expr>>) -> Option<Expr> {
+    let mut disj = vec![];
+    for d in ds {
+        let lits: Vec<Expr> = d.iter().map(|&(p, t)| edge_cond(f, cfg, p, t, module, memo)).collect::<Option<_>>()?;
+        disj.push(match lits.len() {
+            0 => return Some(Expr::Opaque("@true".into(), vec![])),
+            1 => lits.into_iter().next()?,
+            _ => Expr::Opaque("@and".into(), lits),
+        });
+    }
+    Some(match disj.len() {
+        0 => Expr::Opaque("@false".into(), vec![]),
+        1 => disj.pop()?,
+        _ => Expr::Opaque("@or".into(), disj),
+    })
 }
 
 /// The (non-panic) branch conditions block `blk` of `f` executes under: for each
@@ -4347,28 +5038,13 @@ fn path_conds<'c>(
     module: &inkwell::module::Module<'c>,
     memo: &mut HashMap<String, Option<Expr>>,
 ) -> Vec<Expr> {
-    let mut out = vec![];
-    for d in 0..cfg.blocks.len() {
-        let Some(t) = cfg.blocks[d].get_terminator() else { continue };
-        if t.get_opcode() != InstructionOpcode::Br || cfg.succ[d].len() != 2 {
-            continue;
-        }
-        let Some(Operand::Value(c)) = t.get_operand(0) else { continue };
-        if !is_bool(c) {
-            continue;
-        }
-        let (fb, tb) = (cfg.succ[d][0], cfg.succ[d][1]); // [false, true]
-        if forces_trap(cfg.blocks[fb], 6) || forces_trap(cfg.blocks[tb], 6) {
-            continue; // a guard: already a precondition of the step
-        }
-        let ce = fold_rich(simplify(value_expr(c, f, module, memo, 40)));
-        match (reaches(tb, blk, cfg), reaches(fb, blk, cfg)) {
-            (true, false) => out.push(ce),
-            (false, true) => out.push(Expr::Opaque("@not".into(), vec![ce])),
-            _ => {}
-        }
+    let unknown = || vec![Expr::Opaque("?cond".into(), vec![])];
+    let Some(ds) = reach_dnf(cfg, blk, &mut HashMap::new(), &mut HashSet::new()) else { return unknown() };
+    match ds.as_slice() {
+        // one path: its decisions, as conjuncts.
+        [d] => d.iter().map(|&(p, t)| edge_cond(f, cfg, p, t, module, memo).unwrap_or_else(|| Expr::Opaque("?cond".into(), vec![]))).collect(),
+        _ => dnf_expr(f, cfg, &ds, module, memo).map(|e| vec![e]).unwrap_or_else(unknown),
     }
-    out
 }
 
 /// A transfer: (token, from, to, amount), relative to the function it's in.
@@ -4391,7 +5067,7 @@ fn effects<'c>(
         return out;
     }
     let cfg = Cfg::build(h);
-    for i in all_instrs(h) {
+    for i in rpo_instrs(h) {
         let Some(cn) = callee_name(i) else { continue };
         let op = |k: u32| match i.get_operand(k) { Some(Operand::Value(x)) => Some(x), _ => None };
         if cn == "call.call" && call_symbol(i).as_deref() == Some("transfer") {
@@ -4405,6 +5081,12 @@ fn effects<'c>(
             if parts.len() == 3 {
                 out.push((i, Some((tok, parts[0].clone(), parts[1].clone(), parts[2].clone())), None));
             }
+            continue;
+        }
+        if cn.contains("del_contract_data") {
+            let dur = op(1).map(durability).unwrap_or_else(|| "?".into());
+            let key = op(0).map(|x| key_expr(x, h, module, memo, 40)).unwrap_or(Expr::Opaque("?".into(), vec![]));
+            out.push((i, None, Some((Expr::Opaque(format!("@slot:{dur}"), vec![key]), Expr::Opaque("@del".into(), vec![])))));
             continue;
         }
         if cn.contains("put_contract_data") {
@@ -4436,9 +5118,11 @@ struct RichBody {
     writes: Vec<String>,
     decls: Vec<String>,
     key_decls: Vec<String>, // opaque Step → Key terms for unnameable written keys
+    bool_decls: Vec<String>, // opaque Step → Bool branch conditions that couldn't be rendered
     events: Vec<String>,    // human-readable, for the doc comment
     ret: Option<String>,    // the returned value, when it is a reconstructed scalar
     ok_guard: Option<String>, // a Result-returning call succeeds only when it returns Ok
+    auths: Vec<String>,       // require_auth on an address read from storage (not an arg)
 }
 
 /// Build the rich body of entrypoint `f` (call inside `with_entry(f, …)`).
@@ -4470,17 +5154,27 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
     // every effect (transfer or storage write) is a state; a read sees the
     // state after the effects before it.
     TX_SITES.with(|t| *t.borrow_mut() = evs.iter().filter(|e| e.2.is_some() || e.3.is_some()).map(|e| e.0).collect());
-    let cond_str = |cs: &Vec<Expr>, opmap: &mut HashMap<String, String>, oc: &mut usize, decls: &mut Vec<String>| -> Option<String> {
+    // a branch condition we can't render is an uninterpreted (Bool) one — never
+    // `False`, which would claim the guarded effect cannot happen.
+    let mut bool_decls: Vec<String> = vec![];
+    let mut cond_str = |cs: &Vec<Expr>, opmap: &mut HashMap<String, String>, oc: &mut usize, decls: &mut Vec<String>| -> Option<String> {
         if cs.is_empty() {
             return None;
         }
+        let mut unknown = |oc: &mut usize| {
+            *oc += 1;
+            let nm = format!("{tid}_c{oc}");
+            bool_decls.push(nm.clone());
+            format!("({nm} st) = true")
+        };
         let parts: Vec<String> = cs
             .iter()
             .map(|c| match c {
-                Expr::Opaque(l, x) if l == "@not" && x.len() == 1 => {
-                    lean_cond(&x[0], &args, opmap, oc, decls, &tid).map(|s| format!("¬({s})")).unwrap_or_else(|| "False".into())
-                }
-                c => lean_cond(c, &args, opmap, oc, decls, &tid).unwrap_or_else(|| "False".into()),
+                Expr::Opaque(l, x) if l == "@not" && x.len() == 1 => match lean_cond(&x[0], &args, opmap, oc, decls, &tid) {
+                    Some(s) => format!("¬({s})"),
+                    None => format!("¬({})", unknown(oc)),
+                },
+                c => lean_cond(c, &args, opmap, oc, decls, &tid).unwrap_or_else(|| unknown(oc)),
             })
             .collect();
         Some(parts.join(" ∧ "))
@@ -4513,15 +5207,7 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
             cur = format!("s{nstate}");
         }
         if let Some((k, v)) = wr {
-            let key = match k {
-                Expr::Slot(n, _) => Some(format!(".var \"{n}\"")),
-                Expr::Opaque(l, x) if l.starts_with("@map:") && !x.is_empty() => Some(format!(
-                    ".entry \"{}\" ({})",
-                    &l["@map:".len()..],
-                    lean_guard_term(&x[0], &args, &mut opmap, &mut oc, &mut decls, &tid)
-                )),
-                _ => None,
-            };
+            let key = lean_key(k, &args, &mut opmap, &mut oc, &mut decls, &tid).map(|(k, _)| k);
             // an unnameable key is still a write — to SOME key (opaque), never dropped.
             let key = match key {
                 Some(k) => k,
@@ -4532,17 +5218,44 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
                     format!("({nm} st)")
                 }
             };
-            let val = lean_guard_term(v, &args, &mut opmap, &mut oc, &mut decls, &tid);
             events.push(format!("write {}{} := {}", render_expr(k, &args), cs.as_ref().map(|c| format!(" [when {c}]")).unwrap_or_default(), render_expr(v, &args)));
-            if !writes.contains(&key) {
-                writes.push(key.clone());
+            // a struct value is stored field by field (nested structs recursively).
+            fn flatten(key: String, v: &Expr, out: &mut Vec<(String, Expr)>) {
+                match v {
+                    Expr::Opaque(l, xs) if l.starts_with("@struct:") && l["@struct:".len()..].split(',').count() == xs.len() => {
+                        for (f, x) in l["@struct:".len()..].split(',').zip(xs) {
+                            flatten(format!(".fld ({key}) \"{f}\""), x, out);
+                        }
+                    }
+                    _ => out.push((key, v.clone())),
+                }
+            }
+            let mut sets = vec![];
+            let del = matches!(v, Expr::Opaque(l, x) if l == "@del" && x.is_empty());
+            if del {
+                sets.push((key.clone(), Expr::Const(0)));
+            } else {
+                flatten(key.clone(), v, &mut sets);
+            }
+            // a named key's presence: set → 1, remove → 0.
+            if !key.ends_with(" st)") {
+                sets.push((format!(".has ({key})"), Expr::Const(if del { 0 } else { 1 })));
+            }
+            let mut upd = cur.clone();
+            for (key, v) in &sets {
+                let val = lean_guard_term(v, &args, &mut opmap, &mut oc, &mut decls, &tid);
+                upd = format!("({upd}).set ({key}) ({val})");
+                if !writes.contains(key) {
+                    writes.push(key.clone());
+                }
             }
             nstate += 1;
-            lets.push(format!("let s{nstate} := {}", next(format!("({cur}).set ({key}) ({val})"), &cur)));
+            lets.push(format!("let s{nstate} := {}", next(upd, &cur)));
             cur = format!("s{nstate}");
         }
     }
     let post = cur;
+    let bool_decls = std::mem::take(&mut bool_decls);
     // the returned value (a scalar Val), read in the final state.
     let ret = with_rich(|| {
         let mut memo = HashMap::new();
@@ -4556,6 +5269,7 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
                 vals.push(e);
             }
         }
+        if std::env::var("SDBG").is_ok() { for v in &vals { eprintln!("RET {}: {}", fnid, render_expr(v, &args)); } }
         match vals.as_slice() {
             [e] => Some(e.clone()),
             _ => None,
@@ -4569,7 +5283,29 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
     let ret = ret
         .filter(|e| !matches!(e, Expr::Opaque(l, _) if l == "@vec" || l == "big") && (expr_has_named(e) || ok_guard.is_some()))
         .map(|e| lean_guard_term(&e, &args, &mut opmap, &mut oc, &mut decls, &tid));
-    RichBody { lets, post, writes, decls: std::mem::take(&mut decls), key_decls, events, ret, ok_guard }
+    // `x.require_auth()` on an address that isn't an argument (e.g. a struct
+    // field in storage): that address must have signed.
+    let auths: Vec<String> = with_rich(|| {
+        let mut memo = HashMap::new();
+        let mut out = vec![];
+        for i in all_instrs(f) {
+            if !callee_name(i).is_some_and(|n| n.contains("require_auth")) {
+                continue;
+            }
+            let Some(Operand::Value(v)) = i.get_operand(0) else { continue };
+            let site = entry_site(f, i).unwrap_or(0);
+            let e = name_slots(&annotate_at(&fold_rich(simplify(value_expr(v, f, module, &mut memo, 40))), site), module, kb, &segs);
+            if matches!(e, Expr::Param(_)) || lean_key(&e, &args, &mut HashMap::new(), &mut 0, &mut vec![], &tid).is_none() {
+                continue;
+            }
+            let t = lean_guard_term(&e, &args, &mut opmap, &mut oc, &mut decls, &tid);
+            if !out.contains(&t) {
+                out.push(t);
+            }
+        }
+        out
+    });
+    RichBody { lets, post, writes, decls: std::mem::take(&mut decls), key_decls, bool_decls, events, ret, ok_guard, auths }
 }
 
 /// Emit a relational abstraction of the contract: one `Step → Prop` per
@@ -4598,16 +5334,28 @@ fn emit_lean_model(entries: &[ModelEntry]) {
     println!("-- Values are rebuilt through i128 helper routines (__muloti4 / __divti3), out-");
     println!("-- pointer returns and by-reference closure captures on the wasm shadow stack.");
     println!("--");
-    println!("-- STILL `opaque`: values from loops (e.g. an integer sqrt), composite keys,");
-    println!("-- tuple returns, and whatever the reconstruction could not resolve.");
+    println!("-- Storage keys: `.var` (unit variant), `.entry` / `.tup` (variants with one /");
+    println!("-- several fields), `.fld k f` (field f of the #[contracttype] struct stored at");
+    println!("-- k, nested structs field by field) and `.has k` (k's presence: set → 1,");
+    println!("-- remove → 0). Struct arguments' fields are args named `config.limit`.");
+    println!("--");
+    println!("-- STILL `opaque`: values from loops (e.g. an integer sqrt), tuple and whole-");
+    println!("-- struct returns, enum values carried as data, and whatever the");
+    println!("-- reconstruction could not resolve (a branch condition so becomes an opaque");
+    println!("-- `Step → Bool`, never `False`).");
     println!("-- ASSUMES token ledgers are keyed by the storage slot holding the token");
-    println!("-- address (`\"TokenA\"`), i.e. distinct slots hold distinct tokens.");
+    println!("-- address (`\"TokenA\"`, `\"Offer.buy_token\"`), i.e. distinct slots hold");
+    println!("-- distinct tokens; an absent key reads as 0 (`get(k).unwrap_or(0)`); the");
+    println!("-- host's address order (`obj_cmp`) is the order on `Addr`; loops terminate.");
     println!("-- Reads/writes inside one helper call are ordered at the call's position.\n");
     println!("namespace Contract\n");
     println!("abbrev Addr := Int\n");
     println!("inductive Key where");
     println!("  | var   (name : String)");
     println!("  | entry (map : String) (k : Addr)");
+    println!("  | tup   (map : String) (ks : List Int)   -- a multi-field key variant, `Minter(a, b)`");
+    println!("  | fld   (base : Key) (f : String)   -- a field of the #[contracttype] struct at `base`");
+    println!("  | has   (k : Key)                   -- k's presence (1 = set): `has(k)`, written by set/remove");
     println!("  deriving DecidableEq, Inhabited\n");
     println!("abbrev Storage := Key → Int");
     println!("def Storage.set (s : Storage) (k : Key) (v : Int) : Storage := fun k' => if k' = k then v else s k'\n");
@@ -4616,7 +5364,8 @@ fn emit_lean_model(entries: &[ModelEntry]) {
     println!("  caller : Addr");
     println!("  arg    : String → Int   -- numeric args by name");
     println!("  argA   : String → Addr  -- address args by name");
-    println!("  signed : Addr → Prop    -- addresses that authorized the call (require_auth)\n");
+    println!("  signed : Addr → Prop    -- addresses that authorized the call (require_auth)");
+    println!("  env    : String → Int   -- ledger info (`sequence`, `timestamp`)\n");
     println!("structure Step where");
     println!("  call   : Call");
     println!("  pre    : Storage");
@@ -4629,7 +5378,8 @@ fn emit_lean_model(entries: &[ModelEntry]) {
     println!("def bal (m : String) (s : Storage) (a : Addr) : Int := s (.entry m a)");
     println!("/-- storage after token `m` moves `amt` from `src` to `dst`. -/");
     println!("def xfer (m : String) (s : Storage) (src dst : Addr) (amt : Int) : Storage :=");
-    println!("  (s.set (.entry m src) (bal m s src - amt)).set (.entry m dst) (bal m s dst + amt)\n");
+    println!("  let s1 := s.set (.entry m src) (bal m s src - amt)   -- (a self-transfer nets to zero)");
+    println!("  s1.set (.entry m dst) (bal m s1 dst + amt)\n");
     // the fee-adjusted constant-product invariant the contract checks on itself
     // (new_inv_a*new_inv_b). Opaque: we recover that it is CHECKED, not its formula.
     if entries.iter().any(|e| e.inv) {
@@ -4681,6 +5431,9 @@ fn emit_lean_model(entries: &[ModelEntry]) {
             }
             for d in &rb.key_decls {
                 println!("opaque {d} : Step → Key");
+            }
+            for d in &rb.bool_decls {
+                println!("opaque {d} : Step → Bool");
             }
         } else {
             for k in 0..e.transfers.len() {
@@ -4745,6 +5498,9 @@ fn emit_lean_model(entries: &[ModelEntry]) {
         }
         for a in &e.more_auths {
             println!("  st.call.signed (st.call.argA \"{a}\") ∧   -- require_auth");
+        }
+        for a in e.rich.iter().flat_map(|rb| &rb.auths) {
+            println!("  st.call.signed {a} ∧   -- require_auth");
         }
         if e.inv {
             println!("  invProduct st.pre ≤ invProduct st.post ∧   -- constant-product trap");
@@ -5336,6 +6092,20 @@ fn rodata_segs(module: &inkwell::module::Module) -> Vec<(u64, Vec<u8>)> {
     segs
 }
 
+/// The little-endian u32 at `addr` in the recorded rodata. The encoder trims a
+/// segment's trailing zeros, so past a segment's end, up to the next segment,
+/// memory is zero (cf. the front end's `Mem::bytes`).
+fn rodata_u32(segs: &[(u64, Vec<u8>)], addr: u64) -> Option<u32> {
+    let (base, b) = segs.iter().filter(|(base, _)| *base <= addr).max_by_key(|(base, _)| *base)?;
+    let next = segs.iter().map(|(b2, _)| *b2).filter(|b2| b2 > base).min()?;
+    if addr + 4 > next {
+        return None;
+    }
+    let k = (addr - base) as usize;
+    let bytes: Vec<u8> = (k..k + 4).map(|j| b.get(j).copied().unwrap_or(0)).collect();
+    Some(u32::from_le_bytes(bytes.try_into().ok()?))
+}
+
 /// The text of a `[offset, offset+len)` slice of the recorded rodata.
 fn rodata_text(segs: &[(u64, Vec<u8>)], off: u64, len: u64) -> Option<String> {
     for (base, bytes) in segs {
@@ -5399,28 +6169,10 @@ fn datakey_name<'c>(
     module: &inkwell::module::Module<'c>,
     segs: &[(u64, Vec<u8>)],
 ) -> Option<String> {
-    let sw = all_instrs(kb).into_iter().find(|i| i.get_opcode() == InstructionOpcode::Switch)?;
     let cfg = Cfg::build(kb);
-    let bidx = |b: BasicBlock<'c>| cfg.blocks.iter().position(|x| *x == b);
     // the block for this discriminant: a matching explicit case, else the default.
-    let mut target: Option<usize> = None;
-    let n = sw.get_num_operands();
-    let mut k = 2; // switch operands: 0=cond, 1=default, then (value, block) pairs.
-    while k + 1 < n {
-        if let Some(Operand::Value(BasicValueEnum::IntValue(c))) = sw.get_operand(k) {
-            if c.get_sign_extended_constant() == Some(disc) {
-                if let Some(Operand::Block(b)) = sw.get_operand(k + 1) {
-                    target = bidx(b);
-                }
-            }
-        }
-        k += 2;
-    }
-    if target.is_none() {
-        if let Some(Operand::Block(db)) = sw.get_operand(1) {
-            target = bidx(db);
-        }
-    }
+    let cases = kb_cases(kb);
+    let target = cases.iter().find(|(d, _)| *d == Some(disc)).or_else(|| cases.iter().find(|(d, _)| d.is_none())).and_then(|(_, b)| cfg.bidx(*b));
     // the first symbol builder reachable from that block.
     let mut seen = vec![false; cfg.blocks.len()];
     let mut work = vec![target?];
@@ -5887,7 +6639,7 @@ fn main() {
                 .map(|s| !s.is_empty() && s != "void")
                 .unwrap_or(false);
             let auth = entry_auth(f);
-            let inv = has_product_invariant_trap(f);
+            let inv = has_product_invariant_trap(f, &module);
             let (rb, gset) = with_entry(f, || {
                 let rb = rich_body(f, &module);
                 let gs = entry_guards(f, &module);
@@ -6063,6 +6815,33 @@ fn print_report(fname: &str, s: &Sink, r: &Report) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The raw-U32Val and obj_cmp rewrites agree with the comparison they replace.
+    #[test]
+    fn raw_u32_and_cmp_rewrites_are_exact() {
+        let len = Expr::Opaque("@len".into(), vec![Expr::Param(0)]);
+        let rels = ["<", "≤", ">", "≥"];
+        let holds = |x: i128, r: &str, y: i128| match r { "<" => x < y, "≤" => x <= y, ">" => x > y, "≥" => x >= y, "=" => x == y, _ => x != y };
+        for c in [0i64, 3, 4, 5, 1 << 32, (1 << 32) + 3, (1 << 32) + 4, (1 << 32) + 5, (11 << 32) - 1, 11 << 32, 81604378623] {
+            for r in rels {
+                let (_, r2, k) = raw_small_cmp(&len, r, &Expr::Const(c), &vec![]).expect("rewritten");
+                for v in 0i128..40 {
+                    let raw = v * (1 << 32) + 4;
+                    assert_eq!(holds(raw, r, c as i128), holds(v, r2, k as i128), "raw {r} {c} vs v {r2} {k} at v={v}");
+                }
+            }
+        }
+        let cmp = Expr::Opaque("@cmp".into(), vec![Expr::Param(0), Expr::Param(1)]);
+        for k in -2i64..=2 {
+            for r in ["<", "≤", ">", "≥", "=", "≠"] {
+                if let Some((_, r2, _)) = cmp_rel(&cmp, r, &Expr::Const(k)) {
+                    for o in -1i128..=1 {
+                        assert_eq!(holds(o, r, k as i128), holds(o, r2, 0), "cmp {r} {k} vs a {r2} b at {o}");
+                    }
+                }
+            }
+        }
+    }
 
     fn with<'c>(ctx: &'c Context, ir: &str) -> inkwell::module::Module<'c> {
         let buf = MemoryBuffer::create_from_memory_range_copy(ir.as_bytes(), "t");

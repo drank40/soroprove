@@ -14,10 +14,19 @@
 -- Values are rebuilt through i128 helper routines (__muloti4 / __divti3), out-
 -- pointer returns and by-reference closure captures on the wasm shadow stack.
 --
--- STILL `opaque`: values from loops (e.g. an integer sqrt), composite keys,
--- tuple returns, and whatever the reconstruction could not resolve.
+-- Storage keys: `.var` (unit variant), `.entry` / `.tup` (variants with one /
+-- several fields), `.fld k f` (field f of the #[contracttype] struct stored at
+-- k, nested structs field by field) and `.has k` (k's presence: set → 1,
+-- remove → 0). Struct arguments' fields are args named `config.limit`.
+--
+-- STILL `opaque`: values from loops (e.g. an integer sqrt), tuple and whole-
+-- struct returns, enum values carried as data, and whatever the
+-- reconstruction could not resolve (a branch condition so becomes an opaque
+-- `Step → Bool`, never `False`).
 -- ASSUMES token ledgers are keyed by the storage slot holding the token
--- address (`"TokenA"`), i.e. distinct slots hold distinct tokens.
+-- address (`"TokenA"`, `"Offer.buy_token"`), i.e. distinct slots hold
+-- distinct tokens; an absent key reads as 0 (`get(k).unwrap_or(0)`); the
+-- host's address order (`obj_cmp`) is the order on `Addr`; loops terminate.
 -- Reads/writes inside one helper call are ordered at the call's position.
 
 namespace Contract
@@ -27,6 +36,9 @@ abbrev Addr := Int
 inductive Key where
   | var   (name : String)
   | entry (map : String) (k : Addr)
+  | tup   (map : String) (ks : List Int)   -- a multi-field key variant, `Minter(a, b)`
+  | fld   (base : Key) (f : String)   -- a field of the #[contracttype] struct at `base`
+  | has   (k : Key)                   -- k's presence (1 = set): `has(k)`, written by set/remove
   deriving DecidableEq, Inhabited
 
 abbrev Storage := Key → Int
@@ -38,6 +50,7 @@ structure Call where
   arg    : String → Int   -- numeric args by name
   argA   : String → Addr  -- address args by name
   signed : Addr → Prop    -- addresses that authorized the call (require_auth)
+  env    : String → Int   -- ledger info (`sequence`, `timestamp`)
 
 structure Step where
   call   : Call
@@ -53,99 +66,98 @@ opaque pool : Addr
 def bal (m : String) (s : Storage) (a : Addr) : Int := s (.entry m a)
 /-- storage after token `m` moves `amt` from `src` to `dst`. -/
 def xfer (m : String) (s : Storage) (src dst : Addr) (amt : Int) : Storage :=
-  (s.set (.entry m src) (bal m s src - amt)).set (.entry m dst) (bal m s dst + amt)
+  let s1 := s.set (.entry m src) (bal m s src - amt)   -- (a self-transfer nets to zero)
+  s1.set (.entry m dst) (bal m s1 dst + amt)
 
 /-- `create(seller: Address, sell_token: Address, buy_token: Address, sell_price: u32, buy_price: u32)`
     effects (reconstructed, in program order):
-      write storage.Offer/54 := map_map_new_from_linear_memory
+      write storage.Offer/54 := @struct:buy_price,buy_token,sell_price,sell_token,seller(buy_price, buy_token, sell_price, sell_token, seller)
     guards (recovered panic/gate conditions):
       auth: caller signed as `seller` (require_auth)
-      gate: buy_price ≥ 4294967296
-      gate: sell_price ≥ 4294967296
+      gate: buy_price ≥ 1
+      gate: sell_price ≥ 1
+      gate: @has(storage.Offer/27) ≠ 1
 -/
-opaque create_e_g1 : Step → Int
 def create : Step → Prop := fun st =>
   let c := st.call.caller
-  let s1 := (st.pre).set (.var "Offer") ((create_e_g1 st))
+  let s1 := ((((((st.pre).set (.fld (.var "Offer") "buy_price") (st.call.arg "buy_price")).set (.fld (.var "Offer") "buy_token") (st.call.argA "buy_token")).set (.fld (.var "Offer") "sell_price") (st.call.arg "sell_price")).set (.fld (.var "Offer") "sell_token") (st.call.argA "sell_token")).set (.fld (.var "Offer") "seller") (st.call.argA "seller")).set (.has (.var "Offer")) (1)
   st.call.fn = "create" ∧
   c ≠ pool ∧
   c = st.call.argA "seller" ∧   -- require_auth
-  st.call.arg "buy_price" ≥ 4294967296 ∧   -- gate
-  st.call.arg "sell_price" ≥ 4294967296 ∧   -- gate
+  st.call.arg "buy_price" ≥ 1 ∧   -- gate
+  st.call.arg "sell_price" ≥ 1 ∧   -- gate
+  (st.pre (.has (.var "Offer"))) ≠ 1 ∧   -- gate
   st.post = s1 ∧
-  st.writes = [.var "Offer"] ∧
+  st.writes = [.fld (.var "Offer") "buy_price", .fld (.var "Offer") "buy_token", .fld (.var "Offer") "sell_price", .fld (.var "Offer") "sell_token", .fld (.var "Offer") "seller", .has (.var "Offer")] ∧
   st.ret = 0
 
 /-- `get_offer()`
-    transfers: (none recovered)
+    effects (reconstructed, in program order):
 -/
-opaque get_offer_ret : Step → Int
+opaque get_offer_e_g1 : Step → Int
 def get_offer : Step → Prop := fun st =>
   let c := st.call.caller
   st.call.fn = "get_offer" ∧
   c ≠ pool ∧
   st.post = st.pre ∧
   st.writes = [] ∧
-  st.ret = get_offer_ret st
+  st.ret = (get_offer_e_g1 st)
 
 /-- `trade(buyer: Address, buy_token_amount: i128, min_sell_token_amount: i128)`
     effects (reconstructed, in program order):
-      transfer (toString (st.call.argA "min_sell_token_amount")): buyer -> @pool : buy_token_amount
-      transfer "Token?1" = Load: @pool -> buyer : Select(ICmp_SGT(Select(Or(ICmp_EQ(buy_token_amount, 0), ICmp_EQ(min_sell_token_amount, 0)), 0, Select(ICmp_SGT(buy_token_amount, -1), Select(ICmp_EQ(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (ICmp_NE(buy_token_amount, 0) - buy_token_amount)), 0), LShr((LShr(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (0 - buy_token_amount)), 32) * min_sell_token_amount), 32), (LShr((LShr(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (0 - buy_token_amount)), 32) * min_sell_token_amount), 32) + (Shl((LShr(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (ICmp_NE(buy_token_amount, 0) - buy_token_amount)), 32) * min_sell_token_amount), 32) + (And(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (ICmp_NE(buy_token_amount, 0) - buy_token_amount)), 4294967295) * min_sell_token_amount)))), (ICmp_NE((Shl((LShr(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (0 - buy_token_amount)), 32) * min_sell_token_amount), 32) + (And(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (0 - buy_token_amount)), 4294967295) * min_sell_token_amount)), 0) - Select(ICmp_EQ(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (ICmp_NE(buy_token_amount, 0) - buy_token_amount)), 0), LShr((LShr(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (0 - buy_token_amount)), 32) * min_sell_token_amount), 32), (LShr((LShr(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (0 - buy_token_amount)), 32) * min_sell_token_amount), 32) + (Shl((LShr(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (ICmp_NE(buy_token_amount, 0) - buy_token_amount)), 32) * min_sell_token_amount), 32) + (And(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (ICmp_NE(buy_token_amount, 0) - buy_token_amount)), 4294967295) * min_sell_token_amount))))))), -1), big, (0 - big))
-      transfer (toString (st.call.argA "min_sell_token_amount")): @pool -> 0 : buy_token_amount
+      transfer "Offer.buy_token": buyer -> @pool : buy_token_amount
+      transfer "Offer.sell_token": @pool -> buyer : big
+      transfer "Offer.buy_token": @pool -> @field:seller(storage.Offer/46) : buy_token_amount
     guards (recovered panic/gate conditions):
       auth: caller signed as `buyer` (require_auth)
-      gate: min_sell_token_amount ≤ Select(ICmp_SGT(Select(Or(ICmp_EQ(buy_token_amount, 0), ICmp_EQ(min_sell_token_amount, 0)), 0, Select(ICmp_SGT(buy_token_amount, -1), Select(ICmp_EQ(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (ICmp_NE(buy_token_amount, 0) - buy_token_amount)), 0), LShr((LShr(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (0 - buy_token_amount)), 32) * min_sell_token_amount), 32), (LShr((LShr(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (0 - buy_token_amount)), 32) * min_sell_token_amount), 32) + (Shl((LShr(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (ICmp_NE(buy_token_amount, 0) - buy_token_amount)), 32) * min_sell_token_amount), 32) + (And(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (ICmp_NE(buy_token_amount, 0) - buy_token_amount)), 4294967295) * min_sell_token_amount)))), (ICmp_NE((Shl((LShr(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (0 - buy_token_amount)), 32) * min_sell_token_amount), 32) + (And(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (0 - buy_token_amount)), 4294967295) * min_sell_token_amount)), 0) - Select(ICmp_EQ(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (ICmp_NE(buy_token_amount, 0) - buy_token_amount)), 0), LShr((LShr(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (0 - buy_token_amount)), 32) * min_sell_token_amount), 32), (LShr((LShr(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (0 - buy_token_amount)), 32) * min_sell_token_amount), 32) + (Shl((LShr(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (ICmp_NE(buy_token_amount, 0) - buy_token_amount)), 32) * min_sell_token_amount), 32) + (And(Select(ICmp_SGT(buy_token_amount, -1), buy_token_amount, (ICmp_NE(buy_token_amount, 0) - buy_token_amount)), 4294967295) * min_sell_token_amount))))))), -1), big, (0 - big))
+      gate: min_sell_token_amount ≤ big
 -/
 opaque trade_e_g1 : Step → Int
-opaque trade_e_g2 : Step → Int
-opaque trade_e_g3 : Step → Int
 opaque trade_g1 : Step → Int
-opaque trade_g2 : Step → Int
-opaque trade_g3 : Step → Int
 def trade : Step → Prop := fun st =>
   let c := st.call.caller
-  let s1 := xfer (toString (st.call.argA "min_sell_token_amount")) st.pre (st.call.argA "buyer") (pool) (st.call.arg "buy_token_amount")
-  let s2 := xfer "Token?1" s1 (pool) (st.call.argA "buyer") ((if (trade_e_g1 st) > -1 then (trade_e_g2 st) else (0 - (trade_e_g3 st))))
-  let s3 := xfer (toString (st.call.argA "min_sell_token_amount")) s2 (pool) (0) (st.call.arg "buy_token_amount")
+  let s1 := xfer "Offer.buy_token" st.pre (st.call.argA "buyer") (pool) (st.call.arg "buy_token_amount")
+  let s2 := xfer "Offer.sell_token" s1 (pool) (st.call.argA "buyer") ((trade_e_g1 st))
+  let s3 := xfer "Offer.buy_token" s2 (pool) ((st.pre (.fld (.var "Offer") "seller"))) (st.call.arg "buy_token_amount")
   st.call.fn = "trade" ∧
   c ≠ pool ∧
   c = st.call.argA "buyer" ∧   -- require_auth
-  st.call.arg "min_sell_token_amount" ≤ (if (trade_g1 st) > -1 then (trade_g2 st) else (0 - (trade_g3 st))) ∧   -- gate
+  st.call.arg "min_sell_token_amount" ≤ (trade_g1 st) ∧   -- gate
   st.post = s3 ∧
-  st.writes = [.entry (toString (st.call.argA "min_sell_token_amount")) (st.call.argA "buyer"), .entry (toString (st.call.argA "min_sell_token_amount")) (pool), .entry "Token?1" (pool), .entry "Token?1" (st.call.argA "buyer"), .entry (toString (st.call.argA "min_sell_token_amount")) (0)] ∧
+  st.writes = [.entry "Offer.buy_token" (st.call.argA "buyer"), .entry "Offer.buy_token" (pool), .entry "Offer.sell_token" (pool), .entry "Offer.sell_token" (st.call.argA "buyer"), .entry "Offer.buy_token" ((st.pre (.fld (.var "Offer") "seller")))] ∧
   st.ret = 0
 
 /-- `updt_price(sell_price: u32, buy_price: u32)`
     effects (reconstructed, in program order):
-      write storage.Offer/32 := map_map_new_from_linear_memory
+      write storage.Offer/30 := @struct:buy_price,buy_token,sell_price,sell_token,seller(buy_price, @field:buy_token(storage.Offer/20), sell_price, @field:sell_token(storage.Offer/20), @field:seller(storage.Offer/20))
     guards (recovered panic/gate conditions):
-      gate: sell_price ≥ 4294967296
-      gate: buy_price ≥ 4294967296
+      gate: sell_price ≥ 1
+      gate: buy_price ≥ 1
 -/
-opaque updt_price_e_g1 : Step → Int
 def updt_price : Step → Prop := fun st =>
   let c := st.call.caller
-  let s1 := (st.pre).set (.var "Offer") ((updt_price_e_g1 st))
+  let s1 := ((((((st.pre).set (.fld (.var "Offer") "buy_price") (st.call.arg "buy_price")).set (.fld (.var "Offer") "buy_token") ((st.pre (.fld (.var "Offer") "buy_token")))).set (.fld (.var "Offer") "sell_price") (st.call.arg "sell_price")).set (.fld (.var "Offer") "sell_token") ((st.pre (.fld (.var "Offer") "sell_token")))).set (.fld (.var "Offer") "seller") ((st.pre (.fld (.var "Offer") "seller")))).set (.has (.var "Offer")) (1)
   st.call.fn = "updt_price" ∧
   c ≠ pool ∧
-  st.call.arg "sell_price" ≥ 4294967296 ∧   -- gate
-  st.call.arg "buy_price" ≥ 4294967296 ∧   -- gate
+  st.call.signed (st.pre (.fld (.var "Offer") "seller")) ∧   -- require_auth
+  st.call.arg "sell_price" ≥ 1 ∧   -- gate
+  st.call.arg "buy_price" ≥ 1 ∧   -- gate
   st.post = s1 ∧
-  st.writes = [.var "Offer"] ∧
+  st.writes = [.fld (.var "Offer") "buy_price", .fld (.var "Offer") "buy_token", .fld (.var "Offer") "sell_price", .fld (.var "Offer") "sell_token", .fld (.var "Offer") "seller", .has (.var "Offer")] ∧
   st.ret = 0
 
 /-- `withdraw(token: Address, amount: i128)`
     effects (reconstructed, in program order):
-      transfer (toString (st.call.argA "token")): @pool -> 0 : amount
+      transfer (toString (st.call.argA "token")): @pool -> @field:seller(storage.Offer/27) : amount
 -/
 def withdraw : Step → Prop := fun st =>
   let c := st.call.caller
-  let s1 := xfer (toString (st.call.argA "token")) st.pre (pool) (0) (st.call.arg "amount")
+  let s1 := xfer (toString (st.call.argA "token")) st.pre (pool) ((st.pre (.fld (.var "Offer") "seller"))) (st.call.arg "amount")
   st.call.fn = "withdraw" ∧
   c ≠ pool ∧
+  st.call.signed (st.pre (.fld (.var "Offer") "seller")) ∧   -- require_auth
   st.post = s1 ∧
-  st.writes = [.entry (toString (st.call.argA "token")) (pool), .entry (toString (st.call.argA "token")) (0)] ∧
+  st.writes = [.entry (toString (st.call.argA "token")) (pool), .entry (toString (st.call.argA "token")) ((st.pre (.fld (.var "Offer") "seller")))] ∧
   st.ret = 0
 
 /-- the contract's entry points (each a `Step → Prop`). -/

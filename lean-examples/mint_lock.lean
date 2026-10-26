@@ -14,10 +14,19 @@
 -- Values are rebuilt through i128 helper routines (__muloti4 / __divti3), out-
 -- pointer returns and by-reference closure captures on the wasm shadow stack.
 --
--- STILL `opaque`: values from loops (e.g. an integer sqrt), composite keys,
--- tuple returns, and whatever the reconstruction could not resolve.
+-- Storage keys: `.var` (unit variant), `.entry` / `.tup` (variants with one /
+-- several fields), `.fld k f` (field f of the #[contracttype] struct stored at
+-- k, nested structs field by field) and `.has k` (k's presence: set → 1,
+-- remove → 0). Struct arguments' fields are args named `config.limit`.
+--
+-- STILL `opaque`: values from loops (e.g. an integer sqrt), tuple and whole-
+-- struct returns, enum values carried as data, and whatever the
+-- reconstruction could not resolve (a branch condition so becomes an opaque
+-- `Step → Bool`, never `False`).
 -- ASSUMES token ledgers are keyed by the storage slot holding the token
--- address (`"TokenA"`), i.e. distinct slots hold distinct tokens.
+-- address (`"TokenA"`, `"Offer.buy_token"`), i.e. distinct slots hold
+-- distinct tokens; an absent key reads as 0 (`get(k).unwrap_or(0)`); the
+-- host's address order (`obj_cmp`) is the order on `Addr`; loops terminate.
 -- Reads/writes inside one helper call are ordered at the call's position.
 
 namespace Contract
@@ -27,6 +36,9 @@ abbrev Addr := Int
 inductive Key where
   | var   (name : String)
   | entry (map : String) (k : Addr)
+  | tup   (map : String) (ks : List Int)   -- a multi-field key variant, `Minter(a, b)`
+  | fld   (base : Key) (f : String)   -- a field of the #[contracttype] struct at `base`
+  | has   (k : Key)                   -- k's presence (1 = set): `has(k)`, written by set/remove
   deriving DecidableEq, Inhabited
 
 abbrev Storage := Key → Int
@@ -38,6 +50,7 @@ structure Call where
   arg    : String → Int   -- numeric args by name
   argA   : String → Addr  -- address args by name
   signed : Addr → Prop    -- addresses that authorized the call (require_auth)
+  env    : String → Int   -- ledger info (`sequence`, `timestamp`)
 
 structure Step where
   call   : Call
@@ -53,107 +66,88 @@ opaque pool : Addr
 def bal (m : String) (s : Storage) (a : Addr) : Int := s (.entry m a)
 /-- storage after token `m` moves `amt` from `src` to `dst`. -/
 def xfer (m : String) (s : Storage) (src dst : Addr) (amt : Int) : Storage :=
-  (s.set (.entry m src) (bal m s src - amt)).set (.entry m dst) (bal m s dst + amt)
+  let s1 := s.set (.entry m src) (bal m s src - amt)   -- (a self-transfer nets to zero)
+  s1.set (.entry m dst) (bal m s1 dst + amt)
 
 /-- `__constructor(admin: Address)`
     effects (reconstructed, in program order):
-      write @slot:instance(@key(?, ?, @kb:f17), @at(10)) := admin
+      write storage.Admin/9 := admin
 -/
-opaque __constructor_e_k1 : Step → Key
 def __constructor : Step → Prop := fun st =>
   let c := st.call.caller
-  let s1 := (st.pre).set ((__constructor_e_k1 st)) (st.call.argA "admin")
+  let s1 := ((st.pre).set (.var "Admin") (st.call.argA "admin")).set (.has (.var "Admin")) (1)
   st.call.fn = "__constructor" ∧
   c ≠ pool ∧
   st.post = s1 ∧
-  st.writes = [(__constructor_e_k1 st)] ∧
+  st.writes = [.var "Admin", .has (.var "Admin")] ∧
   st.ret = 0
 
 /-- `admin()`
-    transfers: (none recovered)
+    effects (reconstructed, in program order):
 -/
-opaque admin_ret : Step → Int
 def admin : Step → Prop := fun st =>
   let c := st.call.caller
   st.call.fn = "admin" ∧
   c ≠ pool ∧
   st.post = st.pre ∧
   st.writes = [] ∧
-  st.ret = admin_ret st
+  st.ret = (st.pre (.var "Admin"))
 
 /-- `mint(contract: Address, minter: Address, to: Address, amount: i128)`
     effects (reconstructed, in program order):
-      write @map:MinterStats((LShr(context_get_ledger_sequence, 32) / Load), @at(167)) [when ¬(st.call.arg "amount" < 0) ∧ ¬((mint_e_g1 st) = 0) ∧ ¬((mint_e_g2 st) = 0) ∧ ¬(((if (mint_e_g3 st) = 0 then 0 else (mint_e_g4 st)) + st.call.arg "amount") > (mint_e_g5 st))] := map_map_new_from_linear_memory
+      write @tup:MinterStats(@ks(contract, minter, @field:epoch_length(@tup:Minter(@ks(contract, minter), @at(77))), (@env:sequence / @field:epoch_length(@tup:Minter(@ks(contract, minter), @at(77))))), @at(133)) [when ¬(st.call.arg "amount" < 0) ∧ ¬((st.pre (.var "Admin")) = st.call.argA "minter") ∧ ¬(¬((st.pre (.has (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]))) = 1)) ∧ ¬(((st.pre (.fld (.tup "MinterStats" [st.call.argA "contract", st.call.argA "minter", (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")), (Int.tdiv (st.call.env "sequence") (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")))]) "consumed_limit")) + st.call.arg "amount") > (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "limit")))] := @struct:consumed_limit((@field:consumed_limit(@tup:MinterStats(@ks(contract, minter, @field:epoch_length(@tup:Minter(@ks(contract, minter), @at(77))), (@env:sequence / @field:epoch_length(@tup:Minter(@ks(contract, minter), @at(77))))), @at(100))) + amount))
     guards (recovered panic/gate conditions):
       auth: caller signed as `minter` (require_auth)
 -/
-opaque mint_e_g1 : Step → Int
-opaque mint_e_g2 : Step → Int
-opaque mint_e_g3 : Step → Int
-opaque mint_e_g4 : Step → Int
-opaque mint_e_g5 : Step → Int
-opaque mint_e_g6 : Step → Int
-opaque mint_e_g7 : Step → Int
-opaque mint_e_g8 : Step → Int
-opaque mint_e_g9 : Step → Int
-opaque mint_e_g10 : Step → Int
-opaque mint_e_g11 : Step → Int
-opaque mint_e_g12 : Step → Int
-opaque mint_e_g13 : Step → Int
-opaque mint_e_g14 : Step → Int
-opaque mint_e_g15 : Step → Int
-opaque mint_e_g16 : Step → Int
-opaque mint_e_g17 : Step → Int
-opaque mint_e_g18 : Step → Int
 def mint : Step → Prop := fun st =>
   let c := st.call.caller
-  let s1 := if ¬(st.call.arg "amount" < 0) ∧ ¬((mint_e_g1 st) = 0) ∧ ¬((mint_e_g2 st) = 0) ∧ ¬(((if (mint_e_g3 st) = 0 then 0 else (mint_e_g4 st)) + st.call.arg "amount") > (mint_e_g5 st)) then (st.pre).set (.entry "MinterStats" ((Int.tdiv (mint_e_g6 st) (mint_e_g7 st)))) ((mint_e_g8 st)) else st.pre
+  let s1 := if ¬(st.call.arg "amount" < 0) ∧ ¬((st.pre (.var "Admin")) = st.call.argA "minter") ∧ ¬(¬((st.pre (.has (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]))) = 1)) ∧ ¬(((st.pre (.fld (.tup "MinterStats" [st.call.argA "contract", st.call.argA "minter", (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")), (Int.tdiv (st.call.env "sequence") (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")))]) "consumed_limit")) + st.call.arg "amount") > (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "limit"))) then ((st.pre).set (.fld (.tup "MinterStats" [st.call.argA "contract", st.call.argA "minter", (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")), (Int.tdiv (st.call.env "sequence") (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")))]) "consumed_limit") (((st.pre (.fld (.tup "MinterStats" [st.call.argA "contract", st.call.argA "minter", (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")), (Int.tdiv (st.call.env "sequence") (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")))]) "consumed_limit")) + st.call.arg "amount"))).set (.has (.tup "MinterStats" [st.call.argA "contract", st.call.argA "minter", (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")), (Int.tdiv (st.call.env "sequence") (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")))])) (1) else st.pre
   st.call.fn = "mint" ∧
   c ≠ pool ∧
   c = st.call.argA "minter" ∧   -- require_auth
-  ((¬(st.call.arg "amount" < 0)) ∧ (¬((mint_e_g9 st) = 0)) ∧ (¬(((if (mint_e_g10 st) = 0 then 0 else (mint_e_g11 st)) + st.call.arg "amount") > (mint_e_g12 st)))) ∧   -- returns Ok (an Err return fails the call)
+  (((¬(st.call.arg "amount" < 0)) ∧ ((st.pre (.var "Admin")) = st.call.argA "minter")) ∨ ((¬(st.call.arg "amount" < 0)) ∧ (¬((st.pre (.var "Admin")) = st.call.argA "minter")) ∧ (¬(¬((st.pre (.has (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]))) = 1))) ∧ (¬(((st.pre (.fld (.tup "MinterStats" [st.call.argA "contract", st.call.argA "minter", (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")), (Int.tdiv (st.call.env "sequence") (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")))]) "consumed_limit")) + st.call.arg "amount") > (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "limit")))))) ∧   -- returns Ok (an Err return fails the call)
   st.post = s1 ∧
-  st.writes = [.entry "MinterStats" ((Int.tdiv (mint_e_g6 st) (mint_e_g7 st)))] ∧
-  st.ret = (if (¬(st.call.arg "amount" < 0)) ∧ (¬((mint_e_g13 st) = 0)) ∧ (¬(((if (mint_e_g14 st) = 0 then 0 else (mint_e_g15 st)) + st.call.arg "amount") > (mint_e_g16 st))) then 2 else (if st.call.arg "amount" < 0 then 12884901891 else (if (¬(st.call.arg "amount" < 0)) ∧ (¬((mint_e_g17 st) = 0)) ∧ ((mint_e_g18 st) = 0) then 4294967299 else 8589934595)))
+  st.writes = [.fld (.tup "MinterStats" [st.call.argA "contract", st.call.argA "minter", (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")), (Int.tdiv (st.call.env "sequence") (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")))]) "consumed_limit", .has (.tup "MinterStats" [st.call.argA "contract", st.call.argA "minter", (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")), (Int.tdiv (st.call.env "sequence") (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")))])] ∧
+  st.ret = (if ((¬(st.call.arg "amount" < 0)) ∧ ((st.pre (.var "Admin")) = st.call.argA "minter")) ∨ ((¬(st.call.arg "amount" < 0)) ∧ (¬((st.pre (.var "Admin")) = st.call.argA "minter")) ∧ (¬(¬((st.pre (.has (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]))) = 1))) ∧ (¬(((st.pre (.fld (.tup "MinterStats" [st.call.argA "contract", st.call.argA "minter", (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")), (Int.tdiv (st.call.env "sequence") (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length")))]) "consumed_limit")) + st.call.arg "amount") > (st.pre (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "limit"))))) then 2 else (if st.call.arg "amount" < 0 then 12884901891 else (if ((¬(st.call.arg "amount" < 0)) ∧ (¬((st.pre (.var "Admin")) = st.call.argA "minter"))) ∧ (¬((st.pre (.has (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]))) = 1)) then 4294967299 else 8589934595)))
 
 /-- `minter(contract: Address, minter: Address)`
-    transfers: (none recovered)
+    effects (reconstructed, in program order):
 -/
-opaque minter_ret : Step → Int
+opaque minter_e_g1 : Step → Int
 def minter : Step → Prop := fun st =>
   let c := st.call.caller
   st.call.fn = "minter" ∧
   c ≠ pool ∧
   st.post = st.pre ∧
   st.writes = [] ∧
-  st.ret = minter_ret st
+  st.ret = (if ¬(¬((st.pre (.has (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]))) = 1)) then (minter_e_g1 st) else 4294967299)
 
 /-- `set_admin(new_admin: Address)`
     effects (reconstructed, in program order):
-      write @slot:instance(@key(?, ?, @kb:f17), @at(13)) := new_admin
+      write storage.Admin/12 := new_admin
 -/
-opaque set_admin_e_k1 : Step → Key
 def set_admin : Step → Prop := fun st =>
   let c := st.call.caller
-  let s1 := (st.pre).set ((set_admin_e_k1 st)) (st.call.argA "new_admin")
+  let s1 := ((st.pre).set (.var "Admin") (st.call.argA "new_admin")).set (.has (.var "Admin")) (1)
   st.call.fn = "set_admin" ∧
   c ≠ pool ∧
+  st.call.signed (st.pre (.var "Admin")) ∧   -- require_auth
   st.post = s1 ∧
-  st.writes = [(set_admin_e_k1 st)] ∧
+  st.writes = [.var "Admin", .has (.var "Admin")] ∧
   st.ret = 0
 
 /-- `set_minter(contract: Address, minter: Address, config: MinterConfig)`
     effects (reconstructed, in program order):
-      write @map:Minter(contract, @at(46)) := map_map_new_from_linear_memory
+      write @tup:Minter(@ks(contract, minter), @at(44)) := @struct:epoch_length,limit(@field:epoch_length(config), @field:limit(config))
 -/
-opaque set_minter_e_g1 : Step → Int
 def set_minter : Step → Prop := fun st =>
   let c := st.call.caller
-  let s1 := (st.pre).set (.entry "Minter" (st.call.argA "contract")) ((set_minter_e_g1 st))
+  let s1 := (((st.pre).set (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length") (st.call.arg "config.epoch_length")).set (.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "limit") (st.call.arg "config.limit")).set (.has (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"])) (1)
   st.call.fn = "set_minter" ∧
   c ≠ pool ∧
+  st.call.signed (st.pre (.var "Admin")) ∧   -- require_auth
   st.post = s1 ∧
-  st.writes = [.entry "Minter" (st.call.argA "contract")] ∧
+  st.writes = [.fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "epoch_length", .fld (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"]) "limit", .has (.tup "Minter" [st.call.argA "contract", st.call.argA "minter"])] ∧
   st.ret = 0
 
 /-- the contract's entry points (each a `Step → Prop`). -/

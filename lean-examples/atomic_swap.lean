@@ -14,10 +14,19 @@
 -- Values are rebuilt through i128 helper routines (__muloti4 / __divti3), out-
 -- pointer returns and by-reference closure captures on the wasm shadow stack.
 --
--- STILL `opaque`: values from loops (e.g. an integer sqrt), composite keys,
--- tuple returns, and whatever the reconstruction could not resolve.
+-- Storage keys: `.var` (unit variant), `.entry` / `.tup` (variants with one /
+-- several fields), `.fld k f` (field f of the #[contracttype] struct stored at
+-- k, nested structs field by field) and `.has k` (k's presence: set → 1,
+-- remove → 0). Struct arguments' fields are args named `config.limit`.
+--
+-- STILL `opaque`: values from loops (e.g. an integer sqrt), tuple and whole-
+-- struct returns, enum values carried as data, and whatever the
+-- reconstruction could not resolve (a branch condition so becomes an opaque
+-- `Step → Bool`, never `False`).
 -- ASSUMES token ledgers are keyed by the storage slot holding the token
--- address (`"TokenA"`), i.e. distinct slots hold distinct tokens.
+-- address (`"TokenA"`, `"Offer.buy_token"`), i.e. distinct slots hold
+-- distinct tokens; an absent key reads as 0 (`get(k).unwrap_or(0)`); the
+-- host's address order (`obj_cmp`) is the order on `Addr`; loops terminate.
 -- Reads/writes inside one helper call are ordered at the call's position.
 
 namespace Contract
@@ -27,6 +36,9 @@ abbrev Addr := Int
 inductive Key where
   | var   (name : String)
   | entry (map : String) (k : Addr)
+  | tup   (map : String) (ks : List Int)   -- a multi-field key variant, `Minter(a, b)`
+  | fld   (base : Key) (f : String)   -- a field of the #[contracttype] struct at `base`
+  | has   (k : Key)                   -- k's presence (1 = set): `has(k)`, written by set/remove
   deriving DecidableEq, Inhabited
 
 abbrev Storage := Key → Int
@@ -38,6 +50,7 @@ structure Call where
   arg    : String → Int   -- numeric args by name
   argA   : String → Addr  -- address args by name
   signed : Addr → Prop    -- addresses that authorized the call (require_auth)
+  env    : String → Int   -- ledger info (`sequence`, `timestamp`)
 
 structure Step where
   call   : Call
@@ -53,7 +66,8 @@ opaque pool : Addr
 def bal (m : String) (s : Storage) (a : Addr) : Int := s (.entry m a)
 /-- storage after token `m` moves `amt` from `src` to `dst`. -/
 def xfer (m : String) (s : Storage) (src dst : Addr) (amt : Int) : Storage :=
-  (s.set (.entry m src) (bal m s src - amt)).set (.entry m dst) (bal m s dst + amt)
+  let s1 := s.set (.entry m src) (bal m s src - amt)   -- (a self-transfer nets to zero)
+  s1.set (.entry m dst) (bal m s1 dst + amt)
 
 /-- `swap(a: Address, b: Address, token_a: Address, token_b: Address, amount_a: i128, min_b_for_a: i128, amount_b: i128, min_a_for_b: i128)`
     effects (reconstructed, in program order):
