@@ -115,7 +115,9 @@ def main():
     V["contracts"][a.key] = C
     # Keep the file's layout: rewrite only this contract's entry.
     blob = json.dumps(C, ensure_ascii=False)
-    pat = re.compile(rf'\n    "{re.escape(a.key)}": \{{.*?\n    \}}(?=,\n    "|\n  \}}\n\}};)', re.S)
+    # The entry ends at the first `}` followed by the next entry or the end of the file
+    # (one line when this script wrote it, several when written by hand).
+    pat = re.compile(rf'\n    "{re.escape(a.key)}": \{{.*?\}}(?=,\n    "|\n  \}}\n\}};)', re.S)
     entry = f'\n    "{a.key}": {blob}'
     if pat.search(text):
         text = pat.sub(lambda _: entry, text)
