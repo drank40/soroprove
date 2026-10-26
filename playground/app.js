@@ -134,6 +134,8 @@
 
   function starter() {
     const S = specs(), C0 = C();
+    if (!C0.examples.length)
+      return { blocks: { languageVersion: 0, blocks: [{ type: `${contract}.theorem`, x: 40, y: 40, fields: { NAME: 'my_question' } }] } };
     const b = L.parseTheorem(S, contract, C0, C0.examples[0]);
     return { blocks: { languageVersion: 0, blocks: [{ ...b, x: 40, y: 40 }] } };
   }
@@ -357,7 +359,7 @@
     // Theorems proved "by vibe" go to the agent; the Vibe tab follows them live.
     const vibes = complete.filter((t) => t.tactic === 'vibe');
     const ready = complete.filter((t) => t.tactic !== 'vibe');
-    for (const t of vibes) Vibe.start({ ...t, plainStmt: L.plain(t.stmt) });
+    for (const t of vibes) Vibe.start({ ...t, plainStmt: L.plain(t.stmt), plainPred: t.pred && L.plain(t.pred) });
     const rows = current.filter((t) => t.problems.length).map((t) => ({ t, r: { status: 'incomplete', messages: [...new Set(t.problems)] } }));
     if (vibes.length && !ready.length && !rows.length) { showTab('vibe'); return; }
     showTab('results');
@@ -405,24 +407,26 @@
   const unb64 = (s) => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)));
 
   function permalink() {
-    const text = current.filter((t) => !t.problems.length)
-      .map((t) => `${t.name} : ${t.target} ⊨ ${L.plain(t.stmt)} := by ${t.tactic}`).join('\n');
-    return `${location.origin}${location.pathname}#${new URLSearchParams({ c: contract, t: b64(text) })}`;
+    const tops = (Blockly.serialization.workspaces.save(ws).blocks?.blocks || []).map(({ x, y, ...b }) => b);
+    return `${location.origin}${location.pathname}#${new URLSearchParams({ c: contract, w: b64(JSON.stringify(tops)) })}`;
   }
 
   /** Open the theorems of a permalink; the workspace they replace is kept as a backup. */
   function openPermalink() {
     const h = new URLSearchParams(location.hash.slice(1));
-    if (!h.get('c') || !h.get('t') || !V.contracts[h.get('c')]) return false;
-    let lines;
-    try { lines = unb64(h.get('t')).split('\n').filter((l) => l.trim()); } catch { return false; }
+    if (!h.get('c') || !(h.get('t') || h.get('w')) || !V.contracts[h.get('c')]) return false;
+    let lines = [], tops = null;
+    try {
+      if (h.get('w')) tops = JSON.parse(unb64(h.get('w')));
+      else lines = unb64(h.get('t')).split('\n').filter((l) => l.trim());
+    } catch { return false; }
     if (contract !== h.get('c')) {
       contract = h.get('c'); sel.value = contract; store.set('pg.contract', contract);
       ws.updateToolbox(toolbox()); $('#source').textContent = C().source;
     }
     const prev = store.get(key(), null);
     if (prev) store.set(`${key()}.backup`, prev);
-    const blocks = [];
+    const blocks = tops ? tops.map((b, i) => ({ ...b, x: 40, y: 40 + 200 * i })) : [];
     lines.forEach((l, i) => {
       try { blocks.push({ ...L.parseTheorem(specs(), contract, C(), l), x: 40, y: 40 + 170 * i }); }
       catch (e) { console.warn('permalink', l, e); }

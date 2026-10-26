@@ -100,6 +100,44 @@ def __vibe_show (st : Step) : String :=
 """
 
 
+def show_tail_diver(C, name):
+    """Lean that prints `VibeProof.<name>_cex`, a step of a stellar-diver model, as one JSON
+    line: the call, and every storage key, map entry and token balance the model names,
+    before and after."""
+    D = C["diver"]
+    addr_vars = {v for v, ty, _ in C["vars"] if ty == "Addr"}
+    def show(v, s):
+        return f'("@" ++ toString ({s} {v}))' if v in addr_vars else f"(toString ({s} {v}))"
+    vars_ = ", ".join(f'__vibe_arr [__vibe_str "{v}", __vibe_str {show(v, "st.pre")}, __vibe_str {show(v, "st.post")}]'
+                      for v, _, _ in C["vars"])
+    reads = [f'("{m}", fun (s : Storage) a => toString (getOr0 s ({m} a)))' for m in D["maps"]]
+    reads += [f'("{b}", fun (s : Storage) a => toString (bal (s {t}) s a))' for b, t in D["ledgers"].items()]
+    args = ", ".join(f'("{a}", toString (c.arg "{a}"))' for a, _ in C["amounts"])
+    fixed = ", ".join(['("pool", c.self)'] + [f'("{a}", c.argA "{a}")' for a in D["addrArgs"]])
+    return f"""
+def __vibe_str (s : String) : String := "\\"" ++ s ++ "\\""
+def __vibe_obj (kvs : List (String × String)) : String :=
+  "{{" ++ ",".intercalate (kvs.map fun (k, v) => __vibe_str k ++ ":" ++ v) ++ "}}"
+def __vibe_arr (xs : List String) : String := "[" ++ ",".intercalate xs ++ "]"
+def __vibe_show (st : Step) : String :=
+  let c := st.call
+  let fixed : List (String × Addr) := [{fixed}]
+  let addrs := ([c.caller] ++ c.signers ++ fixed.map (·.2)).eraseDups
+  let reads : List (String × (Storage → Addr → String)) := [{", ".join(reads)}]
+  let args : List (String × String) := [{args}]
+  __vibe_obj [
+    ("fn", __vibe_str c.fn), ("caller", toString c.caller), ("to", toString c.caller), ("amt", __vibe_str "0"),
+    ("holders", "[]"), ("signers", __vibe_arr (c.signers.map toString)),
+    ("fixed", __vibe_arr (fixed.map fun (n, a) => __vibe_arr [__vibe_str n, toString a])),
+    ("args", __vibe_arr (args.map fun (n, v) => __vibe_arr [__vibe_str n, __vibe_str v])),
+    ("ret", __vibe_str (toString st.ret)),
+    ("vars", __vibe_arr [{vars_}]),
+    ("maps", __vibe_arr (reads.flatMap fun (m, rd) => addrs.map fun a =>
+      __vibe_arr [__vibe_str m, toString a, __vibe_str (rd st.pre a), __vibe_str (rd st.post a)]))]
+#eval IO.println ("VIBE-CEX " ++ __vibe_show VibeProof.{name}_cex)
+"""
+
+
 def assemble(C, th, body):
     """The checked file, and the line where the body starts (1-based)."""
     name, target, stmt = th["name"], th["target"], th["stmt"]
@@ -108,6 +146,18 @@ def assemble(C, th, body):
     start = len(lines) + 1
     lines += body.split("\n")
     lines += ["", "end VibeProof", "", "-- Trusted tail, written by the server."]
+    if C.get("kind") == "diver":
+        if re.search(rf"\btheorem\s+{re.escape(name)}\s*:", code):
+            lines += [f"theorem __vibe_goal : {stmt} := VibeProof.{name}", "#print axioms __vibe_goal"]
+        if re.search(rf"\btheorem\s+{re.escape(name)}_false\s*:", code):
+            lines += [f"theorem __vibe_refuted : ¬ ({stmt}) := VibeProof.{name}_false", "#print axioms __vibe_refuted"]
+            if th.get("pred") and re.search(rf"\b(def|abbrev)\s+{re.escape(name)}_cex\b", code) and \
+               re.search(rf"\btheorem\s+{re.escape(name)}_cex_breaks\s*:", code):
+                lines += [f"theorem __vibe_cex_breaks : (∃ e ∈ entries, e VibeProof.{name}_cex) ∧ "
+                          f"¬ (({th['pred']}) VibeProof.{name}_cex) := VibeProof.{name}_cex_breaks"]
+                lines += show_tail_diver(C, name).split("\n")
+        lines += list(C["epilogue"]) + [""]
+        return "\n".join(lines), start
     if re.search(rf"\btheorem\s+{re.escape(name)}\s*:", code):
         lines += [f"theorem __vibe_goal : {target} ⊨ {stmt} := VibeProof.{name}", "#print axioms __vibe_goal"]
     if re.search(rf"\btheorem\s+{re.escape(name)}_false\s*:", code):
@@ -223,6 +273,44 @@ Stop as soon as ./check says VERDICT: proved or VERDICT: refuted.
 """
 
 
+TASK_DIVER = """You are proving or refuting one statement about a Soroban smart contract. The contract's
+model was generated from its bytecode by stellar-diver: {root}/{source} (core Lean 4, namespace
+`Contract`, which is opened for you; read it first: each entry point is a `Spec` structure whose
+fields are the conditions for the call to succeed and its effect on storage). Time budget: {budget}
+seconds. The user watches every version of your proof being checked live, so save early and often.
+
+The statement (`{name}`):
+
+    {stmt}
+
+In words: {reading}
+
+Write ONLY `Proof.lean` in this directory: Lean declarations (no imports, no namespace, no `end`).
+Run `./check` after every edit: it prints Lean's errors (line numbers are lines of Proof.lean) and a
+VERDICT. Then do exactly one of:
+
+PROVE it:
+    theorem {name} : {stmt} := by
+      ...
+
+or REFUTE it:
+    theorem {name}_false : ¬ ({stmt}) := by ...
+{cex}
+Keep the statement exactly as given (the server restates it and checks your theorem against its own
+copy). Not allowed: sorry, axiom, native_decide, #eval, macros, notation, instances, attributes other
+than @[simp], set_option (except `set_option maxHeartbeats N in`). Only the standard axioms are
+accepted. You may add helper lemmas and defs. Stop as soon as ./check says VERDICT: proved or
+VERDICT: refuted.
+"""
+
+CEX_DIVER = """  and, when it is false, give the call that breaks it, so the user can see it:
+    def {name}_cex : Step := {{ call := {{ fn := "...", caller := 1, self := 2, arg := fun n => if n = "..." then 5 else 0,
+                                     argA := fun _ => 1, signers := [1], env := fun _ => 0 }},
+                             pre := fun k => ..., post := fun k => ..., writes := [...], ret := 0 }}
+    theorem {name}_cex_breaks : (∃ e ∈ entries, e {name}_cex) ∧ ¬ (({pred}) {name}_cex) := ...
+"""
+
+
 class Job:
     def __init__(self, contract, C, th, reading, budget, model=None):
         self.id = uuid.uuid4().hex[:12]
@@ -237,9 +325,10 @@ class Job:
         # which would hand it the proofs.
         lib = self.ws / "StellarLean"
         lib.mkdir()
-        for f in (ROOT / "StellarLean").glob("*.lean"):
+        for f in (ROOT / "StellarLean").rglob("*.lean"):
             if not re.search(r"Answers|Questions", f.name):
-                shutil.copy(f, lib / f.name)
+                (lib / f.relative_to(ROOT / "StellarLean")).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(f, lib / f.relative_to(ROOT / "StellarLean"))
         (self.ws / "Proof.lean").write_text(f"-- {th['name']}: prove or refute (see TASK.md), then run ./check\n")
         check_sh = self.ws / "check"
         check_sh.write_text(f"#!/bin/sh\nexec {sys.executable} {HERE / 'vibe.py'} check \"$(dirname \"$0\")\"\n")
@@ -247,8 +336,13 @@ class Job:
         src = pathlib.Path(C["source"]).name
         files = [f"StellarLean/{n}" for n in dict.fromkeys([src.replace("Answers", "Facts"), src.replace("Questions", "")])
                  if (lib / n).exists()]
-        task = TASK.format(root=self.ws, budget=budget, name=th["name"], target=th["target"], stmt=th["stmt"],
-                           reading=reading or "(none)", source=" and ".join(files) or "StellarLean/")
+        if C.get("kind") == "diver":
+            cex = CEX_DIVER.format(name=th["name"], pred=th["pred"]) if th.get("pred") else ""
+            task = TASK_DIVER.format(root=self.ws, budget=budget, name=th["name"], stmt=th["stmt"],
+                                     reading=reading or "(none)", source=C["source"], cex=cex)
+        else:
+            task = TASK.format(root=self.ws, budget=budget, name=th["name"], target=th["target"], stmt=th["stmt"],
+                               reading=reading or "(none)", source=" and ".join(files) or "StellarLean/")
         (self.ws / "TASK.md").write_text(task)
         self.model = model
         self.last_body = None
@@ -359,7 +453,8 @@ def start_job(vocab, req, validate, words):
     if C is None:
         raise ValueError("unknown contract")
     th = req.get("theorem") or {}
-    th = {"name": th.get("name"), "target": th.get("target"), "stmt": th.get("stmt"), "tactic": "sorry"}
+    th = {"name": th.get("name"), "target": th.get("target"), "stmt": th.get("stmt"), "tactic": "sorry",
+          "pred": th.get("pred")}
     validate(vocab, C, th)
     budget = int(req.get("budget", 120))
     if not 10 <= budget <= 1800:

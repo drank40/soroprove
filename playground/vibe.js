@@ -14,10 +14,10 @@
 
   async function start(t) {
     const budget = Math.max(10, Math.min(1800, Number(document.querySelector('#budget').value) || 120));
-    const body = { contract: app.contractKey(), theorem: { name: t.name, target: t.target, stmt: t.plainStmt },
+    const body = { contract: app.contractKey(), theorem: { name: t.name, target: t.target, stmt: t.plainStmt, pred: t.plainPred },
                    reading: t.reading, budget };
     for (const old of jobs.filter((j) => j.blockId === t.block.id && j.status === 'running')) stop(old);
-    const job = { blockId: t.block.id, name: t.name, reading: t.reading, stmt: `${t.target} ⊨ ${t.plainStmt}`,
+    const job = { blockId: t.block.id, name: t.name, reading: t.reading, stmt: t.kind === 'diver' ? t.plainStmt : `${t.target} ⊨ ${t.plainStmt}`,
                   contract: app.contractKey(), C: app.C(), budget, start: Date.now(), status: 'running',
                   proof: '', check: null, checking: false, checks: 0, log: [], cex: null, versions: 0 };
     jobs.unshift(job);
@@ -138,7 +138,7 @@
     return `<div class="cex">
       <div class="cex-title">Counterexample: a call the contract accepts, after which the claim is false</div>
       <div class="cex-call"><span class="fn">${esc(c.fn || '(call)')}</span>(${args})
-        <span class="by">signed by ${addr(c.caller)}</span>${c.ret !== null ? ` <span class="by">returns ${val(c.ret)}</span>` : ''}</div>
+        <span class="by">${c.signers ? `called by ${addr(c.caller)}, signed by ${c.signers.map((a) => addr(Number(a))).join(', ') || 'nobody'}` : `signed by ${addr(c.caller)}`}</span>${c.ret !== null ? ` <span class="by">returns ${val(c.ret)}</span>` : ''}</div>
       ${c.holders.length ? `<div class="cex-holders">sums (<code>.total</code>) run over the holders list: ${c.holders.map((a) => addr(Number(a))).join(', ')}</div>` : ''}
       <table class="cex-store" title="${esc(tip)}"><thead><tr><th>storage</th><th>before</th><th></th><th>after</th></tr></thead>
         <tbody>${table || '<tr><td colspan="4" class="unset">no storage set</td></tr>'}</tbody></table>

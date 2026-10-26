@@ -42,7 +42,7 @@
              inp('Q', ['Q']),
              { k: 'row', name: 'ROW2' },
              { k: 'drop', name: 'TACTIC', options: C.tactics.map((t) => [t, t]) }],
-      g: 'theorem', tip: 'A question about the contract. Its proof is the answer.' });
+      g: 'theorem', kind: C.kind, diver: C.diver, tip: 'A question about the contract. Its proof is the answer.' });
 
     // Glue
     add({ type: 'and', cat: 'glue', out: 'Q', lean: '%1 AND %2', words: '%1 AND %2',
@@ -114,12 +114,13 @@
       add({ type: `${key}.map.${name}`, cat: 'storage', out: 'TI', lean: `${name} [ %1 ]`, words: `${words} %1`,
         args: [inp('W', ['W', 'A'])], g: 'index', map: name, say: `${words} {W}`,
         tip: `One entry of the storage map ${name}. Put a Who block in the slot.` });
-      add({ type: `${key}.total.${name}`, cat: 'storage', out: 'TI', lean: `${name}.total`, words: `the sum of all ${name}`,
+      if (!C.kind) add({ type: `${key}.total.${name}`, cat: 'storage', out: 'TI', lean: `${name}.total`, words: `the sum of all ${name}`,
         args: [], g: 'atom', text: `${name}.total`, say: `the sum of all ${name}`,
         tip: `Sum of ${name} over the (ghost) list of holders.` });
     }
     const arith = (type, op, prec, say) => add({ type, cat: 'storage', out: 'TI', lean: `%1 ${op} %2`, words: `%1 ${say} %2`,
-      args: [inp('L', ['TI']), inp('R', ['TI'])], g: 'infix', op, prec, assoc: 'l', say: `{L} ${say} {R}`, tip: `Arithmetic on number terms.` });
+      args: [inp('L', C.kind ? ['TI', 'D'] : ['TI']), inp('R', C.kind ? ['TI', 'D'] : ['TI'])], g: 'infix', op, prec, assoc: 'l',
+      say: `{L} ${say} {R}`, tip: `Arithmetic on number terms.` });
     arith('add', '+', 65, 'plus');
     arith('sub', '-', 65, 'minus');
     arith('mul', '*', 70, 'times');
@@ -144,6 +145,30 @@
       say: 'minus {D}', tip: 'The argument, negated.' });
     add({ type: 'const', cat: 'arg', out: 'D', lean: 'fun _ => %1', words: 'the number %1',
       args: [{ k: 'num', name: 'N', value: 1 }], g: 'const', say: '{N}', tip: 'A fixed number, whatever the call.' });
+
+    // Models emitted by stellar-diver: compare any two values, in the state before or
+    // after the call, and use the values the model derives for each entry point.
+    if (C.kind === 'diver') {
+      const NUM = ['TI', 'D'];
+      for (const [type, op, say] of [['cmp.eq', '=', 'equals'], ['cmp.ne', '≠', 'differs from'], ['cmp.le', '≤', 'is at most'],
+                                     ['cmp.lt', '<', 'is less than'], ['cmp.aeq', '=', 'is the same address as'], ['cmp.ane', '≠', 'is not the address']]) {
+        const addr = type.startsWith('cmp.a');
+        add({ type, cat: 'cond', out: 'Q', lean: `%1 ${op} %2`, words: `%1 ${say} %2`,
+          args: [inp('L', addr ? ['TA', 'A', 'W'] : NUM), inp('R', addr ? ['TA', 'A', 'W'] : NUM)], g: 'cmp', op, prec: 50,
+          say: `{L} ${say} {R}`, tip: `Compare two ${addr ? 'addresses' : 'numbers'}.` });
+      }
+      add({ type: 'not', cat: 'glue', out: 'Q', lean: 'NOT %1', words: 'NOT %1', args: [inp('P', ['Q'])], g: 'not',
+        say: 'not [{P}]', tip: 'The check does not hold.' });
+      add({ type: 'dbefore', cat: 'cond', out: 'Q', lean: 'before %1', words: 'before the call, %1', args: [inp('P', ['Q'])],
+        g: 'state', state: 'pre', say: 'before the call, {P}', tip: 'Storage in the check is read before the call.' });
+      add({ type: 'dafter', cat: 'cond', out: 'Q', lean: 'after %1', words: 'after the call, %1', args: [inp('P', ['Q'])],
+        g: 'state', state: 'post', say: 'after the call, {P}', tip: 'Storage in the check is read after the call.' });
+      add({ type: 'num', cat: 'arg', out: 'TI', lean: '%1', words: '%1', args: [{ k: 'num', name: 'N', value: 0 }],
+        g: 'num', say: '{N}', tip: 'A number.' });
+      for (const d of C.diver.derived)
+        add({ type: `${key}.derived.${d}`, cat: 'storage', out: 'TI', lean: d, words: `the ${d.replace('.', ' ')} of the call`, args: [],
+          g: 'derived', text: d, say: d, tip: `A value the model derives for the call (${d} in the model).` });
+    }
 
     // Entry points
     for (const e of C.entries)
@@ -198,8 +223,105 @@
     return { code: wrap(b, code), prec };
   }
 
+  /** Lean over a stellar-diver model for block `b`. `env.st` is the storage being read
+      (`st.pre`, `st.post`, or a history state), `env.hist` when the theorem is about
+      histories (where `pool` is the contract `me` and there is no call). */
+  function dlean(specs, b, ctx, env, D) {
+    if (!b) { ctx.problems.push('an empty slot'); return HOLE; }
+    const s = specs[b.type];
+    if (!s) { ctx.problems.push(`unknown block ${b.type}`); return HOLE; }
+    const sub = (name, e = env) => dlean(specs, b.inputs?.[name]?.block, ctx, e, D);
+    const f = (name) => b.fields?.[name] ?? s.args.find((a) => a.name === name)?.value;
+    const store = () => {
+      if (env.st) return env.st;
+      ctx.problems.push('storage is read outside "before"/"after": put the check inside one');
+      return 'st.post';
+    };
+    const call = (what) => { if (env.hist) ctx.problems.push(`${what} needs a call: use "each call", not "every history"`); return 'st.call'; };
+    const at = (st) => (n) => dlean(specs, b.inputs?.[n]?.block, ctx, { ...env, st }, D);
+    let code;
+    const t = b.type.split('.');
+    switch (s.g) {
+      case 'atom':
+        if (s.cat === 'storage') code = `(${store()} ${s.text})`;
+        else if (s.cat === 'who') code = b.type === 'who.caller' ? `${call('the caller')}.caller`
+          : s.text === 'pool' ? (env.hist ? 'me' : '(pool st)') : `(${call('an argument')}.argA "${s.text}")`;
+        else if (s.cat === 'arg') code = `(${call('an argument')}.arg "${s.text}")`;
+        else if (s.cat === 'entry') code = s.text.slice(1, -1);
+        else code = s.text;
+        break;
+      case 'index': {
+        const st = store(), w = sub('W'), tok = D.ledgers[s.map];
+        code = tok ? `(bal (${st} ${tok}) ${st} ${w})` : `(getOr0 ${st} (${s.map} ${w}))`;
+        break;
+      }
+      case 'derived': code = `(${s.text} ${call('a derived value')})`.replace('st.call)', 'st)'); break;
+      case 'num': code = String(Math.trunc(Number(f('N')) || 0)); break;
+      case 'infix':
+        code = s.cat === 'glue' ? `(${sub(s.args[0].name)} ${s.op === '∧ₛ' ? '∧' : '∨'} ${sub(s.args[1].name)})`
+          : `(${sub('L')} ${s.op} ${sub('R')})`;
+        break;
+      case 'cmp': code = `${sub('L')} ${s.op} ${sub('R')}`; break;
+      case 'not': code = `¬ (${sub('P')})`; break;
+      case 'state': code = `(${dlean(specs, b.inputs?.P?.block, ctx, { ...env, st: env.hist ? env.st : `st.${s.state}` }, D)})`; break;
+      case 'method': code = b.type === 'given' ? `(${sub('G')} → ${sub('P')})` : `(${sub('G')} ∨ ${sub('P')})`; break;
+      case 'forall': {
+        const v = f('VAR');
+        code = `(∀ ${v} : Addr, ${dlean(specs, b.inputs?.P?.block, ctx, { ...env, scope: [...(env.scope || []), v] }, D)})`;
+        break;
+      }
+      case 'bound': {
+        const v = f('NAME');
+        if (!(env.scope || []).includes(v)) ctx.problems.push(`"${v}" is not bound by an enclosing FOR EACH block`);
+        code = v; break;
+      }
+      case 'neg': code = `(-${sub('D')})`; break;
+      case 'const': code = `${Math.trunc(Number(f('N')) || 0)}`; break;
+      case 'app': {
+        if (env.hist && s.cat === 'change') ctx.problems.push(`"${s.head}" compares before and after a call: use "each call"`);
+        const pre = at('st.pre'), post = at('st.post');
+        switch (s.head) {
+          case 'unchanged': code = `${post('T')} = ${pre('T')}`; break;
+          case 'increases': code = `${pre('T')} < ${post('T')}`; break;
+          case 'decreases': code = `${post('T')} < ${pre('T')}`; break;
+          case 'neverDecreases': code = `${pre('T')} ≤ ${post('T')}`; break;
+          case 'changesBy': code = `${post('T')} = ${pre('T')} + ${sub('D')}`; break;
+          case 'dropsAtMost': code = `${pre('T')} - ${sub('D')} ≤ ${post('T')}`; break;
+          case 'gainsAtLeast': code = `${pre('T')} + ${sub('D')} ≤ ${post('T')}`; break;
+          case 'returns': code = `st.ret = ${post('T')}`; break;
+          case 'signedBy': code = `${pre('T')} ∈ ${call('signedBy')}.signers`; break;
+          case 'calls': code = `${sub('E')} ${env.hist ? (ctx.problems.push('"calls" needs a call'), 'st') : 'st'}`; break;
+          case 'isCaller': code = `${sub('A')} = ${call('the caller')}.caller`; break;
+          default: ctx.problems.push(`"${s.head}" is not available for this model`); code = HOLE;
+        }
+        code = `(${code})`;
+        break;
+      }
+      default: ctx.problems.push(`"${b.type}" is not available for this model`); code = HOLE;
+    }
+    return wrap(b, code);
+  }
+
   /** A theorem block as Lean: `{name, target, tactic, stmt, text, problems}`. */
   function genTheorem(specs, b) {
+    const ts = specs[b.type];
+    if (ts?.kind === 'diver') {
+      const ctx = { problems: [] };
+      const name = b.fields?.NAME ?? 'my_question', target = b.fields?.TARGET, tactic = b.fields?.TACTIC;
+      if (!/^[A-Za-z_][A-Za-z0-9_']*$/.test(name)) ctx.problems.push('the name is not a Lean identifier');
+      let stmt, pred = null;
+      if (target === 'history') {
+        const s0 = dlean(specs, b.inputs?.Q?.block, ctx, { hist: true, st: 's' }, ts.diver);
+        const s1 = dlean(specs, b.inputs?.Q?.block, { problems: [] }, { hist: true, st: 't' }, ts.diver);
+        stmt = `∀ (me : Addr) (s t : Storage), Run me s t →\n      ${s0} →\n      ${s1}`;
+      } else {
+        const q = dlean(specs, b.inputs?.Q?.block, ctx, {}, ts.diver);
+        stmt = `∀ st, (∃ e ∈ entries, e st) →\n      ${q}`;
+        pred = `fun st => ${q}`;
+      }
+      const text = `theorem ${name} :\n    ${stmt} := by\n  ${tactic}`;
+      return { name, target, tactic, stmt, pred, text, problems: ctx.problems, kind: 'diver' };
+    }
     const ctx = { problems: [] };
     const q = lean(specs, b.inputs?.Q?.block, ctx);
     const name = b.fields?.NAME ?? 'my_question', target = b.fields?.TARGET, tactic = b.fields?.TACTIC;
@@ -214,6 +336,12 @@
     if (!b) return '…';
     const s = specs[b.type];
     if (!s) return '…';
+    if (s.g === 'theorem' && s.kind === 'diver') {
+      const q = words(specs, b.inputs?.Q?.block, targets, 0);
+      return b.fields?.TARGET === 'history'
+        ? `Across any history of the contract (its calls and anything else on the ledger), if ${q} at the start, then also at the end.`
+        : `After every successful call: ${q}.`;
+    }
     if (s.g === 'theorem') {
       const t = (targets.find(([x]) => x === b.fields?.TARGET) || [, b.fields?.TARGET])[1];
       return `After every successful call to ${t}: ${words(specs, b.inputs?.Q?.block, targets, 0)}.`;

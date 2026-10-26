@@ -63,8 +63,60 @@ def allowed(vocab, C):
     return names
 
 
+# Statements about a stellar-diver model are printed straight to Lean over the model's
+# names; these are the only other words they use.
+DIVER_GLUE = {"st", "pre", "post", "call", "caller", "arg", "argA", "signers", "ret", "entries", "e",
+              "getOr0", "bal", "pool", "Run", "me", "s", "t", "Addr", "Storage"}
+DIVER_TOKEN = re.compile(r'\s+|"[A-Za-z_][\w.]*"|\d+|[A-Za-z_][A-Za-z0-9_\']*(?:\.[A-Za-z_][A-Za-z0-9_\']*)*'
+                         r'|=>|[()\[\],:+\-*]|∀|∃|∈|→|¬|∧|∨|=|≤|<|≠')
+
+
+def validate_diver(C, th):
+    name, stmt = th.get("name"), th.get("stmt")
+    if not isinstance(name, str) or not IDENT.match(name) or name in KEYWORDS or len(name) > 80:
+        raise ValueError("bad theorem name")
+    if th.get("tactic") not in C["tactics"]:
+        raise ValueError("unknown tactic")
+    D = C["diver"]
+    names = DIVER_GLUE | {v for v, _, _ in C["vars"]} | set(D["maps"]) | set(D["derived"]) | set(C["entries"])
+    strings = {a for a, _ in C["amounts"]} | set(D["addrArgs"])
+    for field in ("stmt", "pred"):
+        text = th.get(field)
+        if text is None and field == "pred":
+            continue
+        if not isinstance(text, str) or len(text) > 6000:
+            raise ValueError(f"bad {field}")
+        pos, bound = 0, set()
+        toks = []
+        while pos < len(text):
+            m = DIVER_TOKEN.match(text, pos)
+            if not m:
+                raise ValueError(f"unexpected character {text[pos]!r}")
+            pos = m.end()
+            if not m.group().isspace():
+                toks.append(m.group())
+        bound = {toks[i + 1] for i, t in enumerate(toks[:-1])
+                 if (t in ("∀", "fun") or (t == "(" and i + 2 < len(toks) and toks[i + 2] == ":"))
+                 and IDENT.match(toks[i + 1])}
+        known = names | bound | {"fun"}
+        for t in toks:
+            if t.startswith('"'):
+                if t[1:-1] not in strings:
+                    raise ValueError(f"unknown argument {t}")
+            elif IDENT.match(t.split(".")[0]) and t not in known:
+                # `st.pre`, `st.call.argA`: a known name, then fields of the model's structures.
+                head, *rest = t.split(".")
+                if head not in known or not rest or any(p not in DIVER_GLUE for p in rest):
+                    raise ValueError(f"unknown name {t}")
+        for v in bound:
+            if v in KEYWORDS or not re.match(r"^[a-z][A-Za-z0-9_]*$", v):
+                raise ValueError(f"bad variable name {v}")
+
+
 def validate(vocab, C, th):
     """Raise ValueError unless `th` is a statement the blocks could produce."""
+    if C.get("kind") == "diver":
+        return validate_diver(C, th)
     name, target, stmt, tactic = th.get("name"), th.get("target"), th.get("stmt"), th.get("tactic")
     if not isinstance(name, str) or not IDENT.match(name) or name in KEYWORDS or len(name) > 80:
         raise ValueError("bad theorem name")
@@ -116,7 +168,10 @@ def check(vocab, req):
     spans = []
     for k, th in enumerate(ths):
         start = len(lines) + 1
-        lines += [f"theorem {th['name']} :", f"    {th['target']} ⊨ {th['stmt']} := by", f"  {th['tactic']}", ""]
+        if C.get("kind") == "diver":
+            lines += [f"theorem {th['name']} :", f"    {th['stmt']} := by", f"  {th['tactic']}", ""]
+        else:
+            lines += [f"theorem {th['name']} :", f"    {th['target']} ⊨ {th['stmt']} := by", f"  {th['tactic']}", ""]
         spans.append((start, len(lines)))
     lines += list(C["epilogue"]) + [""]
 
