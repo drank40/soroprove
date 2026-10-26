@@ -397,9 +397,51 @@
     }
   }
 
+  /* ------------------------------------------------------------ Permalinks
+     `#c=<contract>&t=<theorems>`: the theorems as their Lean text (base64url),
+     which `parseTheorem` turns back into blocks. */
+
+  const b64 = (s) => btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const unb64 = (s) => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)));
+
+  function permalink() {
+    const text = current.filter((t) => !t.problems.length)
+      .map((t) => `${t.name} : ${t.target} ⊨ ${L.plain(t.stmt)} := by ${t.tactic}`).join('\n');
+    return `${location.origin}${location.pathname}#${new URLSearchParams({ c: contract, t: b64(text) })}`;
+  }
+
+  /** Open the theorems of a permalink; the workspace they replace is kept as a backup. */
+  function openPermalink() {
+    const h = new URLSearchParams(location.hash.slice(1));
+    if (!h.get('c') || !h.get('t') || !V.contracts[h.get('c')]) return false;
+    let lines;
+    try { lines = unb64(h.get('t')).split('\n').filter((l) => l.trim()); } catch { return false; }
+    if (contract !== h.get('c')) {
+      contract = h.get('c'); sel.value = contract; store.set('pg.contract', contract);
+      ws.updateToolbox(toolbox()); $('#source').textContent = C().source;
+    }
+    const prev = store.get(key(), null);
+    if (prev) store.set(`${key()}.backup`, prev);
+    const blocks = [];
+    lines.forEach((l, i) => {
+      try { blocks.push({ ...L.parseTheorem(specs(), contract, C(), l), x: 40, y: 40 + 170 * i }); }
+      catch (e) { console.warn('permalink', l, e); }
+    });
+    load({ blocks: { languageVersion: 0, blocks } });
+    return true;
+  }
+
+  $('#share').addEventListener('click', async () => {
+    const url = permalink();
+    history.replaceState(null, '', url);
+    try { await navigator.clipboard.writeText(url); flash('#share', 'Link copied'); }
+    catch { flash('#share', 'Link in the address bar'); }
+  });
+  window.addEventListener('hashchange', () => { if (openPermalink()) clearResults(); });
+
   Vibe.init({ ws, contractKey: () => contract, C, showTab, store });
   clearResults();
-  load(store.get(key(), null));
+  if (!openPermalink()) load(store.get(key(), null));
   showTab('code');
   window.addEventListener('resize', () => Blockly.svgResize(ws));
   window.pg = { ws, refresh };   // for debugging

@@ -72,6 +72,8 @@ def show_tail(C, name):
                 f'__vibe_str ({show} ({v}.get c st.post))]')
     vars_ = ", ".join(var(v, ty) for v, ty, _ in C["vars"])
     maps = ", ".join(f'("{m}", fun s a => toString ({m}.read s a))' for m, _ in C["maps"])
+    # extra addresses to show the maps at: `Who`s of the call (e.g. a token argument).
+    cex_who = "".join(f" ++ [{w} c]" for w in C.get("cexWho", []))
     return f"""
 def __vibe_str (s : String) : String := "\\"" ++ s ++ "\\""
 def __vibe_obj (kvs : List (String × String)) : String :=
@@ -82,7 +84,7 @@ def __vibe_ret : Query.Val → String
 def __vibe_show (st : Step) : String :=
   let c := st.call
   let fixed : List (String × Addr) := [{fixed}]
-  let addrs := ([c.caller, c.args.to] ++ c.holders ++ fixed.map (·.2)).eraseDups
+  let addrs := ([c.caller, c.args.to] ++ c.holders ++ fixed.map (·.2){cex_who}).eraseDups
   let maps : List (String × (Storage → Addr → String)) := [{maps}]
   let amounts : List (String × String) := [{amounts}]
   __vibe_obj [
@@ -194,7 +196,7 @@ The statement (`{name}`), as Lean:
 In words: {reading}
 
 Read first: {root}/StellarLean/Query.lean (what `⊨` and every brick mean),
-{root}/{source} (the contract model and its facts), and {root}/StellarLean/Answer.lean
+{source} (the contract model and its facts; paths relative to {root}), and {root}/StellarLean/Answer.lean
 (the `answer` tactic: an automatic prover over the contract's facts; try it first).
 
 Write ONLY `Proof.lean` in this directory. It holds Lean declarations (no imports, no namespace,
@@ -231,12 +233,22 @@ class Job:
         self.proc = None
         self.ws = pathlib.Path(tempfile.mkdtemp(prefix=f"vibe-{th['name']}-"))
         (self.ws / "job.json").write_text(json.dumps({"contract": contract, "theorem": th}))
+        # The library the agent may read: everything but the files of answered questions,
+        # which would hand it the proofs.
+        lib = self.ws / "StellarLean"
+        lib.mkdir()
+        for f in (ROOT / "StellarLean").glob("*.lean"):
+            if not re.search(r"Answers|Questions", f.name):
+                shutil.copy(f, lib / f.name)
         (self.ws / "Proof.lean").write_text(f"-- {th['name']}: prove or refute (see TASK.md), then run ./check\n")
         check_sh = self.ws / "check"
         check_sh.write_text(f"#!/bin/sh\nexec {sys.executable} {HERE / 'vibe.py'} check \"$(dirname \"$0\")\"\n")
         check_sh.chmod(0o755)
-        task = TASK.format(root=ROOT, budget=budget, name=th["name"], target=th["target"], stmt=th["stmt"],
-                           reading=reading or "(none)", source=C["source"])
+        src = pathlib.Path(C["source"]).name
+        files = [f"StellarLean/{n}" for n in dict.fromkeys([src.replace("Answers", "Facts"), src.replace("Questions", "")])
+                 if (lib / n).exists()]
+        task = TASK.format(root=self.ws, budget=budget, name=th["name"], target=th["target"], stmt=th["stmt"],
+                           reading=reading or "(none)", source=" and ".join(files) or "StellarLean/")
         (self.ws / "TASK.md").write_text(task)
         self.model = model
         self.last_body = None
@@ -270,7 +282,7 @@ class Job:
                "--safe-mode", "--strict-mcp-config",
                "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash(./check)",
                "--disallowedTools", "WebFetch,WebSearch",
-               "--add-dir", str(ROOT / "StellarLean"), "--max-turns", "400"]
+               "--max-turns", "400"]
         if self.model:
             cmd += ["--model", self.model]
         self.emit("log", text="agent started")
