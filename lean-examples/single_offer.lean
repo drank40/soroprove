@@ -16,11 +16,13 @@
 --     is dropped, never guessed.
 -- Storage keys: `.var` (unit variant), `.entry` / `.tup` (variants with one /
 -- several fields), `.fld k f` (field f of the #[contracttype] struct at k),
--- `.has k` (k's presence: set → 1, remove → 0), `.bal t a` (token t's balance
--- of a). Struct arguments' fields are args named like `config.limit`.
+-- `.elem m k` (entry k of the host `Map` stored at m), `.has k` (k's presence:
+-- set → 1, remove → 0), `.bal t a` (token t's balance of a). Struct arguments'
+-- fields are args named like `config.limit`.
 --
--- Assumes: tokens the contract calls `transfer` / `balance` on behave per
--- SEP-41; addresses are encoded as `Addr` in the host's order (`obj_cmp`).
+-- Assumes: tokens the contract calls `transfer` / `transfer_from` / `approve` /
+-- `balance` on behave per SEP-41; addresses are encoded as `Addr` in the host's
+-- order (`obj_cmp`).
 
 namespace Contract
 
@@ -31,12 +33,21 @@ inductive Key where
   | entry (map : String) (k : Addr)
   | tup   (map : String) (ks : List Int)
   | fld   (base : Key) (f : String)
+  | elem  (map : Key) (k : Int)
   | has   (k : Key)
   | bal   (t : Addr) (a : Addr)
   deriving DecidableEq, Inhabited, Repr
 
 abbrev Storage := Key → Int
 def Storage.set (s : Storage) (k : Key) (v : Int) : Storage := fun k' => if k' = k then v else s k'
+/-- `k` is `m` or a part of the value stored at `m` (a field, a map entry, presence). -/
+def Key.under (m : Key) : Key → Bool
+  | .fld b f => .fld b f == m || Key.under m b
+  | .elem b k => .elem b k == m || Key.under m b
+  | .has b => .has b == m || Key.under m b
+  | k => k == m
+/-- storage after an opaque write to `m`: everything stored under `m` takes `h`'s values. -/
+def Storage.setUnder (s : Storage) (m : Key) (h : Storage) : Storage := fun k => if Key.under m k then h k else s k
 
 structure Call where
   fn      : String

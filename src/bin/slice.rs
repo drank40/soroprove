@@ -136,9 +136,39 @@ fn decode_symbol(bits: u64) -> Option<String> {
 /// The symbol a `call`'s func operand (index 1) carries, if literal.
 fn call_symbol(i: InstructionValue) -> Option<String> {
     match i.get_operand(1)? {
-        Operand::Value(v) => const_payload(v).and_then(decode_symbol),
+        Operand::Value(v) => const_payload(v).and_then(decode_symbol).or_else(|| runtime_symbol(v)),
         _ => None,
     }
+}
+
+thread_local! {
+    /// The module's rodata, for symbols built at runtime from it.
+    static RODATA: std::cell::RefCell<Vec<(u64, Vec<u8>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A `Symbol` built at runtime (`Symbol::new(&e, "transfer")`): a
+/// `symbol_new_from_linear_memory` of a rodata slice, directly or through a
+/// one-call wrapper, possibly round-tripped through `payload` / `from_payload`.
+fn runtime_symbol(v: BasicValueEnum) -> Option<String> {
+    let mut x = as_instr(v)?;
+    while let Some(Operand::Value(a)) = callee_name(x).filter(|n| n.contains("val.payload") || n.contains("from_payload")).and(x.get_operand(0)) {
+        x = as_instr(a)?;
+    }
+    let (off, len) = if callee_name(x)?.contains("symbol_new_from_linear_memory") {
+        (symbol_arg(x, 0)?, symbol_arg(x, 1)?)
+    } else {
+        let h = inkwell::values::CallSiteValue::try_from(x).ok()?.get_called_fn_value()?;
+        if h.count_basic_blocks() == 0 || !all_instrs(h).iter().any(|y| callee_has(*y, "symbol_new_from_linear_memory")) {
+            return None;
+        }
+        let argc = x.get_num_operands().saturating_sub(1);
+        let consts: Vec<u64> = (0..argc).filter_map(|k| symbol_arg(x, k)).collect();
+        if consts.len() != 2 {
+            return None;
+        }
+        (consts[0], consts[1])
+    };
+    RODATA.with(|r| rodata_text(&r.borrow(), off, len))
 }
 
 /// A Val constant is an Error iff its low-byte tag is 3; describe (type, code).
@@ -1682,15 +1712,23 @@ fn ptr_base_off(p: BasicValueEnum) -> (String, i64) {
 
 /// Base + constant offset of an i64 ADDRESS value (shadow-stack arithmetic).
 fn addr_base_off(a: BasicValueEnum) -> (String, i64) {
+    addr_base_off_in(a, &mut Vec::new())
+}
+
+/// `seen`: phis on the current path, so a loop-carried address (`%p = phi [..,
+/// %p + 8]`) stops at the phi instead of recursing forever.
+fn addr_base_off_in<'a>(a: BasicValueEnum<'a>, seen: &mut Vec<InstructionValue<'a>>) -> (String, i64) {
     if let Some(i) = as_instr(a) {
         match i.get_opcode() {
             // a phi whose incomings all agree (`phi [trunc %0, …], [trunc %0, …]`).
-            InstructionOpcode::Phi => {
+            InstructionOpcode::Phi if !seen.contains(&i) => {
                 if let Ok(phi) = inkwell::values::PhiValue::try_from(i) {
+                    seen.push(i);
                     let ins: Vec<(String, i64)> = (0..phi.count_incoming())
                         .filter_map(|k| phi.get_incoming(k))
-                        .map(|(x, _)| if as_instr(x).is_some_and(|j| j.get_opcode() == InstructionOpcode::Phi) { (fmt(x), 0) } else { addr_base_off(x) })
+                        .map(|(x, _)| if as_instr(x).is_some_and(|j| j.get_opcode() == InstructionOpcode::Phi) { (fmt(x), 0) } else { addr_base_off_in(x, seen) })
                         .collect();
+                    seen.pop();
                     if !ins.is_empty() && ins.iter().all(|x| *x == ins[0]) {
                         return ins[0].clone();
                     }
@@ -1701,14 +1739,14 @@ fn addr_base_off(a: BasicValueEnum) -> (String, i64) {
                     (i.get_operand(0), i.get_operand(1))
                 {
                     if let Some(k) = c.get_sign_extended_constant() {
-                        let (b, o) = addr_base_off(x);
+                        let (b, o) = addr_base_off_in(x, seen);
                         return (b, o + k);
                     }
                 }
             }
             InstructionOpcode::ZExt | InstructionOpcode::SExt | InstructionOpcode::Trunc => {
                 if let Some(Operand::Value(x)) = i.get_operand(0) {
-                    return addr_base_off(x);
+                    return addr_base_off_in(x, seen);
                 }
             }
             InstructionOpcode::PtrToInt => {
@@ -2595,6 +2633,8 @@ fn forward_load<'c>(load: InstructionValue<'c>, g: FunctionValue<'c>) -> Option<
     entry_reach(load_bi, &blocks, &preds, ptr, &target, &mut visiting, &mut memo)
 }
 
+thread_local! { static OPAQUE_ID: std::cell::Cell<i64> = const { std::cell::Cell::new(0) }; }
+
 /// Recover the symbolic value of `v` inside `g`, NORMALIZING the Soroban i128/u128
 /// limb representation: Vals are decoded to their mathematical integer, the small
 /// (shift+tag) and object forms collapse, spilled values forward from their store,
@@ -2618,15 +2658,50 @@ fn value_expr<'c>(
     if let Some(e) = RICH_MEMO.with(|m| m.borrow().get(&key).cloned()) {
         return e;
     }
-    RICH_MEMO.with(|m| m.borrow_mut().insert(key, Expr::Opaque("cyc".into(), vec![])));
+    // `cyc` / `big` stand for ONE value each: tagged with an id so the simplifier
+    // never equates two different ones (`big - big = 0` was a wrong fact).
+    let id = || Expr::Const(OPAQUE_ID.with(|c| { c.set(c.get() + 1); c.get() }));
+    RICH_MEMO.with(|m| m.borrow_mut().insert(key, Expr::Opaque("cyc".into(), vec![id()])));
     let mut e = fold_rich(simplify(value_expr_raw(v, g, module, memo, depth)));
     // shared subterms are cloned at every use, so trees can grow exponentially;
     // a guard operand worth naming is small — collapse anything huge.
     if expr_size(&e, rich_cap()) >= rich_cap() {
-        e = Expr::Opaque("big".into(), vec![]);
+        e = Expr::Opaque("big".into(), vec![id()]);
     }
     RICH_MEMO.with(|m| m.borrow_mut().insert(key, e.clone()));
     e
+}
+
+/// Host address equality, as the contract states it (`obj_cmp(a, b) == 0`).
+fn addr_eq(a: &Expr, b: &Expr) -> Expr {
+    Expr::Opaque("ICmp_EQ".into(), vec![Expr::Opaque("@cmp".into(), vec![a.clone(), b.clone()]), Expr::Const(0)])
+}
+
+/// `m.get(k)`: through the puts made to `m` so far (latest first), else the
+/// entry of the map `m` was read as.
+fn mget(m: &Expr, k: &Expr) -> Expr {
+    match m {
+        Expr::Opaque(l, xs) if l == "@mput" && xs.len() == 3 => {
+            if xs[1] == *k {
+                return xs[2].clone();
+            }
+            Expr::Opaque("Select".into(), vec![addr_eq(k, &xs[1]), xs[2].clone(), mget(&xs[0], k)])
+        }
+        _ => Expr::Opaque("@mget".into(), vec![m.clone(), k.clone()]),
+    }
+}
+
+/// `m.contains_key(k)` (a Soroban bool: 1 = present).
+fn mhas(m: &Expr, k: &Expr) -> Expr {
+    match m {
+        Expr::Opaque(l, xs) if l == "@mput" && xs.len() == 3 => {
+            if xs[1] == *k {
+                return Expr::Const(1);
+            }
+            Expr::Opaque("Select".into(), vec![addr_eq(k, &xs[1]), Expr::Const(1), mhas(&xs[0], k)])
+        }
+        _ => Expr::Opaque("@has".into(), vec![Expr::Opaque("@mget".into(), vec![m.clone(), k.clone()])]),
+    }
 }
 
 /// Fold the i128 / Soroban lowering idioms back into source-level values. Applied
@@ -2939,6 +3014,19 @@ fn value_expr_raw<'c>(
                 })
                 .collect();
             return Expr::Opaque(format!("@struct:{}", names.join(",")), vals);
+        }
+        // rich mode: host `Map` ops on a value (`Map<Address, Record>` in one
+        // ledger entry): `@mget(m, k)`, `@mput(m, k, v)`; `has(k)` is presence.
+        if rich() && (name == "map.map_get" || name == "map.map_put" || name == "map.map_has") {
+            let a: Vec<Expr> = (0..ins.get_num_operands().saturating_sub(1))
+                .map(|k| o(k).map(|x| value_expr(x, g, module, memo, depth - 1)).unwrap_or(Expr::Opaque("?".into(), vec![])))
+                .collect();
+            return match (name.as_str(), a.as_slice()) {
+                ("map.map_get", [m, k]) => mget(m, k),
+                ("map.map_has", [m, k]) => mhas(m, k),
+                ("map.map_put", [m, k, v]) => Expr::Opaque("@mput".into(), vec![m.clone(), k.clone(), v.clone()]),
+                _ => Expr::Opaque("?".into(), vec![]),
+            };
         }
         // rich mode: a Vec built from linear memory, as its element values
         // (e.g. the `[current_contract_address]` argument of `balance`).
@@ -3436,7 +3524,7 @@ fn mem_before<'c>(
                         return Some(e);
                     }
                     let e = callee_store_at(h, k as usize, delta, module, memo, depth, 3)?;
-                    return Some(subst_call(&e, i, g, cfg, module, memo, depth));
+                    return Some(subst_call(&e, i, g, cfg, module, memo, depth - 1));
                 }
             }
             _ => {}
@@ -4958,6 +5046,7 @@ enum KeyT {
     Entry(String, String),
     Tup(String, Vec<String>),
     Fld(Box<KeyT>, String),
+    Elem(Box<KeyT>, String), // entry k of the host Map stored at the base
 }
 
 impl KeyT {
@@ -4969,7 +5058,15 @@ impl KeyT {
             KeyT::Tup(n, xs) => (lean_ident(n), vec!["Int"; xs.len()], xs.clone()),
             KeyT::Fld(b, f) => {
                 let (n, ps, xs) = b.head();
+                // a field of a map entry is named after the map: `AllRecordData.balance k`.
+                let n = n.strip_suffix(".get").map(str::to_string).unwrap_or(n);
                 (format!("{n}.{}", lean_ident(f)), ps, xs)
+            }
+            KeyT::Elem(b, k) => {
+                let (n, mut ps, mut xs) = b.head();
+                ps.push("Int");
+                xs.push(k.clone());
+                (format!("{n}.get"), ps, xs)
             }
         }
     }
@@ -4984,10 +5081,16 @@ impl KeyT {
                 let base = if ks.is_empty() { bn } else { format!("({bn} {})", ks.join(" ")) };
                 format!(".fld {base} \"{f}\"")
             }
+            KeyT::Elem(b, _) => {
+                let (bn, _, _) = b.head();
+                let (bk, k) = ks.split_at(ks.len() - 1);
+                let base = if bk.is_empty() { bn } else { format!("({bn} {})", bk.join(" ")) };
+                format!(".elem {base} {}", k[0])
+            }
         }
     }
     fn render(&self) -> String {
-        if let KeyT::Fld(b, _) = self {
+        if let KeyT::Fld(b, _) | KeyT::Elem(b, _) = self {
             b.render(); // the base is defined first
         }
         let (name, ps, xs) = self.head();
@@ -5015,6 +5118,7 @@ impl KeyT {
             KeyT::Entry(n, x) => format!(".entry \"{n}\" ({x})"),
             KeyT::Tup(n, xs) => format!(".tup \"{n}\" [{}]", xs.join(", ")),
             KeyT::Fld(b, f) => format!(".fld ({}) \"{f}\"", b.raw()),
+            KeyT::Elem(b, k) => format!(".elem ({}) ({k})", b.raw()),
         }
     }
 }
@@ -5072,6 +5176,12 @@ fn key_t(
         Expr::Opaque(l, xs) if l.starts_with("@field:") && xs.len() == 1 => {
             let (k, st) = key_t(&xs[0], args, opmap, oc, decls, fnid)?;
             Some((KeyT::Fld(Box::new(k), l["@field:".len()..].to_string()), st))
+        }
+        // `m.get(k)` of a map read from storage: that entry, in the state m was read in.
+        Expr::Opaque(l, xs) if l == "@mget" && xs.len() == 2 => {
+            let (m, st) = key_t(&xs[0], args, opmap, oc, decls, fnid)?;
+            let k = lean_guard_term(&xs[1], args, opmap, oc, decls, fnid);
+            Some((KeyT::Elem(Box::new(m), k), st))
         }
         _ => None,
     }
@@ -5683,7 +5793,8 @@ fn foreign_effect(i: InstructionValue) -> bool {
     if cn != "call.call" && cn != "call.try_call" {
         return false;
     }
-    !matches!(call_symbol(i).as_deref(), Some("balance" | "decimals" | "name" | "symbol" | "allowance"))
+    // SEP-41 reads, and `approve` (it sets an allowance, moves no balance).
+    !matches!(call_symbol(i).as_deref(), Some("balance" | "decimals" | "name" | "symbol" | "allowance" | "approve"))
 }
 
 /// Can `h` (transitively) change storage or call another contract?
@@ -5743,14 +5854,16 @@ fn effects<'c>(
         let op = |k: u32| match i.get_operand(k) { Some(Operand::Value(x)) => Some(x), _ => None };
         let callee = module.get_function(&cn).filter(|g| g.count_basic_blocks() > 0);
         let effectful = cn.contains("put_contract_data") || cn.contains("del_contract_data") || foreign_effect(i)
-            || (cn == "call.call" && call_symbol(i).as_deref() == Some("transfer"))
+            || (cn == "call.call" && matches!(call_symbol(i).as_deref(), Some("transfer" | "transfer_from")))
             || callee.is_some_and(may_effect);
         // inside a loop: how many times it runs is not tracked.
         if effectful && i.get_parent().and_then(|b| cfg.bidx(b)).is_some_and(|b| loops[b].is_some()) {
             out.push((i, at, None, havoc("all")));
             continue;
         }
-        if cn == "call.call" && call_symbol(i).as_deref() == Some("transfer") {
+        // `transfer(from, to, amount)`, `transfer_from(spender, from, to, amount)`.
+        let sym = if cn == "call.call" { call_symbol(i) } else { None };
+        if let Some(skip) = match sym.as_deref() { Some("transfer") => Some(0), Some("transfer_from") => Some(1), _ => None } {
             let tok = op(0).map(|x| value_expr(x, h, module, memo, 40)).unwrap_or(Expr::Opaque("?".into(), vec![]));
             let parts: Vec<Expr> = op(2)
                 .map(linmem_vals_ordered)
@@ -5758,8 +5871,8 @@ fn effects<'c>(
                 .into_iter()
                 .map(|x| value_expr(x, h, module, memo, 40))
                 .collect();
-            if parts.len() == 3 {
-                let p = |k: usize| val_literal(parts[k].clone());
+            if parts.len() == 3 + skip {
+                let p = |k: usize| val_literal(parts[skip + k].clone());
                 out.push((i, at, Some((tok, p(0), p(1), p(2))), None));
             } else {
                 out.push((i, at, None, havoc("ledgers")));
@@ -5819,6 +5932,7 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
     let cfg = Cfg::build(f);
     let fnid: String = f.get_name().to_string_lossy().chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
     let tid = format!("{fnid}_e");
+
     let (mut opmap, mut oc, mut decls) = (HashMap::new(), 0usize, vec![]);
     let structs = spec_structs(module);
     let named = |e: &Expr| ctx_simplify(&apply_facts(&assume_arg_types(&name_slots(e, module, kb, &segs), &args, &structs)));
@@ -5881,6 +5995,8 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
     let mut unk_key = false;
     let mut cur = "st.pre".to_string();
     let mut nstate = 0;
+    // states that differ from the previous one only in token balances.
+    let mut bal_only: HashSet<String> = HashSet::new();
     for (_site, conds, tx, wr) in &evs {
         let cs = cond_str(conds, &mut opmap, &mut oc, &mut decls);
         let when = cs.as_ref().map(|c| format!(", when `{c}`")).unwrap_or_default();
@@ -5900,6 +6016,7 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
             let ok = format!("xferOk ({ledger}) {cur} ({fr}) ({tr}) @D:{aname}@");
             conjs_tx.push((format!("token transfer {} accepted", aname), match &cs { Some(c) => format!("(({c}) → {ok})"), None => ok }));
             defs.push((format!("s{nstate}"), "Storage", next(format!("xfer ({ledger}) {cur} ({fr}) ({tr}) @D:{aname}@"), &cur)));
+            bal_only.insert(format!("@D:s{nstate}@"));
             for p in [&fr, &tr] {
                 let k = format!(".bal ({ledger}) ({p})");
                 if !writes.contains(&k) {
@@ -5918,6 +6035,9 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
             events.push(format!("{}{when}", if all { "an effect the model doesn't interpret (in a loop, or too deep): all storage open" } else { "a call into another contract: token ledgers open" }));
             nstate += 1;
             defs.push((format!("s{nstate}"), "Storage", next(h, &cur)));
+            if !all {
+                bal_only.insert(format!("@D:s{nstate}@"));
+            }
             cur = format!("@D:s{nstate}@");
             continue;
         }
@@ -5948,7 +6068,49 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
         }
         let mut sets = vec![];
         let del = matches!(v, Expr::Opaque(l, x) if l == "@del" && x.is_empty());
-        if !del {
+        // a host Map written back after `put`s: the map it was read as (in the
+        // current state, from this same key), then each put in order — a later
+        // put of the same key overwrites an earlier one.
+        let mut puts: Vec<(&Expr, &Expr)> = vec![];
+        let mut base = v;
+        while let Expr::Opaque(l, xs) = base {
+            if l != "@mput" || xs.len() != 3 {
+                break;
+            }
+            puts.push((&xs[1], &xs[2]));
+            base = &xs[0];
+        }
+        puts.reverse();
+        let same_map = !puts.is_empty()
+            && kt.is_some()
+            && key_t(base, &args, &mut HashMap::new(), &mut 0, &mut vec![], &tid)
+                .is_some_and(|(b, st)| {
+                    // read in the current state, or before only balance moves.
+                    let from = st.strip_prefix("@D:s").and_then(|x| x.strip_suffix('@')).and_then(|x| x.parse::<usize>().ok()).unwrap_or(0);
+                    Some(b.raw()) == kt.as_ref().map(|k| k.raw())
+                        && (st == "st.pre" || st.starts_with("@D:s"))
+                        && (from + 1..=nstate).all(|j| bal_only.contains(&format!("@D:s{j}@")))
+                });
+        if !del && same_map {
+            for (k, x) in &puts {
+                let kr = lean_guard_term(k, &args, &mut opmap, &mut oc, &mut decls, &tid);
+                let ek = KeyT::Elem(Box::new(kt.clone().unwrap()), kr);
+                let er = ek.render();
+                if matches!(x, Expr::Opaque(l, _) if l.starts_with("@struct:")) {
+                    flatten(Some(ek), er.clone(), x, &mut sets);
+                } else {
+                    // an entry value that isn't a reconstructed struct: its fields are open.
+                    sets.push((format!("@under:{er}"), Expr::Opaque("?".into(), vec![])));
+                }
+                sets.push((format!(".has ({er})"), Expr::Const(1)));
+            }
+        } else if !del && (!puts.is_empty() || !matches!(v, Expr::Opaque(l, _) if l.starts_with("@struct:"))
+            && lean_guard_term(v, &args, &mut HashMap::new(), &mut 0, &mut vec![], &tid).starts_with("(u."))
+        {
+            // an opaque value: whatever is stored under the key (fields, map
+            // entries) is open too, not just the key itself.
+            sets.push((format!("@under:{key}"), Expr::Opaque("?".into(), vec![])));
+        } else if !del {
             flatten(kt.clone(), key.clone(), v, &mut sets);
         }
         // the key's presence: set → 1, remove → 0.
@@ -5967,12 +6129,22 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
         let sets: Vec<(String, Expr)> = sets
             .into_iter()
             .map(|(k, v)| match k.strip_prefix(".has (").and_then(|r| r.strip_suffix(')')) {
+                _ if k.starts_with("@under:") => (k, v),
                 Some(root) => (format!(".has ({})", name_key(root, &mut defs)), v),
                 None => (name_key(&k, &mut defs), v),
             })
             .collect();
         let mut upd = cur.clone();
         for (key, v) in &sets {
+            if let Some(m) = key.strip_prefix("@under:") {
+                oc += 1;
+                upd = format!("({upd}).setUnder ({m}) (u.s {oc})");
+                upd_vals.push((m.to_string(), format!("u.s {oc}")));
+                if !writes.iter().any(|w| w == m) {
+                    writes.push(m.to_string());
+                }
+                continue;
+            }
             let mut val = lean_guard_term(v, &args, &mut opmap, &mut oc, &mut decls, &tid);
             // a computed value gets a name, after its key: `new_ReserveA`.
             let simple = !val.contains(' ') || (val.starts_with('(') && val.matches(' ').count() == 1);
@@ -6466,11 +6638,13 @@ const LEAN_PRELUDE: &str = r#"-- Auto-emitted by stellar-diver: a relational mod
 --     is dropped, never guessed.
 -- Storage keys: `.var` (unit variant), `.entry` / `.tup` (variants with one /
 -- several fields), `.fld k f` (field f of the #[contracttype] struct at k),
--- `.has k` (k's presence: set → 1, remove → 0), `.bal t a` (token t's balance
--- of a). Struct arguments' fields are args named like `config.limit`.
+-- `.elem m k` (entry k of the host `Map` stored at m), `.has k` (k's presence:
+-- set → 1, remove → 0), `.bal t a` (token t's balance of a). Struct arguments'
+-- fields are args named like `config.limit`.
 --
--- Assumes: tokens the contract calls `transfer` / `balance` on behave per
--- SEP-41; addresses are encoded as `Addr` in the host's order (`obj_cmp`).
+-- Assumes: tokens the contract calls `transfer` / `transfer_from` / `approve` /
+-- `balance` on behave per SEP-41; addresses are encoded as `Addr` in the host's
+-- order (`obj_cmp`).
 
 namespace Contract
 
@@ -6481,12 +6655,21 @@ inductive Key where
   | entry (map : String) (k : Addr)
   | tup   (map : String) (ks : List Int)
   | fld   (base : Key) (f : String)
+  | elem  (map : Key) (k : Int)
   | has   (k : Key)
   | bal   (t : Addr) (a : Addr)
   deriving DecidableEq, Inhabited, Repr
 
 abbrev Storage := Key → Int
 def Storage.set (s : Storage) (k : Key) (v : Int) : Storage := fun k' => if k' = k then v else s k'
+/-- `k` is `m` or a part of the value stored at `m` (a field, a map entry, presence). -/
+def Key.under (m : Key) : Key → Bool
+  | .fld b f => .fld b f == m || Key.under m b
+  | .elem b k => .elem b k == m || Key.under m b
+  | .has b => .has b == m || Key.under m b
+  | k => k == m
+/-- storage after an opaque write to `m`: everything stored under `m` takes `h`'s values. -/
+def Storage.setUnder (s : Storage) (m : Key) (h : Storage) : Storage := fun k => if Key.under m k then h k else s k
 
 structure Call where
   fn      : String
@@ -7524,6 +7707,15 @@ const LEAN_MODES: &str = "\
         slots; nonlinear amounts/values stay `opaque`. The faithful contract shape.";
 
 fn main() {
+    // the reconstruction recurses deeply on big contracts (value_expr / mem_before
+    // per instruction); depth is bounded, the default 8MB stack isn't enough.
+    let t = std::thread::Builder::new().stack_size(4 << 30).spawn(run).unwrap();
+    if t.join().is_err() {
+        std::process::exit(101);
+    }
+}
+
+fn run() {
     let mut args = std::env::args().skip(1);
     let path = PathBuf::from(
         args.next()
@@ -7571,6 +7763,7 @@ fn main() {
     let ctx = Context::create();
     let buf = MemoryBuffer::create_from_file(&path).expect("read .ll");
     let module = ctx.create_module_from_ir(buf).expect("parse .ll");
+    RODATA.with(|r| *r.borrow_mut() = rodata_segs(&module));
 
     if storage_schema {
         emit_storage_schema(&module, &path);

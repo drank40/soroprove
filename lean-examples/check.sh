@@ -9,7 +9,8 @@ tmp=$(mktemp -d)
 status=0
 for ll in *.ll; do
   n=${ll%.ll}
-  "$SLICE" "$ll" --lean model > "$n.lean" 2>/dev/null || { echo "$n: slice failed"; status=1; continue; }
+  # a big contract can need a larger expression budget (`$n.cap`).
+  SLICE_CAP=$(cat "$n.cap" 2>/dev/null || echo 1500) "$SLICE" "$ll" --lean model > "$n.lean" 2>/dev/null || { echo "$n: slice failed"; status=1; continue; }
   f="$tmp/$n.lean"
   cp "$n.lean" "$f"
   [ -f "proofs/$n.lean" ] && cat "proofs/$n.lean" >> "$f"
