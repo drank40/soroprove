@@ -77,14 +77,53 @@
     return { used, frac: Math.min(1, used / job.budget) };
   }
 
+  /* Lean syntax highlighting, one line at a time (`state.block`: inside `/- … -/`). */
+  const LEAN_DECL = new Set(['theorem', 'lemma', 'def', 'abbrev', 'structure', 'inductive', 'instance', 'where', 'namespace',
+    'end', 'open', 'section', 'variable', 'example', 'private', 'noncomputable', 'set_option', 'in', 'by', 'fun', 'let', 'have',
+    'show', 'from', 'if', 'then', 'else', 'match', 'with', 'do', 'at', 'calc', 'deriving', 'import']);
+  const LEAN_TAC = new Set(['intro', 'intros', 'obtain', 'rcases', 'cases', 'induction', 'simp', 'simp_all', 'simpa', 'dsimp',
+    'omega', 'decide', 'exact', 'refine', 'apply', 'constructor', 'rfl', 'unfold', 'rw', 'rwa', 'subst', 'use', 'exists',
+    'norm_num', 'linarith', 'ring', 'split', 'by_cases', 'by_contra', 'contradiction', 'exfalso', 'trivial', 'assumption',
+    'specialize', 'generalize', 'injection', 'congr', 'ext', 'funext', 'left', 'right', 'first', 'try', 'repeat', 'all_goals',
+    'any_goals', 'grind', 'aesop', 'positivity', 'nlinarith', 'native_decide', 'sorry', 'admit', 'show_term', 'next', 'case']);
+  const LEAN_TYPE = new Set(['Prop', 'Type', 'Int', 'Nat', 'Bool', 'True', 'False', 'Step', 'Storage', 'Key', 'Addr', 'Call', 'Unk', 'List', 'Option']);
+  const LEAN_TOK = /--.*|\/-|"(?:[^"\\]|\\.)*"|\d+(?:\.\d+)?|[A-Za-z_À-ɏ][\w'!?.À-ɏ]*|[→←↔∀∃¬∧∨≠≤≥⟨⟩∈∉⊆×λ·⊢|:=<>+\-*\/%^@$#&]+|\s+|./gy;
+  function hlLean(line, state) {
+    let out = '', i = 0;
+    while (i < line.length) {
+      if (state.block) {
+        const j = line.indexOf('-/', i);
+        const end = j < 0 ? line.length : j + 2;
+        out += `<span class="hl-cm">${esc(line.slice(i, end))}</span>`;
+        i = end;
+        if (j >= 0) state.block = false;
+        continue;
+      }
+      LEAN_TOK.lastIndex = i;
+      const t = LEAN_TOK.exec(line)[0];
+      i += t.length;
+      if (t.startsWith('--')) out += `<span class="hl-cm">${esc(t)}</span>`;
+      else if (t === '/-') { state.block = true; out += `<span class="hl-cm">/-</span>`; }
+      else if (t[0] === '"') out += `<span class="hl-str">${esc(t)}</span>`;
+      else if (/^\d/.test(t)) out += `<span class="hl-num">${esc(t)}</span>`;
+      else if (LEAN_DECL.has(t)) out += `<span class="hl-kw">${esc(t)}</span>`;
+      else if (LEAN_TAC.has(t)) out += `<span class="hl-tac">${esc(t)}</span>`;
+      else if (LEAN_TYPE.has(t)) out += `<span class="hl-ty">${esc(t)}</span>`;
+      else if (/^[→←↔∀∃¬∧∨≠≤≥⟨⟩∈∉⊆×λ·⊢|:=<>+\-*\/%^@$#&]+$/.test(t)) out += `<span class="hl-op">${esc(t)}</span>`;
+      else out += esc(t);
+    }
+    return out;
+  }
+
   function proofView(job) {
     const errs = new Map();
     for (const m of job.check?.messages || [])
       if (m.line > 0) errs.set(m.line, [...(errs.get(m.line) || []), m.text]);
     const lines = (job.proof || '').replace(/\n$/, '').split('\n');
+    const state = { block: false };
     const rows = lines.map((l, i) => {
       const e = errs.get(i + 1);
-      return `<span class="ln${e ? ' err' : ''}"${e ? ` title="${esc(e.join('\n\n'))}"` : ''}><i>${i + 1}</i>${esc(l) || ' '}</span>`;
+      return `<span class="ln${e ? ' err' : ''}"${e ? ` title="${esc(e.join('\n\n'))}"` : ''}><i>${i + 1}</i>${hlLean(l, state) || ' '}</span>`;
     }).join('');
     return `<pre class="vproof">${rows || '<span class="cm">(the agent has not written a proof yet)</span>'}</pre>`;
   }
@@ -190,7 +229,7 @@
         ${job.status === 'running' ? `<button class="stop">Stop</button>` : ''}</header>
       <div class="budget" title="time used of the budget"><div style="width:${(frac * 100).toFixed(1)}%"></div>
         <span>${used.toFixed(0)}s / ${job.budget}s · ${job.versions} version${job.versions === 1 ? '' : 's'} checked</span></div>
-      <code class="vstmt">${esc(job.stmt)}</code>
+      <code class="vstmt">${(() => { const st = { block: false }; return job.stmt.split('\n').map((l) => hlLean(l, st)).join('\n'); })()}</code>
       ${checkView(job)}
       ${job.cex ? cexView(job) : ''}
       ${proofView(job)}

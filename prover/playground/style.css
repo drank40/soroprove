@@ -252,23 +252,40 @@ dialog textarea {
 .vlog > div { max-height: 200px; overflow: auto; font-size: 10.5px; line-height: 1.45; white-space: pre-wrap; }
 .vlog i { color: #AAA; font-style: normal; }
 .vlog .tool { color: #2C6E9E; font-family: var(--mono); }
-.cex { margin: 8px 0; padding: 8px; border: 2px solid #D9372B; border-radius: 6px; background: #FFF8F7; }
-.cex-title { font-weight: bold; color: #A1271E; margin-bottom: 6px; }
-.cex-call { font: 11.5px/1.6 var(--mono); padding: 4px 6px; background: #fff; border: 1px solid #E3C3C0; border-radius: 4px; }
-.cex-call .fn { color: #CC5B22; font-weight: bold; }
-.cex-call .by { color: var(--muted); margin-left: 6px; }
-.addr { color: #8A55D7; font-weight: bold; }
-.addr small { font-weight: normal; color: #8A55D7; opacity: .8; }
-.unset { color: #AAA; font-style: italic; }
-.cex-store { width: 100%; margin-top: 6px; border-collapse: collapse; font-size: 11px; }
-.cex-store th { text-align: left; color: var(--muted); font-weight: normal; border-bottom: 1px solid #E3C3C0; padding: 2px 4px; }
-.cex-store td { padding: 3px 4px; border-bottom: 1px solid #F1E2E0; vertical-align: top; }
-.cex-store td small { color: var(--muted); }
-.cex-store .arrow { color: #AAA; text-align: center; }
-.cex-store tr.chg { background: #FFE9A8; }
-.cex-store tr.chg .arrow { color: #A1271E; font-weight: bold; }
-.cex-claim { margin-top: 6px; font-size: 11px; color: #555; }
-.cex-holders { margin-top: 5px; font-size: 11px; color: #555; }
+/* the counterexample, as a Scratch stack: one block per fact of the call */
+.cex { margin: 10px 0 6px; }
+.cex .stack { display: flex; flex-direction: column; align-items: flex-start; }
+.cex .sb { position: relative; max-width: 100%; box-sizing: border-box; padding: 7px 12px 7px 10px; margin-top: 4px;
+  color: #fff; font: bold 12px/1.5 "Helvetica Neue", Helvetica, Arial, sans-serif; border-radius: 4px;
+  border: 1px solid rgba(0,0,0,.18); box-shadow: 0 1px 0 rgba(0,0,0,.12); }
+.cex .sb::before { content: ""; position: absolute; left: 14px; top: -5px; width: 18px; height: 5px;
+  background: inherit; border: inherit; border-bottom: 0; border-radius: 3px 3px 0 0; }
+.cex .sb.hat { border-radius: 16px 16px 4px 4px; padding-top: 10px; background: #E1A91A; margin-top: 0; }
+.cex .sb.hat::before { display: none; }
+.cex .sb.args { background: #BB42C3; }
+.cex .sb.who { background: #8A55D7; }
+.cex .sb.op { background: #5CB712; }
+.cex .sb.op small { opacity: .8; font-weight: normal; margin-left: 4px; }
+.cex .sb.store { background: #EE7D16; }
+.cex .sb.store.same { background: #F3A85E; }
+.cex .sb.note { background: #A7A9AC; font-weight: normal; }
+.cex .sb.cap { background: #D9372B; border-radius: 4px 4px 12px 12px; }
+.cex .sp { display: inline-block; margin: 0 2px; padding: 0 8px; border-radius: 999px; background: #fff; color: #333;
+  font-weight: normal; line-height: 18px; }
+.cex .sp.fn { color: #9A6F00; font-weight: bold; }
+.cex .sp.num { min-width: 12px; text-align: center; }
+.cex .sp.num.unset { color: #999; font-style: italic; }
+.cex .sp.addr { color: #5B33A8; }
+.cex .sp.key { color: #A55300; }
+
+/* Lean, highlighted */
+.hl-kw { color: #7B3FC9; font-weight: bold; }
+.hl-tac { color: #1C86C0; }
+.hl-ty { color: #0E8A60; }
+.hl-cm { color: #999; font-style: italic; }
+.hl-str { color: #C2541C; }
+.hl-num { color: #A8329F; }
+.hl-op { color: #888; }
 
 /* Uploads */
 #dropzone {
