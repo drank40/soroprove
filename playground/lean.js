@@ -251,8 +251,11 @@
         else code = s.text;
         break;
       case 'index': {
-        const st = store(), w = sub('W'), tok = D.ledgers[s.map];
-        code = tok ? `(bal (${st} ${tok}) ${st} ${w})` : `(getOr0 ${st} (${s.map} ${w}))`;
+        const st = store(), w = sub('W'), tok = D.ledgers[s.map], arg = D.argLedgers?.[s.map];
+        code = tok ? `(bal (${st} ${tok}) ${st} ${w})`
+          : arg ? `(bal (${call('a token argument')}.argA "${arg}") ${st} ${w})`
+          : D.fields?.includes(s.map) ? `(${st} (${s.map} ${w}))`
+          : `(getOr0 ${st} (${s.map} ${w}))`;
         break;
       }
       case 'derived': code = `(${s.text} ${call('a derived value')})`.replace('st.call)', 'st)'); break;
@@ -290,7 +293,11 @@
           case 'gainsAtLeast': code = `${pre('T')} + ${sub('D')} ≤ ${post('T')}`; break;
           case 'returns': code = `st.ret = ${post('T')}`; break;
           case 'signedBy': code = `${pre('T')} ∈ ${call('signedBy')}.signers`; break;
-          case 'calls': code = `${sub('E')} ${env.hist ? (ctx.problems.push('"calls" needs a call'), 'st') : 'st'}`; break;
+          case 'calls': {   // the entry point that ran: its name (each step is one of `entries`)
+            if (env.hist) ctx.problems.push('"calls" needs a call');
+            code = `st.call.fn = "${(b.inputs?.E?.block?.type || '').split('.').pop()}"`;
+            break;
+          }
           case 'isCaller': code = `${sub('A')} = ${call('the caller')}.caller`; break;
           default: ctx.problems.push(`"${s.head}" is not available for this model`); code = HOLE;
         }

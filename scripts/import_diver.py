@@ -25,6 +25,8 @@ def vocabulary(src, name, key, storage):
     points, arguments, and the values each entry point derives."""
     vars_ = re.findall(r'^@\[simp\] def (\w+) : Key := \.var "(\w+)"', src, re.M)
     maps = re.findall(r'^@\[simp\] def (\w+) \(k1 : Addr\) : Key := \.entry "(\w+)" k1', src, re.M)
+    # A field of the struct stored at each entry of a host Map: `AllRecordData.balance k`.
+    fields = re.findall(r'^@\[simp\] def (\w+\.\w+) \(k1 : (?:Addr|Int)\) : Key := \.fld \(\w+\.get k1\) "\w+"', src, re.M)
     found = re.search(r"^def entries : List \(Step → Prop\) := \[([^\]]*)\]", src, re.M)
     assert found, "no `entries` in the model"
     entries = found.group(1)
@@ -51,20 +53,27 @@ def vocabulary(src, name, key, storage):
             (args if m[1] == "arg" else addr_args)[m[2]] = ty
         elif ty == "Int" and entry in entries:
             derived.append(f"{entry}.{nm}")
+    # An address argument the contract moves tokens of: that token's ledger, `bal (argA a) s w`.
+    arg_ledger = {f"Balance_{body.split('"')[1]}": body.split('"')[1] for entry, nm, ty, body in defs
+                  if ty == "Addr" and re.match(r'st\.call\.argA "\w+"$', body.strip())
+                  and re.search(rf"(?:bal|xfer) \({entry}\.{nm} st\)", src)}
     words = lambda n: re.sub(r"(?<=[a-z])(?=[A-Z])", " ", n).lower()
     var_rows = [[v, "Addr" if v in tokens else "Int", words(v)] for v, _ in vars_]
     map_rows = [[m, f"{words(m)} of"] for m, _ in maps] + [[b, f"the {words(t)} balance of"] for b, t in ledger.items()]
+    map_rows += [[f, f"{f.replace('.', ' ')} of"] for f in fields]
+    map_rows += [[b, f"the `{a}` token balance of"] for b, a in arg_ledger.items()]
     C = {
         "title": f"{name} (stellar-diver model, untouched)",
         "kind": "diver",
         "source": f"StellarLean/Diver/{name}.lean",
         "namespace": "Contract",
-        "prelude": [f"import StellarLean.Diver.{name}", "", f"namespace Diver.{name}.Playground", "", "open Contract"],
+        "prelude": [f"import StellarLean.Diver.{name}", "import StellarLean.DiverAnswer", "",
+                    f"namespace Diver.{name}.Playground", "", "open Contract"],
         "epilogue": [f"end Diver.{name}.Playground"],
-        "header": [f"import StellarLean.Diver.{name}", "", "open Contract"],
+        "header": [f"import StellarLean.Diver.{name}", "import StellarLean.DiverAnswer", "", "open Contract"],
         "footer": [],
         "targets": [["contract", "each call"], ["history", "every history"]],
-        "tactics": ["vibe", "answer", "sorry"],  # answer: refused at check time, see server.py
+        "tactics": ["vibe", "answer", "sorry"],
         "vars": var_rows,
         "maps": map_rows,
         "who": ["caller"],
@@ -75,7 +84,8 @@ def vocabulary(src, name, key, storage):
         "addrPreds": [],
         "invariants": [],
         "features": ["calls", "compare"],
-        "diver": {"ledgers": ledger, "maps": [m for m, _ in maps], "addrArgs": list(addr_args),
+        "diver": {"ledgers": ledger, "maps": [m for m, _ in maps], "fields": fields, "argLedgers": arg_ledger,
+                  "addrArgs": list(addr_args),
                   "derived": derived},
         "examples": [],
     }

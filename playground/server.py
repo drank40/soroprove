@@ -65,7 +65,7 @@ def allowed(vocab, C):
 
 # Statements about a stellar-diver model are printed straight to Lean over the model's
 # names; these are the only other words they use.
-DIVER_GLUE = {"st", "pre", "post", "call", "caller", "arg", "argA", "signers", "ret", "entries", "e",
+DIVER_GLUE = {"st", "pre", "post", "call", "caller", "fn", "arg", "argA", "signers", "ret", "entries", "e",
               "getOr0", "bal", "pool", "Run", "me", "s", "t", "Addr", "Storage"}
 DIVER_TOKEN = re.compile(r'\s+|"[A-Za-z_][\w.]*"|\d+|[A-Za-z_][A-Za-z0-9_\']*(?:\.[A-Za-z_][A-Za-z0-9_\']*)*'
                          r'|=>|[()\[\],:+\-*]|∀|∃|∈|→|¬|∧|∨|=|≤|<|≠')
@@ -78,8 +78,9 @@ def validate_diver(C, th):
     if th.get("tactic") not in C["tactics"]:
         raise ValueError("unknown tactic")
     D = C["diver"]
-    names = DIVER_GLUE | {v for v, _, _ in C["vars"]} | set(D["maps"]) | set(D["derived"]) | set(C["entries"])
-    strings = {a for a, _ in C["amounts"]} | set(D["addrArgs"])
+    names = DIVER_GLUE | {v for v, _, _ in C["vars"]} | set(D["maps"]) | set(D.get("fields", [])) \
+        | set(D["derived"]) | set(C["entries"])
+    strings = {a for a, _ in C["amounts"]} | set(D["addrArgs"]) | set(C["entries"])
     for field in ("stmt", "pred"):
         text = th.get(field)
         if text is None and field == "pred":
@@ -163,24 +164,12 @@ def check(vocab, req):
         validate(vocab, C, th)
         if th["tactic"] == "vibe":
             raise ValueError("vibe theorems go to /vibe")
-    # `answer` needs the facts `scripts/gen_facts.py` generates for the playground's own
-    # model format; stellar-diver models have none yet, so it is refused, not run.
-    refused = {}
-    if C.get("kind") == "diver":
-        refused = {th["name"]: {"name": th["name"], "status": "unproved", "messages": [
-            "answer is not available yet for models emitted by stellar-diver (it needs facts "
-            "generated for the playground's own model format). Use vibe, or sorry to check the statement."]}
-            for th in ths if th["tactic"] == "answer"}
-        ths = [th for th in ths if th["tactic"] != "answer"]
-        if not ths:
-            return {"results": list(refused.values()), "general": [], "elapsed": 0}
-
     lines = list(C["prelude"]) + [""]
     spans = []
     for k, th in enumerate(ths):
         start = len(lines) + 1
-        if C.get("kind") == "diver":
-            lines += [f"theorem {th['name']} :", f"    {th['stmt']} := by", f"  {th['tactic']}", ""]
+        if C.get("kind") == "diver":   # the statement spans several lines
+            lines += f"theorem {th['name']} :\n    {th['stmt']} := by\n  {th['tactic']}\n".split("\n")
         else:
             lines += [f"theorem {th['name']} :", f"    {th['target']} ⊨ {th['stmt']} := by", f"  {th['tactic']}", ""]
         spans.append((start, len(lines)))
@@ -225,9 +214,6 @@ def check(vocab, req):
         for r in results:
             if r["status"] in ("proved", "typed"):
                 r["status"] = "error"
-    if refused:   # back in the order the theorems were sent
-        byname = {r["name"]: r for r in results} | refused
-        results = [byname[th["name"]] for th in req["theorems"]]
     return {"results": results, "general": general, "elapsed": round(elapsed, 1)}
 
 
