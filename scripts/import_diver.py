@@ -64,7 +64,7 @@ def vocabulary(src, name, key, storage):
         "header": [f"import StellarLean.Diver.{name}", "", "open Contract"],
         "footer": [],
         "targets": [["contract", "each call"], ["history", "every history"]],
-        "tactics": ["vibe", "sorry"],
+        "tactics": ["vibe", "answer", "sorry"],  # answer: refused at check time, see server.py
         "vars": var_rows,
         "maps": map_rows,
         "who": ["caller"],

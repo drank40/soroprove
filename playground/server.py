@@ -163,6 +163,17 @@ def check(vocab, req):
         validate(vocab, C, th)
         if th["tactic"] == "vibe":
             raise ValueError("vibe theorems go to /vibe")
+    # `answer` needs the facts `scripts/gen_facts.py` generates for the playground's own
+    # model format; stellar-diver models have none yet, so it is refused, not run.
+    refused = {}
+    if C.get("kind") == "diver":
+        refused = {th["name"]: {"name": th["name"], "status": "unproved", "messages": [
+            "answer is not available yet for models emitted by stellar-diver (it needs facts "
+            "generated for the playground's own model format). Use vibe, or sorry to check the statement."]}
+            for th in ths if th["tactic"] == "answer"}
+        ths = [th for th in ths if th["tactic"] != "answer"]
+        if not ths:
+            return {"results": list(refused.values()), "general": [], "elapsed": 0}
 
     lines = list(C["prelude"]) + [""]
     spans = []
@@ -214,6 +225,9 @@ def check(vocab, req):
         for r in results:
             if r["status"] in ("proved", "typed"):
                 r["status"] = "error"
+    if refused:   # back in the order the theorems were sent
+        byname = {r["name"]: r for r in results} | refused
+        results = [byname[th["name"]] for th in req["theorems"]]
     return {"results": results, "general": general, "elapsed": round(elapsed, 1)}
 
 
