@@ -2249,7 +2249,8 @@ struct ModelEntry {
     returns: bool,                      // the entrypoint returns a value
     auth: Option<String>,               // the arg whose `require_auth()` gates the call
     inv: bool,                          // guards a trap with a constant-product (x*y) check
-    guards: Vec<String>,                // all recovered trap (panic) guards, as relations
+    guards: Vec<Guard>,                 // all recovered trap (panic) guards (pass conditions)
+    gdecls: Vec<String>,                // opaque Step-terms the guards name
 }
 
 /// The arg whose `require_auth()` the entrypoint calls — the signer gate. The
@@ -2322,6 +2323,37 @@ fn blk_traps(b: BasicBlock, depth: u32) -> bool {
             Some(Operand::Block(nb)) => blk_traps(nb, depth - 1),
             _ => false,
         }),
+        None => false,
+    }
+}
+
+/// Does block `b` unavoidably trap — it traps directly, or its terminator is an
+/// UNCONDITIONAL branch to a block that forces a trap? (This is the `if bad {
+/// panic }` target: a short forced path to `soroban.trap`, not a conditional
+/// edge that merely *could* reach some downstream trap.)
+fn forces_trap(b: BasicBlock, depth: u32) -> bool {
+    let mut it = b.get_first_instruction();
+    while let Some(i) = it {
+        if i.get_opcode() == InstructionOpcode::Unreachable
+            || callee_name(i).map_or(false, |n| n.contains("trap"))
+        {
+            return true;
+        }
+        it = i.get_next_instruction();
+    }
+    if depth == 0 {
+        return false;
+    }
+    match b.get_terminator() {
+        Some(t) => {
+            let blocks: Vec<BasicBlock> = (0..t.get_num_operands())
+                .filter_map(|k| match t.get_operand(k) {
+                    Some(Operand::Block(nb)) => Some(nb),
+                    _ => None,
+                })
+                .collect();
+            blocks.len() == 1 && forces_trap(blocks[0], depth - 1)
+        }
         None => false,
     }
 }
@@ -2399,7 +2431,14 @@ fn has_product_invariant_trap(f: FunctionValue) -> bool {
 /// The relation a branch condition encodes, as the two compared values: a plain
 /// `icmp`, or the i128/i256 limb-compare idiom `select (icmp eq hi) cmplo cmphi`.
 fn gate_vals(cond: BasicValueEnum) -> Option<(RelOp, BasicValueEnum, BasicValueEnum)> {
+    use inkwell::IntPredicate::*;
+    let pred = |p| match p {
+        SLT | ULT => RelOp::Lt, SLE | ULE => RelOp::Le, SGT | UGT => RelOp::Gt,
+        SGE | UGE => RelOp::Ge, EQ => RelOp::Eq, NE => RelOp::Ne,
+    };
     let i = as_instr(cond)?;
+    // the i128/i256 idiom `select (icmp eq hi) cmplo cmphi`: its DIRECTION is the
+    // hi-limb comparison's predicate (`slt`⇒`<`, `sgt`⇒`>`, …), not always `<`.
     if i.get_opcode() == InstructionOpcode::Select {
         let hv = match i.get_operand(2) { Some(Operand::Value(v)) => v, _ => return None };
         let hi = as_instr(hv)?;
@@ -2408,17 +2447,12 @@ fn gate_vals(cond: BasicValueEnum) -> Option<(RelOp, BasicValueEnum, BasicValueE
         }
         let a = match hi.get_operand(0) { Some(Operand::Value(v)) => v, _ => return None };
         let b = match hi.get_operand(1) { Some(Operand::Value(v)) => v, _ => return None };
-        return Some((RelOp::Lt, a, b)); // the idiom denotes a magnitude `<`
+        return Some((pred(hi.get_icmp_predicate()?), a, b));
     }
     if i.get_opcode() == InstructionOpcode::ICmp {
-        use inkwell::IntPredicate::*;
-        let op = match i.get_icmp_predicate()? {
-            SLT | ULT => RelOp::Lt, SLE | ULE => RelOp::Le, SGT | UGT => RelOp::Gt,
-            SGE | UGE => RelOp::Ge, EQ => RelOp::Eq, NE => RelOp::Ne,
-        };
         let a = match i.get_operand(0) { Some(Operand::Value(v)) => v, _ => return None };
         let b = match i.get_operand(1) { Some(Operand::Value(v)) => v, _ => return None };
-        return Some((op, a, b));
+        return Some((pred(i.get_icmp_predicate()?), a, b));
     }
     None
 }
@@ -2430,61 +2464,93 @@ fn gate_vals(cond: BasicValueEnum) -> Option<(RelOp, BasicValueEnum, BasicValueE
 /// reconstructor), keeping only guards that mention such a quantity. This drops
 /// the low-level plumbing (Val tag checks, i128 sign/overflow checks, and the
 /// uninterpreted arithmetic internals) that every entrypoint is full of.
-fn entry_guards<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> Vec<String> {
+fn entry_guards<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> GuardSet {
     let cfg = Cfg::build(f);
-    let ipdom = ipostdoms(&cfg);
-    let cd = control_deps(&cfg, &ipdom);
     let args = arg_table(f);
+    let fnid: String = f.get_name().to_string_lossy().chars()
+        .map(|ch| if ch.is_alphanumeric() { ch } else { '_' }).collect();
     let mut vmemo: HashMap<String, Option<Expr>> = HashMap::new();
-    let (mut out, mut seen): (Vec<String>, HashSet<String>) = (vec![], HashSet::new());
-    for s in find_sinks(&cfg, &[SinkKind::Trap], "call", None) {
-        let slice = backward_slice(&cfg, &cd, &s.vals, &[s.instr]);
-        for (_, cond) in classify(&slice, s.instr).guards {
-            // split only And/Or, keeping the i128 select-compare idiom atomic so
-            // gate_vals recovers it as one relation (not its limb sub-compares).
-            let mut leaves = vec![];
-            bool_and_or(cond, 8, &mut leaves);
-            for leaf in leaves {
-                let Some((op, l, r)) = gate_vals(leaf) else { continue };
-                // drop equality gates: those are Val-tag checks (`= 77`), i128
-                // sign/overflow checks (`= -1` / `= 0`), and limb sign-extension —
-                // the contract's real guards are all ordering comparisons.
-                if matches!(op, RelOp::Eq) {
-                    continue;
-                }
-                // reconstruct each side over args + storage with value_expr (the
-                // same reconstructor used for storage writes).
-                let le = simplify(value_expr(l, f, module, &mut vmemo, 40));
-                let re = simplify(value_expr(r, f, module, &mut vmemo, 40));
-                if !(expr_has_named(&le) || expr_has_named(&re)) {
-                    continue;
-                }
-                // drop i128 signed-overflow checks: `And(Xor(a-b,a), Xor(a,b)) < 0`.
-                if matches!(op, RelOp::Lt) && is_zero(&re) && is_sub_overflow(&le) {
-                    continue;
-                }
-                // collapse the i128 sign-extension `phi(x, AShr(x,63))` back to `x`.
-                let (le, re) = (i128_sext(&le), i128_sext(&re));
-                let g = format!("{} {} {}", render_expr(&le, &args), op.lean(), render_expr(&re, &args));
-                if seen.insert(g.clone()) {
-                    out.push(g);
-                }
+    let mut opmap: HashMap<String, String> = HashMap::new();
+    let (mut oc, mut decls): (usize, Vec<String>) = (0, vec![]);
+    let (mut gs, mut seen): (Vec<Guard>, HashSet<String>) = (vec![], HashSet::new());
+    // A guard is a conditional branch one of whose immediate edges goes straight
+    // to a panic (`if bad { panic }`). The PASS condition is the other edge's
+    // value of the branch condition — polarity read from which edge panics, not
+    // from any particular trap sink.
+    for (bi, blk) in cfg.blocks.iter().enumerate() {
+        let Some(term) = blk.get_terminator() else { continue };
+        if term.get_opcode() != InstructionOpcode::Br {
+            continue;
+        }
+        let Some(Operand::Value(cond)) = term.get_operand(0) else { continue };
+        if !is_bool(cond) {
+            continue; // unconditional branch
+        }
+        let succs = &cfg.succ[bi];
+        if succs.len() != 2 {
+            continue;
+        }
+        // LLVM lays conditional-branch block operands out as [cond, false, true],
+        // so succs[0] is the FALSE target and succs[1] the TRUE target.
+        let (false_traps, true_traps) =
+            (forces_trap(cfg.blocks[succs[0]], 6), forces_trap(cfg.blocks[succs[1]], 6));
+        let negate = match (true_traps, false_traps) {
+            (true, false) => true,   // the true edge panics -> pass = ¬cond
+            (false, true) => false,  // the false edge panics -> pass = cond
+            _ => continue,           // both or neither: not a clean guard
+        };
+        // split so each leaf is a conjunct of the PASS condition: ¬(a∨b)=¬a∧¬b
+        // when negating, (a∧b) when keeping.
+        let mut leaves = vec![];
+        bool_split(cond, negate, 8, &mut leaves);
+        for leaf in leaves {
+            let Some((op0, l, r)) = gate_vals(leaf) else { continue };
+            let op = if negate { op0.negate() } else { op0 };
+            if matches!(op, RelOp::Eq | RelOp::Ne) {
+                continue; // Val-tag / sign / overflow equality plumbing
             }
+            let le = simplify(value_expr(l, f, module, &mut vmemo, 40));
+            let re = simplify(value_expr(r, f, module, &mut vmemo, 40));
+            if !(expr_has_named(&le) || expr_has_named(&re)) {
+                continue;
+            }
+            // drop i128 signed-overflow checks: `And(Xor(a-b,a), Xor(a,b)) < 0`.
+            if matches!(op0, RelOp::Lt) && is_zero(&re) && is_sub_overflow(&le) {
+                continue;
+            }
+            let (le, re) = (i128_sext(&le), i128_sext(&re));
+            let comment = format!("{} {} {}", render_expr(&le, &args), op.lean(), render_expr(&re, &args));
+            if !seen.insert(comment.clone()) {
+                continue;
+            }
+            let lean = format!(
+                "{} {} {}",
+                lean_guard_term(&le, &args, &mut opmap, &mut oc, &mut decls, &fnid),
+                op.lean(),
+                lean_guard_term(&re, &args, &mut opmap, &mut oc, &mut decls, &fnid),
+            );
+            gs.push(Guard { comment, lean });
         }
     }
-    out
+    GuardSet { guards: gs, decls }
 }
 
-/// Split an i1 into its And/Or leaves (but NOT Select — the i128 compare idiom
-/// `select (icmp eq hi) cmplo cmphi` must stay whole for gate_vals to read it).
-fn bool_and_or<'c>(v: BasicValueEnum<'c>, depth: u32, out: &mut Vec<BasicValueEnum<'c>>) {
+/// A recovered transition guard: its human-readable form and its Lean conjunct.
+struct Guard { comment: String, lean: String }
+struct GuardSet { guards: Vec<Guard>, decls: Vec<String> }
+
+/// Split an i1 into conjuncts: when `split_or` (we are negating, De Morgan turns
+/// `¬(a∨b)` into `¬a ∧ ¬b`) descend through Or; otherwise descend through And.
+/// Never descend Select — the i128 compare idiom must stay whole for gate_vals.
+fn bool_split<'c>(v: BasicValueEnum<'c>, split_or: bool, depth: u32, out: &mut Vec<BasicValueEnum<'c>>) {
     if depth > 0 {
         if let Some(i) = as_instr(v) {
-            if is_bool(v) && matches!(i.get_opcode(), InstructionOpcode::And | InstructionOpcode::Or) {
+            let want = if split_or { InstructionOpcode::Or } else { InstructionOpcode::And };
+            if is_bool(v) && i.get_opcode() == want {
                 for k in 0..i.get_num_operands() {
                     if let Some(Operand::Value(o)) = i.get_operand(k) {
                         if is_bool(o) {
-                            bool_and_or(o, depth - 1, out);
+                            bool_split(o, split_or, depth - 1, out);
                         }
                     }
                 }
@@ -2494,6 +2560,46 @@ fn bool_and_or<'c>(v: BasicValueEnum<'c>, depth: u32, out: &mut Vec<BasicValueEn
     }
     out.push(v);
 }
+
+/// Render a reconstructed expression as a Lean term over the model: an argument
+/// becomes `st.call.arg "n"`, arithmetic is kept, and any subtree the pass does
+/// not name (a storage read, an i128 reconstruction) becomes a fresh `opaque`
+/// Step-term (shared by structurally-identical subtrees), recorded in `decls`.
+fn lean_guard_term(
+    e: &Expr,
+    args: &Args,
+    opmap: &mut HashMap<String, String>,
+    oc: &mut usize,
+    decls: &mut Vec<String>,
+    fnid: &str,
+) -> String {
+    match e {
+        Expr::Param(i) => match args.get(*i) {
+            Some((_, n, t)) if t == "Address" => format!("st.call.argA \"{n}\""),
+            Some((_, n, _)) => format!("st.call.arg \"{n}\""),
+            None => format!("st.call.arg \"p{i}\""),
+        },
+        Expr::Const(k) => k.to_string(),
+        Expr::Bin(o, a, b) => format!(
+            "({} {} {})",
+            lean_guard_term(a, args, opmap, oc, decls, fnid),
+            o,
+            lean_guard_term(b, args, opmap, oc, decls, fnid),
+        ),
+        // storage read / vec read / unrecognized op: a fresh opaque Step-term.
+        // (We do NOT merge by rendered shape — different i128 reconstructions
+        // print identically once their loads are opaque, and merging them would
+        // wrongly tie distinct quantities together into contradictory guards.)
+        _ => {
+            let _ = &opmap;
+            *oc += 1;
+            let nm = format!("{fnid}_g{oc}");
+            decls.push(nm.clone());
+            format!("{nm} st")
+        }
+    }
+}
+
 
 fn is_zero(e: &Expr) -> bool {
     matches!(e, Expr::Const(0))
@@ -2815,13 +2921,17 @@ fn emit_lean_model(entries: &[ModelEntry]) {
                 println!("      auth: caller signed as `{a}` (require_auth)");
             }
             for g in &e.guards {
-                println!("      gate: {g}");
+                println!("      gate: {}", g.comment);
             }
         }
         println!("-/");
         // opaque recovered-but-uninterpreted terms (transfer amounts, stored values)
         for k in 0..e.transfers.len() {
             println!("opaque {fn_id}_amt{k} : Step → Int");
+        }
+        // opaque Step-terms the recovered guards name (unresolved operands).
+        for d in &e.gdecls {
+            println!("opaque {d} : Step → Int");
         }
         for (slot, _) in &e.writes {
             println!("opaque {fn_id}_v_{} : Step → Int", san(slot));
@@ -2864,6 +2974,10 @@ fn emit_lean_model(entries: &[ModelEntry]) {
         }
         if e.inv {
             println!("  invProduct st.pre ≤ invProduct st.post ∧   -- constant-product trap");
+        }
+        // the recovered panic gates as pass conditions over args + storage.
+        for g in &e.guards {
+            println!("  {} ∧   -- gate", g.lean);
         }
         println!("  st.post = {post} ∧");
         println!("  st.writes = [{}] ∧", writes_list.join(", "));
@@ -3997,9 +4111,10 @@ fn main() {
                 .unwrap_or(false);
             let auth = entry_auth(f);
             let inv = has_product_invariant_trap(f);
-            let guards = entry_guards(f, &module);
+            let gset = entry_guards(f, &module);
+            let (guards, gdecls) = (gset.guards, gset.decls);
             model_entries.push(ModelEntry {
-                name, args, transfers, tokens, writes, returns, auth, inv, guards,
+                name, args, transfers, tokens, writes, returns, auth, inv, guards, gdecls,
             });
             continue;
         }
