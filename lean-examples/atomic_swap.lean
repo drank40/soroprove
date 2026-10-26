@@ -71,6 +71,25 @@ def bal (t : Addr) (s : Storage) (a : Addr) : Int := s (.bal t a)
 def xfer (t : Addr) (s : Storage) (src dst : Addr) (amt : Int) : Storage :=
   let s1 := s.set (.bal t src) (bal t s src - amt)
   s1.set (.bal t dst) (bal t s1 dst + amt)
+@[simp] theorem Storage.set_get (s : Storage) (k k' : Key) (v : Int) :
+    (s.set k v) k' = if k' = k then v else s k' := rfl
+/-- a balance after a transfer: plus what came in, minus what went out. -/
+@[simp] theorem bal_xfer (t t' : Addr) (s : Storage) (src dst : Addr) (amt : Int) (a : Addr) :
+    bal t (xfer t' s src dst amt) a
+      = bal t s a + (if t = t' ∧ a = dst then amt else 0) - (if t = t' ∧ a = src then amt else 0) := by
+  simp only [bal, xfer, Storage.set_get, Key.bal.injEq]
+  by_cases h1 : a = dst <;> by_cases h2 : a = src <;> by_cases h3 : t = t' <;> simp_all <;> omega
+/-- a transfer touches only balances. -/
+@[simp] theorem xfer_other (t : Addr) (s : Storage) (src dst : Addr) (amt : Int) (k : Key)
+    (h : ∀ t a, k ≠ .bal t a) : xfer t s src dst amt k = s k := by
+  simp only [xfer, Storage.set_get]; simp [h]
+/-- a write to a key that isn't a balance leaves every balance alone. -/
+@[simp] theorem bal_set (t : Addr) (s : Storage) (k : Key) (v : Int) (a : Addr) (h : ∀ t a, k ≠ .bal t a) :
+    bal t (s.set k v) a = bal t s a := by
+  simp only [bal, Storage.set_get]; simp [Ne.symm (h t a)]
+
+/-- SEP-41: a transfer succeeds only for a non-negative amount the sender holds. -/
+abbrev xferOk (t : Addr) (s : Storage) (src _dst : Addr) (amt : Int) : Prop := 0 ≤ amt ∧ amt ≤ bal t s src
 /-- storage after a call into another contract the model doesn't interpret: the
     contract's own storage is unchanged (Soroban forbids re-entry); token
     ledgers take `h`'s values. -/
@@ -115,32 +134,72 @@ namespace swap
   xfer (swap.token_b st) (swap.s5 st) (pool st) (swap.b st) (swap.amt6 st)
 end swap
 
-/-- `swap(a: Address, b: Address, token_a: Address, token_b: Address, amount_a: i128, min_b_for_a: i128, amount_b: i128, min_a_for_b: i128)`
-    effects, in execution order (states `swap.s1`, `swap.s2`, …; amounts `swap.amt1`, …):
-      transfer token_a: a -> @pool : amount_a
-      transfer token_a: @pool -> b : min_a_for_b
-      transfer token_a: @pool -> a : (amount_a - min_a_for_b)
-      transfer token_b: b -> @pool : amount_b
-      transfer token_b: @pool -> a : min_b_for_a
-      transfer token_b: @pool -> b : (amount_b - min_b_for_a)
-    conditions to succeed:
-      require_auth a
-      require_auth b
-      gate: min_b_for_a ≤ amount_b
-      gate: amount_a ≥ min_a_for_b
+/-- `swap(a: Address, b: Address, token_a: Address, token_b: Address, amount_a: i128, min_b_for_a: i128, amount_b: i128, min_a_for_b: i128)`: it succeeds exactly when `swap.Spec` holds.
+    Its effects, in execution order:
+    * `swap.s1`: transfer `swap.amt1 st` of token `swap.token_a st` from `swap.a st` to `pool st`
+    * `swap.s2`: transfer `swap.amt2 st` of token `swap.token_a st` from `pool st` to `swap.b st`
+    * `swap.s3`: transfer `swap.amt3 st` of token `swap.token_a st` from `pool st` to `swap.a st`
+    * `swap.s4`: transfer `swap.amt4 st` of token `swap.token_b st` from `swap.b st` to `pool st`
+    * `swap.s5`: transfer `swap.amt5 st` of token `swap.token_b st` from `pool st` to `swap.a st`
+    * `swap.s6`: transfer `swap.amt6 st` of token `swap.token_b st` from `pool st` to `swap.b st`
 -/
-def swap : Step → Prop := fun st =>
-  st.call.fn = "swap" ∧
-  st.call.caller ≠ pool st ∧
-  (swap.a st) ∈ st.call.signers ∧   -- require_auth a
-  (swap.b st) ∈ st.call.signers ∧   -- require_auth b
-  (swap.min_b_for_a st) ≤ (swap.amount_b st) ∧   -- gate
-  (swap.amount_a st) ≥ (swap.min_a_for_b st) ∧   -- gate
-  st.post = (swap.s6 st) ∧
-  st.writes = [.bal (swap.token_a st) (swap.a st), .bal (swap.token_a st) (pool st), .bal (swap.token_a st) (swap.b st), .bal (swap.token_b st) (swap.b st), .bal (swap.token_b st) (pool st), .bal (swap.token_b st) (swap.a st)] ∧
-  st.ret = 2
+structure swap.Spec (st : Step) : Prop where
+  fn : st.call.fn = "swap"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer1 : xferOk (swap.token_a st) st.pre (swap.a st) (pool st) (swap.amt1 st)
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer2 : xferOk (swap.token_a st) (swap.s1 st) (pool st) (swap.b st) (swap.amt2 st)
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer3 : xferOk (swap.token_a st) (swap.s2 st) (pool st) (swap.a st) (swap.amt3 st)
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer4 : xferOk (swap.token_b st) (swap.s3 st) (swap.b st) (pool st) (swap.amt4 st)
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer5 : xferOk (swap.token_b st) (swap.s4 st) (pool st) (swap.a st) (swap.amt5 st)
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer6 : xferOk (swap.token_b st) (swap.s5 st) (pool st) (swap.b st) (swap.amt6 st)
+  /-- `swap.a st` authorized the call (`require_auth`) -/
+  auth_a : (swap.a st) ∈ st.call.signers
+  /-- `swap.b st` authorized the call (`require_auth`) -/
+  auth_b : (swap.b st) ∈ st.call.signers
+  /-- the call panics unless this holds -/
+  gate1 : (swap.min_b_for_a st) ≤ (swap.amount_b st)
+  /-- the call panics unless this holds -/
+  gate2 : (swap.amount_a st) ≥ (swap.min_a_for_b st)
+  post : st.post = (swap.s6 st)
+  writes : st.writes = [.bal (swap.token_a st) (swap.a st), .bal (swap.token_a st) (pool st), .bal (swap.token_a st) (swap.b st), .bal (swap.token_b st) (swap.b st), .bal (swap.token_b st) (pool st), .bal (swap.token_b st) (swap.a st)]
+  ret : st.ret = 2
 
-/-- the contract's entry points (each a `Step → Prop`). -/
+abbrev swap : Step → Prop := fun st => swap.Spec st
+
+/-- the contract's entry points (each a `Step → Prop`; the constructor runs
+    only at deployment, so it is not one of them). -/
 def entries : List (Step → Prop) := [swap]
+
+/-- Keys in temporary storage: they can expire between calls. -/
+def temporary : Key → Bool
+  | .fld k _ => temporary k
+  | .has k => temporary k
+  | _ => false
+
+/-- What the rest of the ledger can do between two calls of the contract at `me`.
+    Any token balance can change: other people's transfers, mints, tokens sent
+    straight to the contract. The exception is the contract's own balances,
+    which can only grow, since lowering them needs its authorization. The
+    contract's own storage is untouched (only the contract writes it), except
+    that temporary entries can expire. -/
+def Outside (me : Addr) (s s' : Storage) : Prop :=
+  ∀ k : Key, match k with
+    | .bal t a => a = me → s (.bal t a) ≤ s' (.bal t a)
+    | k => temporary k = true ∨ s' k = s k
+
+/-- A history of the contract at `me`, from storage `s` to `t`: its calls (each
+    admitted by one of its entry points) interleaved with outside activity. -/
+inductive Run (me : Addr) : Storage → Storage → Prop
+  | refl (s : Storage) : Run me s s
+  | call {s : Storage} (st : Step) : Run me s st.pre → st.call.self = me →
+      (∃ e ∈ entries, e st) → Run me s st.post
+  | outside {s t t' : Storage} : Run me s t → Outside me t t' → Run me s t'
 
 end Contract

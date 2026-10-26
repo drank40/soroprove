@@ -71,6 +71,25 @@ def bal (t : Addr) (s : Storage) (a : Addr) : Int := s (.bal t a)
 def xfer (t : Addr) (s : Storage) (src dst : Addr) (amt : Int) : Storage :=
   let s1 := s.set (.bal t src) (bal t s src - amt)
   s1.set (.bal t dst) (bal t s1 dst + amt)
+@[simp] theorem Storage.set_get (s : Storage) (k k' : Key) (v : Int) :
+    (s.set k v) k' = if k' = k then v else s k' := rfl
+/-- a balance after a transfer: plus what came in, minus what went out. -/
+@[simp] theorem bal_xfer (t t' : Addr) (s : Storage) (src dst : Addr) (amt : Int) (a : Addr) :
+    bal t (xfer t' s src dst amt) a
+      = bal t s a + (if t = t' ∧ a = dst then amt else 0) - (if t = t' ∧ a = src then amt else 0) := by
+  simp only [bal, xfer, Storage.set_get, Key.bal.injEq]
+  by_cases h1 : a = dst <;> by_cases h2 : a = src <;> by_cases h3 : t = t' <;> simp_all <;> omega
+/-- a transfer touches only balances. -/
+@[simp] theorem xfer_other (t : Addr) (s : Storage) (src dst : Addr) (amt : Int) (k : Key)
+    (h : ∀ t a, k ≠ .bal t a) : xfer t s src dst amt k = s k := by
+  simp only [xfer, Storage.set_get]; simp [h]
+/-- a write to a key that isn't a balance leaves every balance alone. -/
+@[simp] theorem bal_set (t : Addr) (s : Storage) (k : Key) (v : Int) (a : Addr) (h : ∀ t a, k ≠ .bal t a) :
+    bal t (s.set k v) a = bal t s a := by
+  simp only [bal, Storage.set_get]; simp [Ne.symm (h t a)]
+
+/-- SEP-41: a transfer succeeds only for a non-negative amount the sender holds. -/
+abbrev xferOk (t : Addr) (s : Storage) (src _dst : Addr) (amt : Int) : Prop := 0 ≤ amt ∧ amt ≤ bal t s src
 /-- storage after a call into another contract the model doesn't interpret: the
     contract's own storage is unchanged (Soroban forbids re-entry); token
     ledgers take `h`'s values. -/
@@ -104,36 +123,41 @@ namespace __constructor
   ((__constructor.s4 st).set ReserveB 0).set (.has ReserveB) 1
 end __constructor
 
-/-- `__constructor(token_a: Address, token_b: Address)`
-    effects, in execution order (states `__constructor.s1`, `__constructor.s2`, …):
-      write storage.TokenA/1 := token_a
-      write storage.TokenB/2 := token_b
-      write storage.TotalShares/3 := 0
-      write storage.ReserveA/4 := 0
-      write storage.ReserveB/5 := 0
-    conditions to succeed:
-      gate: token_a < token_b
+/-- `__constructor(token_a: Address, token_b: Address)`: it succeeds exactly when `__constructor.Spec` holds.
+    Its effects, in execution order:
+    * `__constructor.s1`: write `TokenA`
+    * `__constructor.s2`: write `TokenB`
+    * `__constructor.s3`: write `TotalShares`
+    * `__constructor.s4`: write `ReserveA`
+    * `__constructor.s5`: write `ReserveB`
 -/
-def __constructor : Step → Prop := fun st =>
-  st.call.fn = "__constructor" ∧
-  st.call.caller ≠ pool st ∧
-  (__constructor.token_a st) < (__constructor.token_b st) ∧   -- gate
-  st.post = (__constructor.s5 st) ∧
-  st.writes = [TokenA, .has TokenA, TokenB, .has TokenB, TotalShares, .has TotalShares, ReserveA, .has ReserveA, ReserveB, .has ReserveB] ∧
-  st.ret = 2
+structure __constructor.Spec (st : Step) : Prop where
+  fn : st.call.fn = "__constructor"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- the call panics unless this holds -/
+  gate1 : (__constructor.token_a st) < (__constructor.token_b st)
+  post : st.post = (__constructor.s5 st)
+  writes : st.writes = [TokenA, .has TokenA, TokenB, .has TokenB, TotalShares, .has TotalShares, ReserveA, .has ReserveA, ReserveB, .has ReserveB]
+  ret : st.ret = 2
+
+abbrev __constructor : Step → Prop := fun st => __constructor.Spec st
 
 namespace balance_shares
 @[simp] def user (st : Step) : Addr := st.call.argA "user"
 end balance_shares
 
-/-- `balance_shares(user: Address)`
+/-- `balance_shares(user: Address)`: it succeeds exactly when `balance_shares.Spec` holds.
 -/
-def balance_shares : Step → Prop := fun st =>
-  st.call.fn = "balance_shares" ∧
-  st.call.caller ≠ pool st ∧
-  st.post = st.pre ∧
-  st.writes = [] ∧
-  st.ret = (getOr0 st.pre (Shares (balance_shares.user st)))
+structure balance_shares.Spec (st : Step) : Prop where
+  fn : st.call.fn = "balance_shares"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  post : st.post = st.pre
+  writes : st.writes = []
+  ret : st.ret = (getOr0 st.pre (Shares (balance_shares.user st)))
+
+abbrev balance_shares : Step → Prop := fun st => balance_shares.Spec st
 
 namespace deposit
 @[simp] def desired_a (st : Step) : Int := st.call.arg "desired_a"
@@ -159,39 +183,48 @@ namespace deposit
   ((deposit.s5 st u).set ReserveB (bal (st.pre TokenB) (deposit.s2 st) (pool st))).set (.has ReserveB) 1
 end deposit
 
-/-- `deposit(to: Address, desired_a: i128, min_a: i128, desired_b: i128, min_b: i128)`
-    effects, in execution order (states `deposit.s1`, `deposit.s2`, …; amounts `deposit.amt1`, …):
-      transfer storage.TokenA/6: to -> @pool : Select(@and(@not(@and(ICmp_EQ(storage.ReserveA/14, 0), ICmp_EQ(storage.ReserveB/16, 0))), ICmp_SGT(((desired_a * storage.ReserveB/16) / storage.ReserveA/14), desired_b)), ((desired_b * storage.ReserveA/14) / storage.ReserveB/16), desired_a)
-      transfer storage.TokenB/6: to -> @pool : Select(@and(@not(@and(ICmp_EQ(storage.ReserveA/14, 0), ICmp_EQ(storage.ReserveB/16, 0))), ICmp_SGT(((desired_a * storage.ReserveB/16) / storage.ReserveA/14), desired_b)), desired_b, Select(@not(@and(ICmp_EQ(storage.ReserveA/14, 0), ICmp_EQ(storage.ReserveB/16, 0))), ((desired_a * storage.ReserveB/16) / storage.ReserveA/14), desired_b))
-      write @map:Shares(to, @at(20)) := (Select(@not(ICmp_EQ(@has(@map:Shares(to, @at(22))), 1)), 0, @map:Shares(to, @at(23))) + (big - storage.TotalShares/36))
-      write storage.TotalShares/39 := (storage.TotalShares/41 + (big - storage.TotalShares/36))
-      write storage.ReserveA/42 := @call:balance(storage.TokenA/6, @vec(@pool), @at(26))
-      write storage.ReserveB/43 := @call:balance(storage.TokenB/6, @vec(@pool), @at(28))
-    conditions to succeed:
-      require_auth to
-      gate: ((desired_a * storage.ReserveB/16) / storage.ReserveA/14) ≥ min_b   [when ¬(((st.pre (ReserveA)) = 0) ∧ ((st.pre (ReserveB)) = 0)) ∧ ¬((Int.tdiv ((deposit.desired_a st) * (st.pre (ReserveB))) (st.pre (ReserveA))) > (deposit.desired_b st))]
-      gate: desired_a ≥ ((desired_b * storage.ReserveA/14) / storage.ReserveB/16)   [when ¬(((st.pre (ReserveA)) = 0) ∧ ((st.pre (ReserveB)) = 0)) ∧ (Int.tdiv ((deposit.desired_a st) * (st.pre (ReserveB))) (st.pre (ReserveA))) > (deposit.desired_b st)]
-      gate: ((desired_b * storage.ReserveA/14) / storage.ReserveB/16) ≥ min_a   [when ¬(((st.pre (ReserveA)) = 0) ∧ ((st.pre (ReserveB)) = 0)) ∧ (Int.tdiv ((deposit.desired_a st) * (st.pre (ReserveB))) (st.pre (ReserveA))) > (deposit.desired_b st)]
+/-- `deposit(to: Address, desired_a: i128, min_a: i128, desired_b: i128, min_b: i128)`: it succeeds exactly when `deposit.Spec` holds.
+    Its effects, in execution order:
+    * `deposit.s1`: transfer `deposit.amt1 st` of token `st.pre TokenA` from `deposit.to st` to `pool st`
+    * `deposit.s2`: transfer `deposit.amt2 st` of token `st.pre TokenB` from `deposit.to st` to `pool st`
+    * `deposit.s3`: write `Shares (deposit.to st)`
+    * `deposit.s4`: write `TotalShares`
+    * `deposit.s5`: write `ReserveA`
+    * `deposit.s6`: write `ReserveB`
 -/
-def deposit : Step → Prop := fun st => ∃ u : Unk,
-  st.call.fn = "deposit" ∧
-  st.call.caller ≠ pool st ∧
-  (deposit.to st) ∈ st.call.signers ∧   -- require_auth to
-  ((¬(((st.pre ReserveA) = 0) ∧ ((st.pre ReserveB) = 0)) ∧ ¬((Int.tdiv ((deposit.desired_a st) * (st.pre ReserveB)) (st.pre ReserveA)) > (deposit.desired_b st))) → (Int.tdiv ((deposit.desired_a st) * (st.pre ReserveB)) (st.pre ReserveA)) ≥ (deposit.min_b st)) ∧   -- gate
-  ((¬(((st.pre ReserveA) = 0) ∧ ((st.pre ReserveB) = 0)) ∧ (Int.tdiv ((deposit.desired_a st) * (st.pre ReserveB)) (st.pre ReserveA)) > (deposit.desired_b st)) → (deposit.desired_a st) ≥ (Int.tdiv ((deposit.desired_b st) * (st.pre ReserveA)) (st.pre ReserveB))) ∧   -- gate
-  ((¬(((st.pre ReserveA) = 0) ∧ ((st.pre ReserveB) = 0)) ∧ (Int.tdiv ((deposit.desired_a st) * (st.pre ReserveB)) (st.pre ReserveA)) > (deposit.desired_b st)) → (Int.tdiv ((deposit.desired_b st) * (st.pre ReserveA)) (st.pre ReserveB)) ≥ (deposit.min_a st)) ∧   -- gate
-  st.post = (deposit.s6 st u) ∧
-  st.writes = [.bal (st.pre TokenA) (deposit.to st), .bal (st.pre TokenA) (pool st), .bal (st.pre TokenB) (deposit.to st), .bal (st.pre TokenB) (pool st), (Shares (deposit.to st)), .has (Shares (deposit.to st)), TotalShares, .has TotalShares, ReserveA, .has ReserveA, ReserveB, .has ReserveB] ∧
-  st.ret = 2
+structure deposit.Spec (st : Step) (u : Unk) : Prop where
+  fn : st.call.fn = "deposit"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer1 : xferOk (st.pre TokenA) st.pre (deposit.to st) (pool st) (deposit.amt1 st)
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer2 : xferOk (st.pre TokenB) (deposit.s1 st) (deposit.to st) (pool st) (deposit.amt2 st)
+  /-- `deposit.to st` authorized the call (`require_auth`) -/
+  auth_to : (deposit.to st) ∈ st.call.signers
+  /-- the call panics unless this holds -/
+  gate1 : ((¬(((st.pre ReserveA) = 0) ∧ ((st.pre ReserveB) = 0)) ∧ ¬((Int.tdiv ((deposit.desired_a st) * (st.pre ReserveB)) (st.pre ReserveA)) > (deposit.desired_b st))) → (Int.tdiv ((deposit.desired_a st) * (st.pre ReserveB)) (st.pre ReserveA)) ≥ (deposit.min_b st))
+  /-- the call panics unless this holds -/
+  gate2 : ((¬(((st.pre ReserveA) = 0) ∧ ((st.pre ReserveB) = 0)) ∧ (Int.tdiv ((deposit.desired_a st) * (st.pre ReserveB)) (st.pre ReserveA)) > (deposit.desired_b st)) → (deposit.desired_a st) ≥ (Int.tdiv ((deposit.desired_b st) * (st.pre ReserveA)) (st.pre ReserveB)))
+  /-- the call panics unless this holds -/
+  gate3 : ((¬(((st.pre ReserveA) = 0) ∧ ((st.pre ReserveB) = 0)) ∧ (Int.tdiv ((deposit.desired_a st) * (st.pre ReserveB)) (st.pre ReserveA)) > (deposit.desired_b st)) → (Int.tdiv ((deposit.desired_b st) * (st.pre ReserveA)) (st.pre ReserveB)) ≥ (deposit.min_a st))
+  post : st.post = (deposit.s6 st u)
+  writes : st.writes = [.bal (st.pre TokenA) (deposit.to st), .bal (st.pre TokenA) (pool st), .bal (st.pre TokenB) (deposit.to st), .bal (st.pre TokenB) (pool st), (Shares (deposit.to st)), .has (Shares (deposit.to st)), TotalShares, .has TotalShares, ReserveA, .has ReserveA, ReserveB, .has ReserveB]
+  ret : st.ret = 2
 
-/-- `get_rsrvs()`
+def deposit : Step → Prop := fun st => ∃ u : Unk, deposit.Spec st u
+
+/-- `get_rsrvs()`: it succeeds exactly when `get_rsrvs.Spec` holds.
 -/
-def get_rsrvs : Step → Prop := fun st => ∃ u : Unk,
-  st.call.fn = "get_rsrvs" ∧
-  st.call.caller ≠ pool st ∧
-  st.post = st.pre ∧
-  st.writes = [] ∧
-  st.ret = (u.i 0)
+structure get_rsrvs.Spec (st : Step) (u : Unk) : Prop where
+  fn : st.call.fn = "get_rsrvs"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  post : st.post = st.pre
+  writes : st.writes = []
+  ret : st.ret = (u.i 0)
+
+def get_rsrvs : Step → Prop := fun st => ∃ u : Unk, get_rsrvs.Spec st u
 
 namespace swap
 @[simp] def buy_a (st : Step) : Int := st.call.arg "buy_a"
@@ -212,28 +245,34 @@ namespace swap
   ((swap.s3 st).set ReserveB ((bal (st.pre TokenB) (swap.s1 st) (pool st)) - (if ¬((swap.buy_a st) = 0) then 0 else (swap.out st)))).set (.has ReserveB) 1
 end swap
 
-/-- `swap(to: Address, buy_a: bool, out: i128, in_max: i128)`
-    effects, in execution order (states `swap.s1`, `swap.s2`, …; amounts `swap.amt1`, …):
-      transfer Select(@not(@isfalse(buy_a)), storage.TokenB/6, storage.TokenA/6): to -> @pool : ((((Select(@isfalse(buy_a), storage.ReserveA/59, storage.ReserveB/61) * out) * 1000) / ((Select(@isfalse(buy_a), storage.ReserveB/61, storage.ReserveA/59) - out) * 997)) + 1)
-      transfer Select(@isfalse(buy_a), storage.TokenB/6, storage.TokenA/6): @pool -> to : out
-      write storage.ReserveA/78 := (@call:balance(storage.TokenA/6, @vec(@pool), @at(72)) - Select(@not(@isfalse(buy_a)), out, 0))
-      write storage.ReserveB/79 := (@call:balance(storage.TokenB/6, @vec(@pool), @at(76)) - Select(@not(@isfalse(buy_a)), 0, out))
-    conditions to succeed:
-      require_auth to
-      gate: Select(@isfalse(buy_a), storage.ReserveB/61, storage.ReserveA/59) ≥ out
-      gate: ((((Select(@isfalse(buy_a), storage.ReserveA/59, storage.ReserveB/61) * out) * 1000) / ((Select(@isfalse(buy_a), storage.ReserveB/61, storage.ReserveA/59) - out) * 997)) + 1) ≤ in_max
-      gate: (((1000 * storage.ReserveA/59) + Select(@not(ICmp_SLE(((@call:balance(storage.TokenA/6, @vec(@pool), @at(72)) - storage.ReserveA/59) - Select(@not(@isfalse(buy_a)), out, 0)), 0)), (997 * ((@call:balance(storage.TokenA/6, @vec(@pool), @at(72)) - storage.ReserveA/59) - Select(@not(@isfalse(buy_a)), out, 0))), (1000 * ((@call:balance(storage.TokenA/6, @vec(@pool), @at(72)) - storage.ReserveA/59) - Select(@not(@isfalse(buy_a)), out, 0))))) * ((1000 * storage.ReserveB/61) + Select(@not(ICmp_SLE(((@call:balance(storage.TokenB/6, @vec(@pool), @at(76)) - storage.ReserveB/61) - Select(@not(@isfalse(buy_a)), 0, out)), 0)), (997 * ((@call:balance(storage.TokenB/6, @vec(@pool), @at(76)) - storage.ReserveB/61) - Select(@not(@isfalse(buy_a)), 0, out))), (1000 * ((@call:balance(storage.TokenB/6, @vec(@pool), @at(76)) - storage.ReserveB/61) - Select(@not(@isfalse(buy_a)), 0, out)))))) ≥ ((storage.ReserveA/59 * 1000) * (storage.ReserveB/61 * 1000))
+/-- `swap(to: Address, buy_a: bool, out: i128, in_max: i128)`: it succeeds exactly when `swap.Spec` holds.
+    Its effects, in execution order:
+    * `swap.s1`: transfer `swap.amt1 st` of token `if ¬((swap.buy_a st) = 0) then (st.pre TokenB) else (st.pre TokenA)` from `swap.to st` to `pool st`
+    * `swap.s2`: transfer `swap.amt2 st` of token `if (swap.buy_a st) = 0 then (st.pre TokenB) else (st.pre TokenA)` from `pool st` to `swap.to st`
+    * `swap.s3`: write `ReserveA`
+    * `swap.s4`: write `ReserveB`
 -/
-def swap : Step → Prop := fun st =>
-  st.call.fn = "swap" ∧
-  st.call.caller ≠ pool st ∧
-  (swap.to st) ∈ st.call.signers ∧   -- require_auth to
-  (if (swap.buy_a st) = 0 then (st.pre ReserveB) else (st.pre ReserveA)) ≥ (swap.out st) ∧   -- gate
-  ((Int.tdiv (((if (swap.buy_a st) = 0 then (st.pre ReserveA) else (st.pre ReserveB)) * (swap.out st)) * 1000) (((if (swap.buy_a st) = 0 then (st.pre ReserveB) else (st.pre ReserveA)) - (swap.out st)) * 997)) + 1) ≤ (swap.in_max st) ∧   -- gate
-  (((1000 * (st.pre ReserveA)) + (if ¬((((bal (st.pre TokenA) (swap.s1 st) (pool st)) - (st.pre ReserveA)) - (if ¬((swap.buy_a st) = 0) then (swap.out st) else 0)) ≤ 0) then (997 * (((bal (st.pre TokenA) (swap.s1 st) (pool st)) - (st.pre ReserveA)) - (if ¬((swap.buy_a st) = 0) then (swap.out st) else 0))) else (1000 * (((bal (st.pre TokenA) (swap.s1 st) (pool st)) - (st.pre ReserveA)) - (if ¬((swap.buy_a st) = 0) then (swap.out st) else 0))))) * ((1000 * (st.pre ReserveB)) + (if ¬((((bal (st.pre TokenB) (swap.s1 st) (pool st)) - (st.pre ReserveB)) - (if ¬((swap.buy_a st) = 0) then 0 else (swap.out st))) ≤ 0) then (997 * (((bal (st.pre TokenB) (swap.s1 st) (pool st)) - (st.pre ReserveB)) - (if ¬((swap.buy_a st) = 0) then 0 else (swap.out st)))) else (1000 * (((bal (st.pre TokenB) (swap.s1 st) (pool st)) - (st.pre ReserveB)) - (if ¬((swap.buy_a st) = 0) then 0 else (swap.out st))))))) ≥ (((st.pre ReserveA) * 1000) * ((st.pre ReserveB) * 1000)) ∧   -- gate
-  st.post = (swap.s4 st) ∧
-  st.writes = [.bal (if ¬((swap.buy_a st) = 0) then (st.pre TokenB) else (st.pre TokenA)) (swap.to st), .bal (if ¬((swap.buy_a st) = 0) then (st.pre TokenB) else (st.pre TokenA)) (pool st), .bal (if (swap.buy_a st) = 0 then (st.pre TokenB) else (st.pre TokenA)) (pool st), .bal (if (swap.buy_a st) = 0 then (st.pre TokenB) else (st.pre TokenA)) (swap.to st), ReserveA, .has ReserveA, ReserveB, .has ReserveB] ∧
-  st.ret = 2
+structure swap.Spec (st : Step) : Prop where
+  fn : st.call.fn = "swap"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer1 : xferOk (if ¬((swap.buy_a st) = 0) then (st.pre TokenB) else (st.pre TokenA)) st.pre (swap.to st) (pool st) (swap.amt1 st)
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer2 : xferOk (if (swap.buy_a st) = 0 then (st.pre TokenB) else (st.pre TokenA)) (swap.s1 st) (pool st) (swap.to st) (swap.amt2 st)
+  /-- `swap.to st` authorized the call (`require_auth`) -/
+  auth_to : (swap.to st) ∈ st.call.signers
+  /-- the call panics unless this holds -/
+  gate1 : (if (swap.buy_a st) = 0 then (st.pre ReserveB) else (st.pre ReserveA)) ≥ (swap.out st)
+  /-- the call panics unless this holds -/
+  gate2 : ((Int.tdiv (((if (swap.buy_a st) = 0 then (st.pre ReserveA) else (st.pre ReserveB)) * (swap.out st)) * 1000) (((if (swap.buy_a st) = 0 then (st.pre ReserveB) else (st.pre ReserveA)) - (swap.out st)) * 997)) + 1) ≤ (swap.in_max st)
+  /-- the call panics unless this holds -/
+  gate3 : (((1000 * (st.pre ReserveA)) + (if ¬((((bal (st.pre TokenA) (swap.s1 st) (pool st)) - (st.pre ReserveA)) - (if ¬((swap.buy_a st) = 0) then (swap.out st) else 0)) ≤ 0) then (997 * (((bal (st.pre TokenA) (swap.s1 st) (pool st)) - (st.pre ReserveA)) - (if ¬((swap.buy_a st) = 0) then (swap.out st) else 0))) else (1000 * (((bal (st.pre TokenA) (swap.s1 st) (pool st)) - (st.pre ReserveA)) - (if ¬((swap.buy_a st) = 0) then (swap.out st) else 0))))) * ((1000 * (st.pre ReserveB)) + (if ¬((((bal (st.pre TokenB) (swap.s1 st) (pool st)) - (st.pre ReserveB)) - (if ¬((swap.buy_a st) = 0) then 0 else (swap.out st))) ≤ 0) then (997 * (((bal (st.pre TokenB) (swap.s1 st) (pool st)) - (st.pre ReserveB)) - (if ¬((swap.buy_a st) = 0) then 0 else (swap.out st)))) else (1000 * (((bal (st.pre TokenB) (swap.s1 st) (pool st)) - (st.pre ReserveB)) - (if ¬((swap.buy_a st) = 0) then 0 else (swap.out st))))))) ≥ (((st.pre ReserveA) * 1000) * ((st.pre ReserveB) * 1000))
+  post : st.post = (swap.s4 st)
+  writes : st.writes = [.bal (if ¬((swap.buy_a st) = 0) then (st.pre TokenB) else (st.pre TokenA)) (swap.to st), .bal (if ¬((swap.buy_a st) = 0) then (st.pre TokenB) else (st.pre TokenA)) (pool st), .bal (if (swap.buy_a st) = 0 then (st.pre TokenB) else (st.pre TokenA)) (pool st), .bal (if (swap.buy_a st) = 0 then (st.pre TokenB) else (st.pre TokenA)) (swap.to st), ReserveA, .has ReserveA, ReserveB, .has ReserveB]
+  ret : st.ret = 2
+
+abbrev swap : Step → Prop := fun st => swap.Spec st
 
 namespace withdraw
 @[simp] def min_a (st : Step) : Int := st.call.arg "min_a"
@@ -258,33 +297,64 @@ namespace withdraw
   ((withdraw.s5 st).set ReserveB ((bal (st.pre TokenB) st.pre (pool st)) - (Int.tdiv ((bal (st.pre TokenB) st.pre (pool st)) * (withdraw.share_amount st)) (st.pre TotalShares)))).set (.has ReserveB) 1
 end withdraw
 
-/-- `withdraw(to: Address, share_amount: i128, min_a: i128, min_b: i128)`
-    effects, in execution order (states `withdraw.s1`, `withdraw.s2`, …; amounts `withdraw.amt1`, …):
-      write @map:Shares(to, @at(91)) := (Select(@not(ICmp_EQ(@has(@map:Shares(to, @at(92))), 1)), 0, @map:Shares(to, @at(93))) - share_amount)
-      write storage.TotalShares/95 := (storage.TotalShares/97 - share_amount)
-      transfer storage.TokenA/6: @pool -> to : ((@call:balance(storage.TokenA/6, @vec(@pool), @at(85)) * share_amount) / storage.TotalShares/88)
-      transfer storage.TokenB/6: @pool -> to : ((@call:balance(storage.TokenB/6, @vec(@pool), @at(90)) * share_amount) / storage.TotalShares/88)
-      write storage.ReserveA/98 := (@call:balance(storage.TokenA/6, @vec(@pool), @at(85)) - ((@call:balance(storage.TokenA/6, @vec(@pool), @at(85)) * share_amount) / storage.TotalShares/88))
-      write storage.ReserveB/99 := (@call:balance(storage.TokenB/6, @vec(@pool), @at(90)) - ((@call:balance(storage.TokenB/6, @vec(@pool), @at(90)) * share_amount) / storage.TotalShares/88))
-    conditions to succeed:
-      require_auth to
-      gate: Select(@not(ICmp_EQ(@has(@map:Shares(to, @at(106))), 1)), 0, @map:Shares(to, @at(107))) ≥ share_amount
-      gate: ((@call:balance(storage.TokenA/6, @vec(@pool), @at(85)) * share_amount) / storage.TotalShares/88) ≥ min_a
-      gate: ((@call:balance(storage.TokenB/6, @vec(@pool), @at(90)) * share_amount) / storage.TotalShares/88) ≥ min_b
-      gate: Select(@not(ICmp_EQ(@has(@map:Shares(to, @at(92))), 1)), 0, @map:Shares(to, @at(93))) ≥ share_amount
+/-- `withdraw(to: Address, share_amount: i128, min_a: i128, min_b: i128)`: it succeeds exactly when `withdraw.Spec` holds.
+    Its effects, in execution order:
+    * `withdraw.s1`: write `Shares (withdraw.to st)`
+    * `withdraw.s2`: write `TotalShares`
+    * `withdraw.s3`: transfer `withdraw.amt1 st` of token `st.pre TokenA` from `pool st` to `withdraw.to st`
+    * `withdraw.s4`: transfer `withdraw.amt2 st` of token `st.pre TokenB` from `pool st` to `withdraw.to st`
+    * `withdraw.s5`: write `ReserveA`
+    * `withdraw.s6`: write `ReserveB`
 -/
-def withdraw : Step → Prop := fun st => ∃ u : Unk,
-  st.call.fn = "withdraw" ∧
-  st.call.caller ≠ pool st ∧
-  (withdraw.to st) ∈ st.call.signers ∧   -- require_auth to
-  (getOr0 st.pre (Shares (withdraw.to st))) ≥ (withdraw.share_amount st) ∧   -- gate
-  (Int.tdiv ((bal (st.pre TokenA) st.pre (pool st)) * (withdraw.share_amount st)) (st.pre TotalShares)) ≥ (withdraw.min_a st) ∧   -- gate
-  (Int.tdiv ((bal (st.pre TokenB) st.pre (pool st)) * (withdraw.share_amount st)) (st.pre TotalShares)) ≥ (withdraw.min_b st) ∧   -- gate
-  st.post = (withdraw.s6 st) ∧
-  st.writes = [(Shares (withdraw.to st)), .has (Shares (withdraw.to st)), TotalShares, .has TotalShares, .bal (st.pre TokenA) (pool st), .bal (st.pre TokenA) (withdraw.to st), .bal (st.pre TokenB) (pool st), .bal (st.pre TokenB) (withdraw.to st), ReserveA, .has ReserveA, ReserveB, .has ReserveB] ∧
-  st.ret = (u.i 0)
+structure withdraw.Spec (st : Step) (u : Unk) : Prop where
+  fn : st.call.fn = "withdraw"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer1 : xferOk (st.pre TokenA) (withdraw.s2 st) (pool st) (withdraw.to st) (withdraw.amt1 st)
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer2 : xferOk (st.pre TokenB) (withdraw.s3 st) (pool st) (withdraw.to st) (withdraw.amt2 st)
+  /-- `withdraw.to st` authorized the call (`require_auth`) -/
+  auth_to : (withdraw.to st) ∈ st.call.signers
+  /-- the call panics unless this holds -/
+  gate1 : (getOr0 st.pre (Shares (withdraw.to st))) ≥ (withdraw.share_amount st)
+  /-- the call panics unless this holds -/
+  gate2 : (Int.tdiv ((bal (st.pre TokenA) st.pre (pool st)) * (withdraw.share_amount st)) (st.pre TotalShares)) ≥ (withdraw.min_a st)
+  /-- the call panics unless this holds -/
+  gate3 : (Int.tdiv ((bal (st.pre TokenB) st.pre (pool st)) * (withdraw.share_amount st)) (st.pre TotalShares)) ≥ (withdraw.min_b st)
+  post : st.post = (withdraw.s6 st)
+  writes : st.writes = [(Shares (withdraw.to st)), .has (Shares (withdraw.to st)), TotalShares, .has TotalShares, .bal (st.pre TokenA) (pool st), .bal (st.pre TokenA) (withdraw.to st), .bal (st.pre TokenB) (pool st), .bal (st.pre TokenB) (withdraw.to st), ReserveA, .has ReserveA, ReserveB, .has ReserveB]
+  ret : st.ret = (u.i 0)
 
-/-- the contract's entry points (each a `Step → Prop`). -/
-def entries : List (Step → Prop) := [__constructor, balance_shares, deposit, get_rsrvs, swap, withdraw]
+def withdraw : Step → Prop := fun st => ∃ u : Unk, withdraw.Spec st u
+
+/-- the contract's entry points (each a `Step → Prop`; the constructor runs
+    only at deployment, so it is not one of them). -/
+def entries : List (Step → Prop) := [balance_shares, deposit, get_rsrvs, swap, withdraw]
+
+/-- Keys in temporary storage: they can expire between calls. -/
+def temporary : Key → Bool
+  | .fld k _ => temporary k
+  | .has k => temporary k
+  | _ => false
+
+/-- What the rest of the ledger can do between two calls of the contract at `me`.
+    Any token balance can change: other people's transfers, mints, tokens sent
+    straight to the contract. The exception is the contract's own balances,
+    which can only grow, since lowering them needs its authorization. The
+    contract's own storage is untouched (only the contract writes it), except
+    that temporary entries can expire. -/
+def Outside (me : Addr) (s s' : Storage) : Prop :=
+  ∀ k : Key, match k with
+    | .bal t a => a = me → s (.bal t a) ≤ s' (.bal t a)
+    | k => temporary k = true ∨ s' k = s k
+
+/-- A history of the contract at `me`, from storage `s` to `t`: its calls (each
+    admitted by one of its entry points) interleaved with outside activity. -/
+inductive Run (me : Addr) : Storage → Storage → Prop
+  | refl (s : Storage) : Run me s s
+  | call {s : Storage} (st : Step) : Run me s st.pre → st.call.self = me →
+      (∃ e ∈ entries, e st) → Run me s st.post
+  | outside {s t t' : Storage} : Run me s t → Outside me t t' → Run me s t'
 
 end Contract

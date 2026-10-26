@@ -71,6 +71,25 @@ def bal (t : Addr) (s : Storage) (a : Addr) : Int := s (.bal t a)
 def xfer (t : Addr) (s : Storage) (src dst : Addr) (amt : Int) : Storage :=
   let s1 := s.set (.bal t src) (bal t s src - amt)
   s1.set (.bal t dst) (bal t s1 dst + amt)
+@[simp] theorem Storage.set_get (s : Storage) (k k' : Key) (v : Int) :
+    (s.set k v) k' = if k' = k then v else s k' := rfl
+/-- a balance after a transfer: plus what came in, minus what went out. -/
+@[simp] theorem bal_xfer (t t' : Addr) (s : Storage) (src dst : Addr) (amt : Int) (a : Addr) :
+    bal t (xfer t' s src dst amt) a
+      = bal t s a + (if t = t' ∧ a = dst then amt else 0) - (if t = t' ∧ a = src then amt else 0) := by
+  simp only [bal, xfer, Storage.set_get, Key.bal.injEq]
+  by_cases h1 : a = dst <;> by_cases h2 : a = src <;> by_cases h3 : t = t' <;> simp_all <;> omega
+/-- a transfer touches only balances. -/
+@[simp] theorem xfer_other (t : Addr) (s : Storage) (src dst : Addr) (amt : Int) (k : Key)
+    (h : ∀ t a, k ≠ .bal t a) : xfer t s src dst amt k = s k := by
+  simp only [xfer, Storage.set_get]; simp [h]
+/-- a write to a key that isn't a balance leaves every balance alone. -/
+@[simp] theorem bal_set (t : Addr) (s : Storage) (k : Key) (v : Int) (a : Addr) (h : ∀ t a, k ≠ .bal t a) :
+    bal t (s.set k v) a = bal t s a := by
+  simp only [bal, Storage.set_get]; simp [Ne.symm (h t a)]
+
+/-- SEP-41: a transfer succeeds only for a non-negative amount the sender holds. -/
+abbrev xferOk (t : Addr) (s : Storage) (src _dst : Addr) (amt : Int) : Prop := 0 ≤ amt ∧ amt ≤ bal t s src
 /-- storage after a call into another contract the model doesn't interpret: the
     contract's own storage is unchanged (Soroban forbids re-entry); token
     ledgers take `h`'s values. -/
@@ -103,34 +122,39 @@ namespace __constructor
   ((((__constructor.s1 st).set METADATA.decimal (u.i 1)).set METADATA.name (__constructor.name st)).set METADATA.symbol (__constructor.symbol st)).set (.has METADATA) 1
 end __constructor
 
-/-- `__constructor(admin: Address, decimal: u32, name: String, symbol: String)`
-    effects, in execution order (states `__constructor.s1`, `__constructor.s2`, …):
-      write storage.Admin/2 := admin
-      write storage.METADATA/3 := @struct:decimal,name,symbol(And(decimal, 133143986180), name, symbol)
-    conditions to succeed:
-      gate: decimal < 19
+/-- `__constructor(admin: Address, decimal: u32, name: String, symbol: String)`: it succeeds exactly when `__constructor.Spec` holds.
+    Its effects, in execution order:
+    * `__constructor.s1`: write `Admin`
+    * `__constructor.s2`: write `METADATA`
 -/
-def __constructor : Step → Prop := fun st => ∃ u : Unk,
-  st.call.fn = "__constructor" ∧
-  st.call.caller ≠ pool st ∧
-  (__constructor.decimal st) < 19 ∧   -- gate
-  st.post = (__constructor.s2 st u) ∧
-  st.writes = [Admin, .has Admin, METADATA.decimal, METADATA.name, METADATA.symbol, .has METADATA] ∧
-  st.ret = 2
+structure __constructor.Spec (st : Step) (u : Unk) : Prop where
+  fn : st.call.fn = "__constructor"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- the call panics unless this holds -/
+  gate1 : (__constructor.decimal st) < 19
+  post : st.post = (__constructor.s2 st u)
+  writes : st.writes = [Admin, .has Admin, METADATA.decimal, METADATA.name, METADATA.symbol, .has METADATA]
+  ret : st.ret = 2
+
+def __constructor : Step → Prop := fun st => ∃ u : Unk, __constructor.Spec st u
 
 namespace allowance
 @[simp] def «from» (st : Step) : Addr := st.call.argA "from"
 @[simp] def spender (st : Step) : Addr := st.call.argA "spender"
 end allowance
 
-/-- `allowance(from: Address, spender: Address)`
+/-- `allowance(from: Address, spender: Address)`: it succeeds exactly when `allowance.Spec` holds.
 -/
-def allowance : Step → Prop := fun st =>
-  st.call.fn = "allowance" ∧
-  st.call.caller ≠ pool st ∧
-  st.post = st.pre ∧
-  st.writes = [] ∧
-  st.ret = (if ¬((st.pre (.has (Allowance (allowance.«from» st) (allowance.spender st)))) = 1) then 0 else (if ¬((st.call.env "sequence") > (st.pre (Allowance.live_until_ledger (allowance.«from» st) (allowance.spender st)))) then (st.pre (Allowance.amount (allowance.«from» st) (allowance.spender st))) else 0))
+structure allowance.Spec (st : Step) : Prop where
+  fn : st.call.fn = "allowance"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  post : st.post = st.pre
+  writes : st.writes = []
+  ret : st.ret = (if ¬((st.pre (.has (Allowance (allowance.«from» st) (allowance.spender st)))) = 1) then 0 else (if ¬((st.call.env "sequence") > (st.pre (Allowance.live_until_ledger (allowance.«from» st) (allowance.spender st)))) then (st.pre (Allowance.amount (allowance.«from» st) (allowance.spender st))) else 0))
+
+abbrev allowance : Step → Prop := fun st => allowance.Spec st
 
 namespace approve
 @[simp] def amount (st : Step) : Int := st.call.arg "amount"
@@ -141,32 +165,37 @@ namespace approve
   (((st.pre).set (Allowance.amount (approve.«from» st) (approve.spender st)) (u.i 1)).set (Allowance.live_until_ledger (approve.«from» st) (approve.spender st)) (approve.live_until_ledger st)).set (.has (Allowance (approve.«from» st) (approve.spender st))) 1
 end approve
 
-/-- `approve(from: Address, spender: Address, amount: i128, live_until_ledger: u32)`
-    effects, in execution order (states `approve.s1`, `approve.s2`, …):
-      write @map:Allowance(@struct:from,spender(from, spender), @at(2)) := @struct:amount,live_until_ledger(Load, live_until_ledger)
-    conditions to succeed:
-      require_auth from
+/-- `approve(from: Address, spender: Address, amount: i128, live_until_ledger: u32)`: it succeeds exactly when `approve.Spec` holds.
+    Its effects, in execution order:
+    * `approve.s1`: write `Allowance (approve.«from» st) (approve.spender st)`
 -/
-def approve : Step → Prop := fun st => ∃ u : Unk,
-  st.call.fn = "approve" ∧
-  st.call.caller ≠ pool st ∧
-  (approve.«from» st) ∈ st.call.signers ∧   -- require_auth from
-  st.post = (approve.s1 st u) ∧
-  st.writes = [(Allowance.amount (approve.«from» st) (approve.spender st)), (Allowance.live_until_ledger (approve.«from» st) (approve.spender st)), .has (Allowance (approve.«from» st) (approve.spender st))] ∧
-  st.ret = 2
+structure approve.Spec (st : Step) (u : Unk) : Prop where
+  fn : st.call.fn = "approve"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- `approve.«from» st` authorized the call (`require_auth`) -/
+  auth_from : (approve.«from» st) ∈ st.call.signers
+  post : st.post = (approve.s1 st u)
+  writes : st.writes = [(Allowance.amount (approve.«from» st) (approve.spender st)), (Allowance.live_until_ledger (approve.«from» st) (approve.spender st)), .has (Allowance (approve.«from» st) (approve.spender st))]
+  ret : st.ret = 2
+
+def approve : Step → Prop := fun st => ∃ u : Unk, approve.Spec st u
 
 namespace balance
 @[simp] def id (st : Step) : Addr := st.call.argA "id"
 end balance
 
-/-- `balance(id: Address)`
+/-- `balance(id: Address)`: it succeeds exactly when `balance.Spec` holds.
 -/
-def balance : Step → Prop := fun st =>
-  st.call.fn = "balance" ∧
-  st.call.caller ≠ pool st ∧
-  st.post = st.pre ∧
-  st.writes = [] ∧
-  st.ret = (getOr0 st.pre (Balance (balance.id st)))
+structure balance.Spec (st : Step) : Prop where
+  fn : st.call.fn = "balance"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  post : st.post = st.pre
+  writes : st.writes = []
+  ret : st.ret = (getOr0 st.pre (Balance (balance.id st)))
+
+abbrev balance : Step → Prop := fun st => balance.Spec st
 
 namespace burn
 @[simp] def amount (st : Step) : Int := st.call.arg "amount"
@@ -175,23 +204,25 @@ namespace burn
   ((st.pre).set (Balance (burn.«from» st)) ((getOr0 st.pre (Balance (burn.«from» st))) - (burn.amount st))).set (.has (Balance (burn.«from» st))) 1
 end burn
 
-/-- `burn(from: Address, amount: i128)`
-    effects, in execution order (states `burn.s1`, `burn.s2`, …):
-      write @map:Balance(from, @at(18)) := (Select(ICmp_EQ(@has(@map:Balance(from, @at(20))), 1), @map:Balance(from, @at(21)), 0) - amount)
-    conditions to succeed:
-      require_auth from
-      gate: amount > -1
-      gate: Select(ICmp_EQ(@has(@map:Balance(from, @at(20))), 1), @map:Balance(from, @at(21)), 0) ≥ amount
+/-- `burn(from: Address, amount: i128)`: it succeeds exactly when `burn.Spec` holds.
+    Its effects, in execution order:
+    * `burn.s1`: write `Balance (burn.«from» st)`
 -/
-def burn : Step → Prop := fun st =>
-  st.call.fn = "burn" ∧
-  st.call.caller ≠ pool st ∧
-  (burn.«from» st) ∈ st.call.signers ∧   -- require_auth from
-  (burn.amount st) > -1 ∧   -- gate
-  (getOr0 st.pre (Balance (burn.«from» st))) ≥ (burn.amount st) ∧   -- gate
-  st.post = (burn.s1 st) ∧
-  st.writes = [(Balance (burn.«from» st)), .has (Balance (burn.«from» st))] ∧
-  st.ret = 2
+structure burn.Spec (st : Step) : Prop where
+  fn : st.call.fn = "burn"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- `burn.«from» st` authorized the call (`require_auth`) -/
+  auth_from : (burn.«from» st) ∈ st.call.signers
+  /-- the call panics unless this holds -/
+  gate1 : (burn.amount st) > -1
+  /-- the call panics unless this holds -/
+  gate2 : (getOr0 st.pre (Balance (burn.«from» st))) ≥ (burn.amount st)
+  post : st.post = (burn.s1 st)
+  writes : st.writes = [(Balance (burn.«from» st)), .has (Balance (burn.«from» st))]
+  ret : st.ret = 2
+
+abbrev burn : Step → Prop := fun st => burn.Spec st
 
 namespace burn_from
 @[simp] def amount (st : Step) : Int := st.call.arg "amount"
@@ -203,35 +234,40 @@ namespace burn_from
   ((burn_from.s1 st).set (Balance (burn_from.«from» st)) ((getOr0 (burn_from.s1 st) (Balance (burn_from.«from» st))) - (burn_from.amount st))).set (.has (Balance (burn_from.«from» st))) 1
 end burn_from
 
-/-- `burn_from(spender: Address, from: Address, amount: i128)`
-    effects, in execution order (states `burn_from.s1`, `burn_from.s2`, …):
-      write @map:Allowance(@struct:from,spender(from, spender), @at(23)) := @struct:amount,live_until_ledger((Select(@not(ICmp_EQ(@has(@map:Allowance(@struct:from,spender(from, spender), @at(25))), 1)), 0, Select(@not(ICmp_UGT(@env:sequence, @field:live_until_ledger(@map:Allowance(@struct:from,spender(from, spender), @at(26))))), @field:amount(@map:Allowance(@struct:from,spender(from, spender), @at(26))), 0)) - amount), Select(@not(ICmp_EQ(@has(@map:Allowance(@struct:from,spender(from, spender), @at(25))), 1)), 0, @field:live_until_ledger(@map:Allowance(@struct:from,spender(from, spender), @at(26)))))   [when ¬((burn_from.amount st) = 0)]
-      write @map:Balance(from, @at(27)) := (Select(ICmp_EQ(@has(@map:Balance(from, @at(29))), 1), @map:Balance(from, @at(30)), 0) - amount)
-    conditions to succeed:
-      require_auth spender
-      gate: amount > -1
-      gate: Select(@not(ICmp_EQ(@has(@map:Allowance(@struct:from,spender(from, spender), @at(25))), 1)), 0, Select(@and(ICmp_EQ(@has(@map:Allowance(@struct:from,spender(from, spender), @at(25))), 1), @not(ICmp_UGT(@env:sequence, @field:live_until_ledger(@map:Allowance(@struct:from,spender(from, spender), @at(26)))))), @field:amount(@map:Allowance(@struct:from,spender(from, spender), @at(26))), 0)) ≥ amount
-      gate: Select(ICmp_EQ(@has(@map:Balance(from, @at(29))), 1), @map:Balance(from, @at(30)), 0) ≥ amount
+/-- `burn_from(spender: Address, from: Address, amount: i128)`: it succeeds exactly when `burn_from.Spec` holds.
+    Its effects, in execution order:
+    * `burn_from.s1`: write `Allowance (burn_from.«from» st) (burn_from.spender st)`, when `¬((burn_from.amount st) = 0)`
+    * `burn_from.s2`: write `Balance (burn_from.«from» st)`
 -/
-def burn_from : Step → Prop := fun st =>
-  st.call.fn = "burn_from" ∧
-  st.call.caller ≠ pool st ∧
-  (burn_from.spender st) ∈ st.call.signers ∧   -- require_auth spender
-  (burn_from.amount st) > -1 ∧   -- gate
-  (if ¬((st.pre (.has (Allowance (burn_from.«from» st) (burn_from.spender st)))) = 1) then 0 else (if ((st.pre (.has (Allowance (burn_from.«from» st) (burn_from.spender st)))) = 1) ∧ (¬((st.call.env "sequence") > (st.pre (Allowance.live_until_ledger (burn_from.«from» st) (burn_from.spender st))))) then (st.pre (Allowance.amount (burn_from.«from» st) (burn_from.spender st))) else 0)) ≥ (burn_from.amount st) ∧   -- gate
-  (getOr0 (burn_from.s1 st) (Balance (burn_from.«from» st))) ≥ (burn_from.amount st) ∧   -- gate
-  st.post = (burn_from.s2 st) ∧
-  st.writes = [(Allowance.amount (burn_from.«from» st) (burn_from.spender st)), (Allowance.live_until_ledger (burn_from.«from» st) (burn_from.spender st)), .has (Allowance (burn_from.«from» st) (burn_from.spender st)), (Balance (burn_from.«from» st)), .has (Balance (burn_from.«from» st))] ∧
-  st.ret = 2
+structure burn_from.Spec (st : Step) : Prop where
+  fn : st.call.fn = "burn_from"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- `burn_from.spender st` authorized the call (`require_auth`) -/
+  auth_spender : (burn_from.spender st) ∈ st.call.signers
+  /-- the call panics unless this holds -/
+  gate1 : (burn_from.amount st) > -1
+  /-- the call panics unless this holds -/
+  gate2 : (if ¬((st.pre (.has (Allowance (burn_from.«from» st) (burn_from.spender st)))) = 1) then 0 else (if ((st.pre (.has (Allowance (burn_from.«from» st) (burn_from.spender st)))) = 1) ∧ (¬((st.call.env "sequence") > (st.pre (Allowance.live_until_ledger (burn_from.«from» st) (burn_from.spender st))))) then (st.pre (Allowance.amount (burn_from.«from» st) (burn_from.spender st))) else 0)) ≥ (burn_from.amount st)
+  /-- the call panics unless this holds -/
+  gate3 : (getOr0 (burn_from.s1 st) (Balance (burn_from.«from» st))) ≥ (burn_from.amount st)
+  post : st.post = (burn_from.s2 st)
+  writes : st.writes = [(Allowance.amount (burn_from.«from» st) (burn_from.spender st)), (Allowance.live_until_ledger (burn_from.«from» st) (burn_from.spender st)), .has (Allowance (burn_from.«from» st) (burn_from.spender st)), (Balance (burn_from.«from» st)), .has (Balance (burn_from.«from» st))]
+  ret : st.ret = 2
 
-/-- `decimals()`
+abbrev burn_from : Step → Prop := fun st => burn_from.Spec st
+
+/-- `decimals()`: it succeeds exactly when `decimals.Spec` holds.
 -/
-def decimals : Step → Prop := fun st =>
-  st.call.fn = "decimals" ∧
-  st.call.caller ≠ pool st ∧
-  st.post = st.pre ∧
-  st.writes = [] ∧
-  st.ret = (st.pre METADATA.decimal)
+structure decimals.Spec (st : Step) : Prop where
+  fn : st.call.fn = "decimals"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  post : st.post = st.pre
+  writes : st.writes = []
+  ret : st.ret = (st.pre METADATA.decimal)
+
+abbrev decimals : Step → Prop := fun st => decimals.Spec st
 
 namespace mint
 @[simp] def amount (st : Step) : Int := st.call.arg "amount"
@@ -240,30 +276,35 @@ namespace mint
   ((st.pre).set (Balance (mint.to st)) ((getOr0 st.pre (Balance (mint.to st))) + (mint.amount st))).set (.has (Balance (mint.to st))) 1
 end mint
 
-/-- `mint(to: Address, amount: i128)`
-    effects, in execution order (states `mint.s1`, `mint.s2`, …):
-      write @map:Balance(to, @at(39)) := (Select(ICmp_EQ(@has(@map:Balance(to, @at(40))), 1), @map:Balance(to, @at(41)), 0) + amount)
-    conditions to succeed:
-      require_auth storage.Admin/16
-      gate: amount > -1
+/-- `mint(to: Address, amount: i128)`: it succeeds exactly when `mint.Spec` holds.
+    Its effects, in execution order:
+    * `mint.s1`: write `Balance (mint.to st)`
 -/
-def mint : Step → Prop := fun st =>
-  st.call.fn = "mint" ∧
-  st.call.caller ≠ pool st ∧
-  (st.pre Admin) ∈ st.call.signers ∧   -- require_auth storage.Admin/16
-  (mint.amount st) > -1 ∧   -- gate
-  st.post = (mint.s1 st) ∧
-  st.writes = [(Balance (mint.to st)), .has (Balance (mint.to st))] ∧
-  st.ret = 2
+structure mint.Spec (st : Step) : Prop where
+  fn : st.call.fn = "mint"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- `st.pre Admin` authorized the call (`require_auth`) -/
+  auth_Admin : (st.pre Admin) ∈ st.call.signers
+  /-- the call panics unless this holds -/
+  gate1 : (mint.amount st) > -1
+  post : st.post = (mint.s1 st)
+  writes : st.writes = [(Balance (mint.to st)), .has (Balance (mint.to st))]
+  ret : st.ret = 2
 
-/-- `name()`
+abbrev mint : Step → Prop := fun st => mint.Spec st
+
+/-- `name()`: it succeeds exactly when `name.Spec` holds.
 -/
-def name : Step → Prop := fun st =>
-  st.call.fn = "name" ∧
-  st.call.caller ≠ pool st ∧
-  st.post = st.pre ∧
-  st.writes = [] ∧
-  st.ret = (st.pre METADATA.name)
+structure name.Spec (st : Step) : Prop where
+  fn : st.call.fn = "name"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  post : st.post = st.pre
+  writes : st.writes = []
+  ret : st.ret = (st.pre METADATA.name)
+
+abbrev name : Step → Prop := fun st => name.Spec st
 
 namespace set_admin
 @[simp] def new_admin (st : Step) : Addr := st.call.argA "new_admin"
@@ -271,28 +312,33 @@ namespace set_admin
   ((st.pre).set Admin (set_admin.new_admin st)).set (.has Admin) 1
 end set_admin
 
-/-- `set_admin(new_admin: Address)`
-    effects, in execution order (states `set_admin.s1`, `set_admin.s2`, …):
-      write storage.Admin/45 := new_admin
-    conditions to succeed:
-      require_auth storage.Admin/16
+/-- `set_admin(new_admin: Address)`: it succeeds exactly when `set_admin.Spec` holds.
+    Its effects, in execution order:
+    * `set_admin.s1`: write `Admin`
 -/
-def set_admin : Step → Prop := fun st =>
-  st.call.fn = "set_admin" ∧
-  st.call.caller ≠ pool st ∧
-  (st.pre Admin) ∈ st.call.signers ∧   -- require_auth storage.Admin/16
-  st.post = (set_admin.s1 st) ∧
-  st.writes = [Admin, .has Admin] ∧
-  st.ret = 2
+structure set_admin.Spec (st : Step) : Prop where
+  fn : st.call.fn = "set_admin"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- `st.pre Admin` authorized the call (`require_auth`) -/
+  auth_Admin : (st.pre Admin) ∈ st.call.signers
+  post : st.post = (set_admin.s1 st)
+  writes : st.writes = [Admin, .has Admin]
+  ret : st.ret = 2
 
-/-- `symbol()`
+abbrev set_admin : Step → Prop := fun st => set_admin.Spec st
+
+/-- `symbol()`: it succeeds exactly when `symbol.Spec` holds.
 -/
-def symbol : Step → Prop := fun st =>
-  st.call.fn = "symbol" ∧
-  st.call.caller ≠ pool st ∧
-  st.post = st.pre ∧
-  st.writes = [] ∧
-  st.ret = (st.pre METADATA.symbol)
+structure symbol.Spec (st : Step) : Prop where
+  fn : st.call.fn = "symbol"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  post : st.post = st.pre
+  writes : st.writes = []
+  ret : st.ret = (st.pre METADATA.symbol)
+
+abbrev symbol : Step → Prop := fun st => symbol.Spec st
 
 namespace transfer
 @[simp] def amount (st : Step) : Int := st.call.arg "amount"
@@ -304,24 +350,26 @@ namespace transfer
   ((transfer.s1 st).set (Balance (transfer.to_muxed st)) ((getOr0 (transfer.s1 st) (Balance (transfer.to_muxed st))) + (transfer.amount st))).set (.has (Balance (transfer.to_muxed st))) 1
 end transfer
 
-/-- `transfer(from: Address, to_muxed: MuxedAddress, amount: i128)`
-    effects, in execution order (states `transfer.s1`, `transfer.s2`, …):
-      write @map:Balance(from, @at(45)) := (Select(ICmp_EQ(@has(@map:Balance(from, @at(47))), 1), @map:Balance(from, @at(48)), 0) - amount)
-      write @map:Balance(@addrof(to_muxed), @at(49)) := (Select(ICmp_EQ(@has(@map:Balance(@addrof(to_muxed), @at(52))), 1), @map:Balance(@addrof(to_muxed), @at(53)), 0) + amount)
-    conditions to succeed:
-      require_auth from
-      gate: amount > -1
-      gate: Select(ICmp_EQ(@has(@map:Balance(from, @at(47))), 1), @map:Balance(from, @at(48)), 0) ≥ amount
+/-- `transfer(from: Address, to_muxed: MuxedAddress, amount: i128)`: it succeeds exactly when `transfer.Spec` holds.
+    Its effects, in execution order:
+    * `transfer.s1`: write `Balance (transfer.«from» st)`
+    * `transfer.s2`: write `Balance (transfer.to_muxed st)`
 -/
-def transfer : Step → Prop := fun st =>
-  st.call.fn = "transfer" ∧
-  st.call.caller ≠ pool st ∧
-  (transfer.«from» st) ∈ st.call.signers ∧   -- require_auth from
-  (transfer.amount st) > -1 ∧   -- gate
-  (getOr0 st.pre (Balance (transfer.«from» st))) ≥ (transfer.amount st) ∧   -- gate
-  st.post = (transfer.s2 st) ∧
-  st.writes = [(Balance (transfer.«from» st)), .has (Balance (transfer.«from» st)), (Balance (transfer.to_muxed st)), .has (Balance (transfer.to_muxed st))] ∧
-  st.ret = 2
+structure transfer.Spec (st : Step) : Prop where
+  fn : st.call.fn = "transfer"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- `transfer.«from» st` authorized the call (`require_auth`) -/
+  auth_from : (transfer.«from» st) ∈ st.call.signers
+  /-- the call panics unless this holds -/
+  gate1 : (transfer.amount st) > -1
+  /-- the call panics unless this holds -/
+  gate2 : (getOr0 st.pre (Balance (transfer.«from» st))) ≥ (transfer.amount st)
+  post : st.post = (transfer.s2 st)
+  writes : st.writes = [(Balance (transfer.«from» st)), .has (Balance (transfer.«from» st)), (Balance (transfer.to_muxed st)), .has (Balance (transfer.to_muxed st))]
+  ret : st.ret = 2
+
+abbrev transfer : Step → Prop := fun st => transfer.Spec st
 
 namespace transfer_from
 @[simp] def amount (st : Step) : Int := st.call.arg "amount"
@@ -336,29 +384,58 @@ namespace transfer_from
   ((transfer_from.s2 st).set (Balance (transfer_from.to st)) ((getOr0 (transfer_from.s2 st) (Balance (transfer_from.to st))) + (transfer_from.amount st))).set (.has (Balance (transfer_from.to st))) 1
 end transfer_from
 
-/-- `transfer_from(spender: Address, from: Address, to: Address, amount: i128)`
-    effects, in execution order (states `transfer_from.s1`, `transfer_from.s2`, …):
-      write @map:Allowance(@struct:from,spender(from, spender), @at(56)) := @struct:amount,live_until_ledger((Select(@not(ICmp_EQ(@has(@map:Allowance(@struct:from,spender(from, spender), @at(58))), 1)), 0, Select(@not(ICmp_UGT(@env:sequence, @field:live_until_ledger(@map:Allowance(@struct:from,spender(from, spender), @at(59))))), @field:amount(@map:Allowance(@struct:from,spender(from, spender), @at(59))), 0)) - amount), Select(@not(ICmp_EQ(@has(@map:Allowance(@struct:from,spender(from, spender), @at(58))), 1)), 0, @field:live_until_ledger(@map:Allowance(@struct:from,spender(from, spender), @at(59)))))   [when ¬((transfer_from.amount st) = 0)]
-      write @map:Balance(from, @at(60)) := (Select(ICmp_EQ(@has(@map:Balance(from, @at(62))), 1), @map:Balance(from, @at(63)), 0) - amount)
-      write @map:Balance(to, @at(64)) := (Select(ICmp_EQ(@has(@map:Balance(to, @at(66))), 1), @map:Balance(to, @at(67)), 0) + amount)
-    conditions to succeed:
-      require_auth spender
-      gate: amount > -1
-      gate: Select(@not(ICmp_EQ(@has(@map:Allowance(@struct:from,spender(from, spender), @at(58))), 1)), 0, Select(@and(ICmp_EQ(@has(@map:Allowance(@struct:from,spender(from, spender), @at(58))), 1), @not(ICmp_UGT(@env:sequence, @field:live_until_ledger(@map:Allowance(@struct:from,spender(from, spender), @at(59)))))), @field:amount(@map:Allowance(@struct:from,spender(from, spender), @at(59))), 0)) ≥ amount
-      gate: Select(ICmp_EQ(@has(@map:Balance(from, @at(62))), 1), @map:Balance(from, @at(63)), 0) ≥ amount
+/-- `transfer_from(spender: Address, from: Address, to: Address, amount: i128)`: it succeeds exactly when `transfer_from.Spec` holds.
+    Its effects, in execution order:
+    * `transfer_from.s1`: write `Allowance (transfer_from.«from» st) (transfer_from.spender st)`, when `¬((transfer_from.amount st) = 0)`
+    * `transfer_from.s2`: write `Balance (transfer_from.«from» st)`
+    * `transfer_from.s3`: write `Balance (transfer_from.to st)`
 -/
-def transfer_from : Step → Prop := fun st =>
-  st.call.fn = "transfer_from" ∧
-  st.call.caller ≠ pool st ∧
-  (transfer_from.spender st) ∈ st.call.signers ∧   -- require_auth spender
-  (transfer_from.amount st) > -1 ∧   -- gate
-  (if ¬((st.pre (.has (Allowance (transfer_from.«from» st) (transfer_from.spender st)))) = 1) then 0 else (if ((st.pre (.has (Allowance (transfer_from.«from» st) (transfer_from.spender st)))) = 1) ∧ (¬((st.call.env "sequence") > (st.pre (Allowance.live_until_ledger (transfer_from.«from» st) (transfer_from.spender st))))) then (st.pre (Allowance.amount (transfer_from.«from» st) (transfer_from.spender st))) else 0)) ≥ (transfer_from.amount st) ∧   -- gate
-  (getOr0 (transfer_from.s1 st) (Balance (transfer_from.«from» st))) ≥ (transfer_from.amount st) ∧   -- gate
-  st.post = (transfer_from.s3 st) ∧
-  st.writes = [(Allowance.amount (transfer_from.«from» st) (transfer_from.spender st)), (Allowance.live_until_ledger (transfer_from.«from» st) (transfer_from.spender st)), .has (Allowance (transfer_from.«from» st) (transfer_from.spender st)), (Balance (transfer_from.«from» st)), .has (Balance (transfer_from.«from» st)), (Balance (transfer_from.to st)), .has (Balance (transfer_from.to st))] ∧
-  st.ret = 2
+structure transfer_from.Spec (st : Step) : Prop where
+  fn : st.call.fn = "transfer_from"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- `transfer_from.spender st` authorized the call (`require_auth`) -/
+  auth_spender : (transfer_from.spender st) ∈ st.call.signers
+  /-- the call panics unless this holds -/
+  gate1 : (transfer_from.amount st) > -1
+  /-- the call panics unless this holds -/
+  gate2 : (if ¬((st.pre (.has (Allowance (transfer_from.«from» st) (transfer_from.spender st)))) = 1) then 0 else (if ((st.pre (.has (Allowance (transfer_from.«from» st) (transfer_from.spender st)))) = 1) ∧ (¬((st.call.env "sequence") > (st.pre (Allowance.live_until_ledger (transfer_from.«from» st) (transfer_from.spender st))))) then (st.pre (Allowance.amount (transfer_from.«from» st) (transfer_from.spender st))) else 0)) ≥ (transfer_from.amount st)
+  /-- the call panics unless this holds -/
+  gate3 : (getOr0 (transfer_from.s1 st) (Balance (transfer_from.«from» st))) ≥ (transfer_from.amount st)
+  post : st.post = (transfer_from.s3 st)
+  writes : st.writes = [(Allowance.amount (transfer_from.«from» st) (transfer_from.spender st)), (Allowance.live_until_ledger (transfer_from.«from» st) (transfer_from.spender st)), .has (Allowance (transfer_from.«from» st) (transfer_from.spender st)), (Balance (transfer_from.«from» st)), .has (Balance (transfer_from.«from» st)), (Balance (transfer_from.to st)), .has (Balance (transfer_from.to st))]
+  ret : st.ret = 2
 
-/-- the contract's entry points (each a `Step → Prop`). -/
-def entries : List (Step → Prop) := [__constructor, allowance, approve, balance, burn, burn_from, decimals, mint, name, set_admin, symbol, transfer, transfer_from]
+abbrev transfer_from : Step → Prop := fun st => transfer_from.Spec st
+
+/-- the contract's entry points (each a `Step → Prop`; the constructor runs
+    only at deployment, so it is not one of them). -/
+def entries : List (Step → Prop) := [allowance, approve, balance, burn, burn_from, decimals, mint, name, set_admin, symbol, transfer, transfer_from]
+
+/-- Keys in temporary storage: they can expire between calls. -/
+def temporary : Key → Bool
+  | .tup "Allowance" _ => true
+  | .fld k _ => temporary k
+  | .has k => temporary k
+  | _ => false
+
+/-- What the rest of the ledger can do between two calls of the contract at `me`.
+    Any token balance can change: other people's transfers, mints, tokens sent
+    straight to the contract. The exception is the contract's own balances,
+    which can only grow, since lowering them needs its authorization. The
+    contract's own storage is untouched (only the contract writes it), except
+    that temporary entries can expire. -/
+def Outside (me : Addr) (s s' : Storage) : Prop :=
+  ∀ k : Key, match k with
+    | .bal t a => a = me → s (.bal t a) ≤ s' (.bal t a)
+    | k => temporary k = true ∨ s' k = s k
+
+/-- A history of the contract at `me`, from storage `s` to `t`: its calls (each
+    admitted by one of its entry points) interleaved with outside activity. -/
+inductive Run (me : Addr) : Storage → Storage → Prop
+  | refl (s : Storage) : Run me s s
+  | call {s : Storage} (st : Step) : Run me s st.pre → st.call.self = me →
+      (∃ e ∈ entries, e st) → Run me s st.post
+  | outside {s t t' : Storage} : Run me s t → Outside me t t' → Run me s t'
 
 end Contract

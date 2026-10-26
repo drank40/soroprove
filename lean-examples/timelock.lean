@@ -71,6 +71,25 @@ def bal (t : Addr) (s : Storage) (a : Addr) : Int := s (.bal t a)
 def xfer (t : Addr) (s : Storage) (src dst : Addr) (amt : Int) : Storage :=
   let s1 := s.set (.bal t src) (bal t s src - amt)
   s1.set (.bal t dst) (bal t s1 dst + amt)
+@[simp] theorem Storage.set_get (s : Storage) (k k' : Key) (v : Int) :
+    (s.set k v) k' = if k' = k then v else s k' := rfl
+/-- a balance after a transfer: plus what came in, minus what went out. -/
+@[simp] theorem bal_xfer (t t' : Addr) (s : Storage) (src dst : Addr) (amt : Int) (a : Addr) :
+    bal t (xfer t' s src dst amt) a
+      = bal t s a + (if t = t' ∧ a = dst then amt else 0) - (if t = t' ∧ a = src then amt else 0) := by
+  simp only [bal, xfer, Storage.set_get, Key.bal.injEq]
+  by_cases h1 : a = dst <;> by_cases h2 : a = src <;> by_cases h3 : t = t' <;> simp_all <;> omega
+/-- a transfer touches only balances. -/
+@[simp] theorem xfer_other (t : Addr) (s : Storage) (src dst : Addr) (amt : Int) (k : Key)
+    (h : ∀ t a, k ≠ .bal t a) : xfer t s src dst amt k = s k := by
+  simp only [xfer, Storage.set_get]; simp [h]
+/-- a write to a key that isn't a balance leaves every balance alone. -/
+@[simp] theorem bal_set (t : Addr) (s : Storage) (k : Key) (v : Int) (a : Addr) (h : ∀ t a, k ≠ .bal t a) :
+    bal t (s.set k v) a = bal t s a := by
+  simp only [bal, Storage.set_get]; simp [Ne.symm (h t a)]
+
+/-- SEP-41: a transfer succeeds only for a non-negative amount the sender holds. -/
+abbrev xferOk (t : Addr) (s : Storage) (src _dst : Addr) (amt : Int) : Prop := 0 ≤ amt ∧ amt ≤ bal t s src
 /-- storage after a call into another contract the model doesn't interpret: the
     contract's own storage is unchanged (Soroban forbids re-entry); token
     ledgers take `h`'s values. -/
@@ -101,24 +120,28 @@ namespace claim
   (claim.s1 st).set (.has Balance) 0
 end claim
 
-/-- `claim(claimant: Address)`
-    effects, in execution order (states `claim.s1`, `claim.s2`, …; amounts `claim.amt1`, …):
-      transfer @field:token(storage.Balance/2): @pool -> claimant : @field:amount(storage.Balance/2)
-      write storage.Balance/12 := @del
-    conditions to succeed:
-      require_auth claimant
-      gate: @has(storage.Balance/1) = 1
-      gate: ¬Select(ICmp_EQ(And(ICmp_UGT(buf_symbol_index_in_linear_memory, 4294967295), 1), 0), ICmp_ULT(Select(@not(ICmp_EQ(And((@len(@field:kind(@field:time_bound(storage.Balance/2))) + 4294967295), 4294967295), 0)), 0, Select(@and(ICmp_EQ(And((@len(@field:kind(@field:time_bound(storage.Balance/2))) + 4294967295), 4294967295), 0), @and(ICmp_NE(And(@field:timestamp(@field:time_bound(storage.Balance/2)), 255), 64), ICmp_NE(And(@field:timestamp(@field:time_bound(storage.Balance/2)), 255), 6))), 0, @field:timestamp(@field:time_bound(storage.Balance/2)))), @env:timestamp), ICmp_UGT(Select(@not(ICmp_EQ(And((@len(@field:kind(@field:time_bound(storage.Balance/2))) + 4294967295), 4294967295), 0)), 0, Select(@and(ICmp_EQ(And((@len(@field:kind(@field:time_bound(storage.Balance/2))) + 4294967295), 4294967295), 0), @and(ICmp_NE(And(@field:timestamp(@field:time_bound(storage.Balance/2)), 255), 64), ICmp_NE(And(@field:timestamp(@field:time_bound(storage.Balance/2)), 255), 6))), 0, @field:timestamp(@field:time_bound(storage.Balance/2)))), @env:timestamp))
+/-- `claim(claimant: Address)`: it succeeds exactly when `claim.Spec` holds.
+    Its effects, in execution order:
+    * `claim.s1`: transfer `claim.amt1 st` of token `st.pre Balance.token` from `pool st` to `claim.claimant st`
+    * `claim.s2`: remove `Balance`
 -/
-def claim : Step → Prop := fun st => ∃ u : Unk,
-  st.call.fn = "claim" ∧
-  st.call.caller ≠ pool st ∧
-  (claim.claimant st) ∈ st.call.signers ∧   -- require_auth claimant
-  (st.pre (.has Balance)) = 1 ∧   -- gate
-  ¬(if (u.g 1) = 0 then (if ¬((u.g 2) = 0) then 0 else (if ((u.g 3) = 0) ∧ (((u.g 4) ≠ 64) ∧ ((u.g 5) ≠ 6)) then 0 else (st.pre Balance.time_bound.timestamp))) < (st.call.env "timestamp") else (if ¬((u.g 6) = 0) then 0 else (if ((u.g 7) = 0) ∧ (((u.g 8) ≠ 64) ∧ ((u.g 9) ≠ 6)) then 0 else (st.pre Balance.time_bound.timestamp))) > (st.call.env "timestamp")) ∧   -- gate
-  st.post = (claim.s2 st) ∧
-  st.writes = [.bal (st.pre Balance.token) (pool st), .bal (st.pre Balance.token) (claim.claimant st), .has Balance] ∧
-  st.ret = 2
+structure claim.Spec (st : Step) (u : Unk) : Prop where
+  fn : st.call.fn = "claim"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer1 : xferOk (st.pre Balance.token) st.pre (pool st) (claim.claimant st) (claim.amt1 st)
+  /-- `claim.claimant st` authorized the call (`require_auth`) -/
+  auth_claimant : (claim.claimant st) ∈ st.call.signers
+  /-- the call panics unless this holds -/
+  gate1 : (st.pre (.has Balance)) = 1
+  /-- the call panics unless this holds -/
+  gate2 : ¬(if (u.g 1) = 0 then (if ¬((u.g 2) = 0) then 0 else (if ((u.g 3) = 0) ∧ (((u.g 4) ≠ 64) ∧ ((u.g 5) ≠ 6)) then 0 else (st.pre Balance.time_bound.timestamp))) < (st.call.env "timestamp") else (if ¬((u.g 6) = 0) then 0 else (if ((u.g 7) = 0) ∧ (((u.g 8) ≠ 64) ∧ ((u.g 9) ≠ 6)) then 0 else (st.pre Balance.time_bound.timestamp))) > (st.call.env "timestamp"))
+  post : st.post = (claim.s2 st)
+  writes : st.writes = [.bal (st.pre Balance.token) (pool st), .bal (st.pre Balance.token) (claim.claimant st), .has Balance]
+  ret : st.ret = 2
+
+def claim : Step → Prop := fun st => ∃ u : Unk, claim.Spec st u
 
 namespace deposit
 @[simp] def amount (st : Step) : Int := st.call.arg "amount"
@@ -137,27 +160,57 @@ namespace deposit
   ((deposit.s2 st u).set Init 2).set (.has Init) 1
 end deposit
 
-/-- `deposit(from: Address, token: Address, amount: i128, claimants: Vec<Address>, time_bound: TimeBound)`
-    effects, in execution order (states `deposit.s1`, `deposit.s2`, …; amounts `deposit.amt1`, …):
-      transfer token: from -> @pool : amount
-      write storage.Balance/18 := @struct:amount,claimants,time_bound,token(amount, claimants, @struct:kind,timestamp(@vec(Select(@not(ICmp_EQ(And(ICmp_UGT(buf_symbol_index_in_linear_memory, 4294967295), 1), 0)), phi(buf_symbol_new_from_linear_memory, 14, Or(And(phi(1, And((@load(phi(And((cyc + 1), 4294967295), 1048621)) + 4294967250), 4294967295), And((@load(phi(And((cyc + 1), 4294967295), 1048621)) + 4294967243), 4294967295), And((@load(phi(And((cyc + 1), 4294967295), 1048621)) + 4294967237), 4294967295)), 255), Shl(phi(cyc, 0), 6))), phi(buf_symbol_new_from_linear_memory, 14, Or(And(phi(1, And((@load(phi(And((cyc + 1), 4294967295), 1048615)) + 4294967250), 4294967295), And((@load(phi(And((cyc + 1), 4294967295), 1048615)) + 4294967243), 4294967295), And((@load(phi(And((cyc + 1), 4294967295), 1048615)) + 4294967237), 4294967295)), 255), Shl(phi(cyc, 0), 6))))), Select(@not(ICmp_EQ(And((@len(@field:kind(time_bound)) + 4294967295), 4294967295), 0)), 1, @field:timestamp(time_bound))), token)
-      write storage.Init/19 := 2
-    conditions to succeed:
-      require_auth from
-      gate: @len(claimants) < 11
-      gate: @has(storage.Init/13) ≠ 1
+/-- `deposit(from: Address, token: Address, amount: i128, claimants: Vec<Address>, time_bound: TimeBound)`: it succeeds exactly when `deposit.Spec` holds.
+    Its effects, in execution order:
+    * `deposit.s1`: transfer `deposit.amt1 st` of token `deposit.token st` from `deposit.«from» st` to `pool st`
+    * `deposit.s2`: write `Balance`
+    * `deposit.s3`: write `Init`
 -/
-def deposit : Step → Prop := fun st => ∃ u : Unk,
-  st.call.fn = "deposit" ∧
-  st.call.caller ≠ pool st ∧
-  (deposit.«from» st) ∈ st.call.signers ∧   -- require_auth from
-  (deposit.claimants.len st) < 11 ∧   -- gate
-  (st.pre (.has Init)) ≠ 1 ∧   -- gate
-  st.post = (deposit.s3 st u) ∧
-  st.writes = [.bal (deposit.token st) (deposit.«from» st), .bal (deposit.token st) (pool st), Balance.amount, Balance.claimants, Balance.time_bound.kind, Balance.time_bound.timestamp, Balance.token, .has Balance, Init, .has Init] ∧
-  st.ret = 2
+structure deposit.Spec (st : Step) (u : Unk) : Prop where
+  fn : st.call.fn = "deposit"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer1 : xferOk (deposit.token st) st.pre (deposit.«from» st) (pool st) (deposit.amt1 st)
+  /-- `deposit.«from» st` authorized the call (`require_auth`) -/
+  auth_from : (deposit.«from» st) ∈ st.call.signers
+  /-- the call panics unless this holds -/
+  gate1 : (deposit.claimants.len st) < 11
+  /-- the call panics unless this holds -/
+  gate2 : (st.pre (.has Init)) ≠ 1
+  post : st.post = (deposit.s3 st u)
+  writes : st.writes = [.bal (deposit.token st) (deposit.«from» st), .bal (deposit.token st) (pool st), Balance.amount, Balance.claimants, Balance.time_bound.kind, Balance.time_bound.timestamp, Balance.token, .has Balance, Init, .has Init]
+  ret : st.ret = 2
 
-/-- the contract's entry points (each a `Step → Prop`). -/
+def deposit : Step → Prop := fun st => ∃ u : Unk, deposit.Spec st u
+
+/-- the contract's entry points (each a `Step → Prop`; the constructor runs
+    only at deployment, so it is not one of them). -/
 def entries : List (Step → Prop) := [claim, deposit]
+
+/-- Keys in temporary storage: they can expire between calls. -/
+def temporary : Key → Bool
+  | .fld k _ => temporary k
+  | .has k => temporary k
+  | _ => false
+
+/-- What the rest of the ledger can do between two calls of the contract at `me`.
+    Any token balance can change: other people's transfers, mints, tokens sent
+    straight to the contract. The exception is the contract's own balances,
+    which can only grow, since lowering them needs its authorization. The
+    contract's own storage is untouched (only the contract writes it), except
+    that temporary entries can expire. -/
+def Outside (me : Addr) (s s' : Storage) : Prop :=
+  ∀ k : Key, match k with
+    | .bal t a => a = me → s (.bal t a) ≤ s' (.bal t a)
+    | k => temporary k = true ∨ s' k = s k
+
+/-- A history of the contract at `me`, from storage `s` to `t`: its calls (each
+    admitted by one of its entry points) interleaved with outside activity. -/
+inductive Run (me : Addr) : Storage → Storage → Prop
+  | refl (s : Storage) : Run me s s
+  | call {s : Storage} (st : Step) : Run me s st.pre → st.call.self = me →
+      (∃ e ∈ entries, e st) → Run me s st.post
+  | outside {s t t' : Storage} : Run me s t → Outside me t t' → Run me s t'
 
 end Contract

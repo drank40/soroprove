@@ -71,6 +71,25 @@ def bal (t : Addr) (s : Storage) (a : Addr) : Int := s (.bal t a)
 def xfer (t : Addr) (s : Storage) (src dst : Addr) (amt : Int) : Storage :=
   let s1 := s.set (.bal t src) (bal t s src - amt)
   s1.set (.bal t dst) (bal t s1 dst + amt)
+@[simp] theorem Storage.set_get (s : Storage) (k k' : Key) (v : Int) :
+    (s.set k v) k' = if k' = k then v else s k' := rfl
+/-- a balance after a transfer: plus what came in, minus what went out. -/
+@[simp] theorem bal_xfer (t t' : Addr) (s : Storage) (src dst : Addr) (amt : Int) (a : Addr) :
+    bal t (xfer t' s src dst amt) a
+      = bal t s a + (if t = t' ∧ a = dst then amt else 0) - (if t = t' ∧ a = src then amt else 0) := by
+  simp only [bal, xfer, Storage.set_get, Key.bal.injEq]
+  by_cases h1 : a = dst <;> by_cases h2 : a = src <;> by_cases h3 : t = t' <;> simp_all <;> omega
+/-- a transfer touches only balances. -/
+@[simp] theorem xfer_other (t : Addr) (s : Storage) (src dst : Addr) (amt : Int) (k : Key)
+    (h : ∀ t a, k ≠ .bal t a) : xfer t s src dst amt k = s k := by
+  simp only [xfer, Storage.set_get]; simp [h]
+/-- a write to a key that isn't a balance leaves every balance alone. -/
+@[simp] theorem bal_set (t : Addr) (s : Storage) (k : Key) (v : Int) (a : Addr) (h : ∀ t a, k ≠ .bal t a) :
+    bal t (s.set k v) a = bal t s a := by
+  simp only [bal, Storage.set_get]; simp [Ne.symm (h t a)]
+
+/-- SEP-41: a transfer succeeds only for a non-negative amount the sender holds. -/
+abbrev xferOk (t : Addr) (s : Storage) (src _dst : Addr) (amt : Int) : Prop := 0 ≤ amt ∧ amt ≤ bal t s src
 /-- storage after a call into another contract the model doesn't interpret: the
     contract's own storage is unchanged (Soroban forbids re-entry); token
     ledgers take `h`'s values. -/
@@ -99,34 +118,39 @@ namespace create
   ((((((st.pre).set Offer.buy_price (create.buy_price st)).set Offer.buy_token (create.buy_token st)).set Offer.sell_price (create.sell_price st)).set Offer.sell_token (create.sell_token st)).set Offer.seller (create.seller st)).set (.has Offer) 1
 end create
 
-/-- `create(seller: Address, sell_token: Address, buy_token: Address, sell_price: u32, buy_price: u32)`
-    effects, in execution order (states `create.s1`, `create.s2`, …):
-      write storage.Offer/2 := @struct:buy_price,buy_token,sell_price,sell_token,seller(buy_price, buy_token, sell_price, sell_token, seller)
-    conditions to succeed:
-      require_auth seller
-      gate: buy_price ≥ 1
-      gate: sell_price ≥ 1
-      gate: @has(storage.Offer/1) ≠ 1
+/-- `create(seller: Address, sell_token: Address, buy_token: Address, sell_price: u32, buy_price: u32)`: it succeeds exactly when `create.Spec` holds.
+    Its effects, in execution order:
+    * `create.s1`: write `Offer`
 -/
-def create : Step → Prop := fun st =>
-  st.call.fn = "create" ∧
-  st.call.caller ≠ pool st ∧
-  (create.seller st) ∈ st.call.signers ∧   -- require_auth seller
-  (create.buy_price st) ≥ 1 ∧   -- gate
-  (create.sell_price st) ≥ 1 ∧   -- gate
-  (st.pre (.has Offer)) ≠ 1 ∧   -- gate
-  st.post = (create.s1 st) ∧
-  st.writes = [Offer.buy_price, Offer.buy_token, Offer.sell_price, Offer.sell_token, Offer.seller, .has Offer] ∧
-  st.ret = 2
+structure create.Spec (st : Step) : Prop where
+  fn : st.call.fn = "create"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- `create.seller st` authorized the call (`require_auth`) -/
+  auth_seller : (create.seller st) ∈ st.call.signers
+  /-- the call panics unless this holds -/
+  gate1 : (create.buy_price st) ≥ 1
+  /-- the call panics unless this holds -/
+  gate2 : (create.sell_price st) ≥ 1
+  /-- the call panics unless this holds -/
+  gate3 : (st.pre (.has Offer)) ≠ 1
+  post : st.post = (create.s1 st)
+  writes : st.writes = [Offer.buy_price, Offer.buy_token, Offer.sell_price, Offer.sell_token, Offer.seller, .has Offer]
+  ret : st.ret = 2
 
-/-- `get_offer()`
+abbrev create : Step → Prop := fun st => create.Spec st
+
+/-- `get_offer()`: it succeeds exactly when `get_offer.Spec` holds.
 -/
-def get_offer : Step → Prop := fun st => ∃ u : Unk,
-  st.call.fn = "get_offer" ∧
-  st.call.caller ≠ pool st ∧
-  st.post = st.pre ∧
-  st.writes = [] ∧
-  st.ret = (u.i 1)
+structure get_offer.Spec (st : Step) (u : Unk) : Prop where
+  fn : st.call.fn = "get_offer"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  post : st.post = st.pre
+  writes : st.writes = []
+  ret : st.ret = (u.i 1)
+
+def get_offer : Step → Prop := fun st => ∃ u : Unk, get_offer.Spec st u
 
 namespace trade
 @[simp] def buy_token_amount (st : Step) : Int := st.call.arg "buy_token_amount"
@@ -146,23 +170,31 @@ namespace trade
   xfer (st.pre Offer.buy_token) (trade.s2 st u) (pool st) (st.pre Offer.seller) (trade.amt3 st)
 end trade
 
-/-- `trade(buyer: Address, buy_token_amount: i128, min_sell_token_amount: i128)`
-    effects, in execution order (states `trade.s1`, `trade.s2`, …; amounts `trade.amt1`, …):
-      transfer @field:buy_token(storage.Offer/8): buyer -> @pool : buy_token_amount
-      transfer @field:sell_token(storage.Offer/8): @pool -> buyer : big
-      transfer @field:buy_token(storage.Offer/8): @pool -> @field:seller(storage.Offer/8) : buy_token_amount
-    conditions to succeed:
-      require_auth buyer
-      gate: min_sell_token_amount ≤ big
+/-- `trade(buyer: Address, buy_token_amount: i128, min_sell_token_amount: i128)`: it succeeds exactly when `trade.Spec` holds.
+    Its effects, in execution order:
+    * `trade.s1`: transfer `trade.amt1 st` of token `st.pre Offer.buy_token` from `trade.buyer st` to `pool st`
+    * `trade.s2`: transfer `trade.amt2 st u` of token `st.pre Offer.sell_token` from `pool st` to `trade.buyer st`
+    * `trade.s3`: transfer `trade.amt3 st` of token `st.pre Offer.buy_token` from `pool st` to `st.pre Offer.seller`
 -/
-def trade : Step → Prop := fun st => ∃ u : Unk,
-  st.call.fn = "trade" ∧
-  st.call.caller ≠ pool st ∧
-  (trade.buyer st) ∈ st.call.signers ∧   -- require_auth buyer
-  (trade.min_sell_token_amount st) ≤ (u.g 1) ∧   -- gate
-  st.post = (trade.s3 st u) ∧
-  st.writes = [.bal (st.pre Offer.buy_token) (trade.buyer st), .bal (st.pre Offer.buy_token) (pool st), .bal (st.pre Offer.sell_token) (pool st), .bal (st.pre Offer.sell_token) (trade.buyer st), .bal (st.pre Offer.buy_token) (st.pre Offer.seller)] ∧
-  st.ret = 2
+structure trade.Spec (st : Step) (u : Unk) : Prop where
+  fn : st.call.fn = "trade"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer1 : xferOk (st.pre Offer.buy_token) st.pre (trade.buyer st) (pool st) (trade.amt1 st)
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer2 : xferOk (st.pre Offer.sell_token) (trade.s1 st) (pool st) (trade.buyer st) (trade.amt2 st u)
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer3 : xferOk (st.pre Offer.buy_token) (trade.s2 st u) (pool st) (st.pre Offer.seller) (trade.amt3 st)
+  /-- `trade.buyer st` authorized the call (`require_auth`) -/
+  auth_buyer : (trade.buyer st) ∈ st.call.signers
+  /-- the call panics unless this holds -/
+  gate1 : (trade.min_sell_token_amount st) ≤ (u.g 1)
+  post : st.post = (trade.s3 st u)
+  writes : st.writes = [.bal (st.pre Offer.buy_token) (trade.buyer st), .bal (st.pre Offer.buy_token) (pool st), .bal (st.pre Offer.sell_token) (pool st), .bal (st.pre Offer.sell_token) (trade.buyer st), .bal (st.pre Offer.buy_token) (st.pre Offer.seller)]
+  ret : st.ret = 2
+
+def trade : Step → Prop := fun st => ∃ u : Unk, trade.Spec st u
 
 namespace updt_price
 @[simp] def buy_price (st : Step) : Int := st.call.arg "buy_price"
@@ -171,23 +203,25 @@ namespace updt_price
   ((((((st.pre).set Offer.buy_price (updt_price.buy_price st)).set Offer.buy_token (st.pre Offer.buy_token)).set Offer.sell_price (updt_price.sell_price st)).set Offer.sell_token (st.pre Offer.sell_token)).set Offer.seller (st.pre Offer.seller)).set (.has Offer) 1
 end updt_price
 
-/-- `updt_price(sell_price: u32, buy_price: u32)`
-    effects, in execution order (states `updt_price.s1`, `updt_price.s2`, …):
-      write storage.Offer/17 := @struct:buy_price,buy_token,sell_price,sell_token,seller(buy_price, @field:buy_token(storage.Offer/19), sell_price, @field:sell_token(storage.Offer/19), @field:seller(storage.Offer/19))
-    conditions to succeed:
-      require_auth @field:seller(storage.Offer/19)
-      gate: sell_price ≥ 1
-      gate: buy_price ≥ 1
+/-- `updt_price(sell_price: u32, buy_price: u32)`: it succeeds exactly when `updt_price.Spec` holds.
+    Its effects, in execution order:
+    * `updt_price.s1`: write `Offer`
 -/
-def updt_price : Step → Prop := fun st =>
-  st.call.fn = "updt_price" ∧
-  st.call.caller ≠ pool st ∧
-  (st.pre Offer.seller) ∈ st.call.signers ∧   -- require_auth @field:seller(storage.Offer/19)
-  (updt_price.sell_price st) ≥ 1 ∧   -- gate
-  (updt_price.buy_price st) ≥ 1 ∧   -- gate
-  st.post = (updt_price.s1 st) ∧
-  st.writes = [Offer.buy_price, Offer.buy_token, Offer.sell_price, Offer.sell_token, Offer.seller, .has Offer] ∧
-  st.ret = 2
+structure updt_price.Spec (st : Step) : Prop where
+  fn : st.call.fn = "updt_price"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- `st.pre Offer.seller` authorized the call (`require_auth`) -/
+  auth_Offer_seller : (st.pre Offer.seller) ∈ st.call.signers
+  /-- the call panics unless this holds -/
+  gate1 : (updt_price.sell_price st) ≥ 1
+  /-- the call panics unless this holds -/
+  gate2 : (updt_price.buy_price st) ≥ 1
+  post : st.post = (updt_price.s1 st)
+  writes : st.writes = [Offer.buy_price, Offer.buy_token, Offer.sell_price, Offer.sell_token, Offer.seller, .has Offer]
+  ret : st.ret = 2
+
+abbrev updt_price : Step → Prop := fun st => updt_price.Spec st
 
 namespace withdraw
 @[simp] def amount (st : Step) : Int := st.call.arg "amount"
@@ -198,21 +232,51 @@ namespace withdraw
   xfer (withdraw.token st) st.pre (pool st) (st.pre Offer.seller) (withdraw.amt1 st)
 end withdraw
 
-/-- `withdraw(token: Address, amount: i128)`
-    effects, in execution order (states `withdraw.s1`, `withdraw.s2`, …; amounts `withdraw.amt1`, …):
-      transfer token: @pool -> @field:seller(storage.Offer/21) : amount
-    conditions to succeed:
-      require_auth @field:seller(storage.Offer/21)
+/-- `withdraw(token: Address, amount: i128)`: it succeeds exactly when `withdraw.Spec` holds.
+    Its effects, in execution order:
+    * `withdraw.s1`: transfer `withdraw.amt1 st` of token `withdraw.token st` from `pool st` to `st.pre Offer.seller`
 -/
-def withdraw : Step → Prop := fun st =>
-  st.call.fn = "withdraw" ∧
-  st.call.caller ≠ pool st ∧
-  (st.pre Offer.seller) ∈ st.call.signers ∧   -- require_auth @field:seller(storage.Offer/21)
-  st.post = (withdraw.s1 st) ∧
-  st.writes = [.bal (withdraw.token st) (pool st), .bal (withdraw.token st) (st.pre Offer.seller)] ∧
-  st.ret = 2
+structure withdraw.Spec (st : Step) : Prop where
+  fn : st.call.fn = "withdraw"
+  /-- not called by the contract itself (Soroban forbids re-entry) -/
+  notReentrant : st.call.caller ≠ pool st
+  /-- the token accepts the transfer (SEP-41: a non-negative amount the sender holds) -/
+  xfer1 : xferOk (withdraw.token st) st.pre (pool st) (st.pre Offer.seller) (withdraw.amt1 st)
+  /-- `st.pre Offer.seller` authorized the call (`require_auth`) -/
+  auth_Offer_seller : (st.pre Offer.seller) ∈ st.call.signers
+  post : st.post = (withdraw.s1 st)
+  writes : st.writes = [.bal (withdraw.token st) (pool st), .bal (withdraw.token st) (st.pre Offer.seller)]
+  ret : st.ret = 2
 
-/-- the contract's entry points (each a `Step → Prop`). -/
+abbrev withdraw : Step → Prop := fun st => withdraw.Spec st
+
+/-- the contract's entry points (each a `Step → Prop`; the constructor runs
+    only at deployment, so it is not one of them). -/
 def entries : List (Step → Prop) := [create, get_offer, trade, updt_price, withdraw]
+
+/-- Keys in temporary storage: they can expire between calls. -/
+def temporary : Key → Bool
+  | .fld k _ => temporary k
+  | .has k => temporary k
+  | _ => false
+
+/-- What the rest of the ledger can do between two calls of the contract at `me`.
+    Any token balance can change: other people's transfers, mints, tokens sent
+    straight to the contract. The exception is the contract's own balances,
+    which can only grow, since lowering them needs its authorization. The
+    contract's own storage is untouched (only the contract writes it), except
+    that temporary entries can expire. -/
+def Outside (me : Addr) (s s' : Storage) : Prop :=
+  ∀ k : Key, match k with
+    | .bal t a => a = me → s (.bal t a) ≤ s' (.bal t a)
+    | k => temporary k = true ∨ s' k = s k
+
+/-- A history of the contract at `me`, from storage `s` to `t`: its calls (each
+    admitted by one of its entry points) interleaved with outside activity. -/
+inductive Run (me : Addr) : Storage → Storage → Prop
+  | refl (s : Storage) : Run me s s
+  | call {s : Storage} (st : Step) : Run me s st.pre → st.call.self = me →
+      (∃ e ∈ entries, e st) → Run me s st.post
+  | outside {s t t' : Storage} : Run me s t → Outside me t t' → Run me s t'
 
 end Contract

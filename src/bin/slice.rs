@@ -3804,6 +3804,34 @@ fn name_slots<'c>(
     kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
     segs: &[(u64, Vec<u8>)],
 ) -> Expr {
+    let r = name_slots_raw(e, module, kb, segs);
+    // remember which named keys live in temporary storage (they can expire).
+    if let (Expr::Opaque(l, _), true) = (e, rich()) {
+        if let Some(dur) = l.strip_prefix("@slot:") {
+            let name = match &r {
+                Expr::Slot(n, _) => Some(n.clone()),
+                Expr::Opaque(m, _) => m.strip_prefix("@map:").or_else(|| m.strip_prefix("@tup:")).map(String::from),
+                _ => None,
+            };
+            if let Some(n) = name {
+                DURABILITY.with(|d| { d.borrow_mut().insert(n, dur.to_string()); });
+            }
+        }
+    }
+    r
+}
+
+thread_local! {
+    /// Each named storage key's durability (`instance`, `persistent`, `temporary`).
+    static DURABILITY: std::cell::RefCell<BTreeMap<String, String>> = const { std::cell::RefCell::new(BTreeMap::new()) };
+}
+
+fn name_slots_raw<'c>(
+    e: &Expr,
+    module: &inkwell::module::Module<'c>,
+    kb: Option<(FunctionValue<'c>, &(BTreeMap<i64, bool>, bool))>,
+    segs: &[(u64, Vec<u8>)],
+) -> Expr {
     let rec = |x: &Expr| name_slots(x, module, kb, segs);
     match e {
         Expr::Opaque(l, xs) if l.starts_with("@slot:") && (xs.len() == 1 || xs.len() == 2) => {
@@ -5664,12 +5692,13 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
         Some(parts.join(" ∧ "))
     };
     let (mut defs, mut writes, mut events): (Vec<(String, &'static str, String)>, Vec<String>, Vec<String>) = (vec![], vec![], vec![]);
+    let mut conjs_tx: Vec<(String, String)> = vec![];
     let mut unk_key = false;
     let mut cur = "st.pre".to_string();
     let mut nstate = 0;
     for (_site, conds, tx, wr) in &evs {
         let cs = cond_str(conds, &mut opmap, &mut oc, &mut decls);
-        let when = cs.as_ref().map(|c| format!("   [when {c}]")).unwrap_or_default();
+        let when = cs.as_ref().map(|c| format!(", when `{c}`")).unwrap_or_default();
         let next = |x: String, cur: &str| match &cs { Some(c) => format!("if {c} then {x} else {cur}"), None => x };
         if let Some((tok, from, to, amt)) = tx {
             let ledger = lean_guard_term(tok, &args, &mut opmap, &mut oc, &mut decls, &tid);
@@ -5681,6 +5710,10 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
             nstate += 1;
             let aname = format!("amt{}", defs.iter().filter(|d: &&(String, &str, String)| d.0.starts_with("amt")).count() + 1);
             defs.push((aname.clone(), "Int", ar.clone()));
+            // the token (SEP-41) accepts the transfer only if `from` holds a
+            // non-negative amount — part of the call succeeding.
+            let ok = format!("xferOk ({ledger}) {cur} ({fr}) ({tr}) @D:{aname}@");
+            conjs_tx.push((format!("token transfer {} accepted", aname), match &cs { Some(c) => format!("(({c}) → {ok})"), None => ok }));
             defs.push((format!("s{nstate}"), "Storage", next(format!("xfer ({ledger}) {cur} ({fr}) ({tr}) @D:{aname}@"), &cur)));
             for p in [&fr, &tr] {
                 let k = format!(".bal ({ledger}) ({p})");
@@ -5688,7 +5721,7 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
                     writes.push(k);
                 }
             }
-            events.push(format!("transfer {}: {} -> {} : {}{when}", render_expr(tok, &args), render_expr(from, &args), render_expr(to, &args), render_expr(amt, &args)));
+            events.push(format!("transfer `@D:{aname}@` of token `{ledger}` from `{fr}` to `{tr}`{when}"));
             cur = format!("@D:s{nstate}@");
         }
         let Some((k, v)) = wr else { continue };
@@ -5697,7 +5730,7 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
             oc += 1;
             let all = matches!(v, Expr::Opaque(l, _) if l == "@all");
             let h = if all { format!("(u.s {oc})") } else { format!("havoc {cur} (u.s {oc})") };
-            events.push(format!("{}{when}", if all { "unmodeled effect: all storage open" } else { "call into another contract: token ledgers open" }));
+            events.push(format!("{}{when}", if all { "an effect the model doesn't interpret (in a loop, or too deep): all storage open" } else { "a call into another contract: token ledgers open" }));
             nstate += 1;
             defs.push((format!("s{nstate}"), "Storage", next(h, &cur)));
             cur = format!("@D:s{nstate}@");
@@ -5713,7 +5746,7 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
                 format!("(u.k {oc})")
             }
         };
-        events.push(format!("write {} := {}{when}", render_expr(k, &args), render_expr(v, &args)));
+        events.push(if matches!(v, Expr::Opaque(l, x) if l == "@del" && x.is_empty()) { format!("remove `{key}`{when}") } else { format!("write `{key}`{when}") });
         // a struct value is stored field by field (nested structs recursively),
         // each field a named key of the layout.
         fn flatten(key: Option<KeyT>, raw: String, v: &Expr, out: &mut Vec<(String, Expr)>) {
@@ -5764,7 +5797,7 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
             _ => None,
         }
     });
-    let mut conjs: Vec<(String, String)> = vec![];
+    let mut conjs: Vec<(String, String)> = conjs_tx;
     // every `x.require_auth()` (and `_for_args`) of the entrypoint: x signed —
     // under the condition the call runs in.
     with_rich(|| {
@@ -5884,34 +5917,81 @@ fn emit_lean_model(entries: &[ModelEntry], check: bool) {
             println!("end {ns}\n");
         }
         let sig: Vec<String> = e.args.iter().map(|(n, t)| format!("{n}: {t}")).collect();
-        println!("/-- `{}({})`", e.name, sig.join(", "));
+        println!("/-- `{}({})`: it succeeds exactly when `{ns}.Spec` holds.", e.name, sig.join(", "));
         if !rb.events.is_empty() {
-            let amts = if rb.defs.iter().any(|d| d.0.starts_with("amt")) { format!("; amounts `{ns}.amt1`, …") } else { String::new() };
-            println!("    effects, in execution order (states `{ns}.s1`, `{ns}.s2`, …{amts}):");
-            for ev in &rb.events {
-                println!("      {ev}");
-            }
-        }
-        if !rb.conjs.is_empty() || !e.guards.is_empty() {
-            println!("    conditions to succeed:");
-            for (l, _) in &rb.conjs {
-                println!("      {l}");
-            }
-            for g in &e.guards {
-                println!("      gate: {}", g.comment);
+            println!("    Its effects, in execution order:");
+            for (j, ev) in rb.events.iter().enumerate() {
+                let ev = resolve(ev);
+                // `(x)` in a code span reads as `x`.
+                let ev = ev.split('`').enumerate().map(|(i, part)| if i % 2 == 1 { unparen(part) } else { part.to_string() }).collect::<Vec<_>>().join("`");
+                println!("    * `{ns}.s{}`: {ev}", j + 1);
             }
         }
         println!("-/");
         let text = format!("{} {post} {writes} {ret}", conjs.iter().map(|c| c.1.clone()).collect::<Vec<_>>().join(" "));
         let open = text.contains("(u.") || text.contains(" st u)");
-        println!("def {fn_id} : Step → Prop := fun st =>{}", if open { " ∃ u : Unk," } else { "" });
-        for (k, (label, p)) in conjs.iter().enumerate() {
-            let tag = if k < 2 { String::new() } else if label.starts_with("gate") { "   -- gate".into() } else { format!("   -- {label}") };
-            println!("  {p} ∧{tag}");
+        // the conditions as named fields: proofs say `h.post`, `h.auth_buyer`, `h.gate2`.
+        let (mut ng, mut nx, mut na) = (0, 0, 0);
+        let mut used: Vec<String> = vec![];
+        let fields: Vec<(String, String, String)> = conjs
+            .iter()
+            .map(|(label, p)| {
+                let name = if label == "fn" {
+                    "fn".to_string()
+                } else if label == "not re-entrant" {
+                    "notReentrant".into()
+                } else if label == "returns Ok" {
+                    "ok".into()
+                } else if label.starts_with("token transfer") {
+                    nx += 1;
+                    format!("xfer{nx}")
+                } else if label.starts_with("require_auth ") {
+                    na += 1;
+                    // named after who signs: `auth_buyer`, `auth_Offer_seller`, `auth_Admin`.
+                    let who = auth_who(p);
+                    let who = who.strip_prefix("st.pre ").unwrap_or(&who).trim_end_matches(" st");
+                    let who = who.rsplit_once('.').filter(|(h, _)| *h == ns).map(|(_, t)| t).unwrap_or(who);
+                    let id: String = who.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+                    let n = if !id.is_empty() && id.len() < 40 { format!("auth_{}", id.trim_matches('_')) } else { format!("auth{na}") };
+                    if used.contains(&n) { format!("auth{na}") } else { n }
+                } else {
+                    ng += 1;
+                    format!("gate{ng}")
+                };
+                used.push(name.clone());
+                (name, label.clone(), p.clone())
+            })
+            .collect();
+        let uparam = if open { " (u : Unk)" } else { "" };
+        println!("structure {ns}.Spec (st : Step){uparam} : Prop where");
+        for (name, label, p) in &fields {
+            let doc = if name == "notReentrant" {
+                "not called by the contract itself (Soroban forbids re-entry)".to_string()
+            } else if name.starts_with("xfer") {
+                "the token accepts the transfer (SEP-41: a non-negative amount the sender holds)".to_string()
+            } else if name.starts_with("auth") {
+                let _ = label;
+                format!("`{}` authorized the call (`require_auth`)", auth_who(p))
+            } else if name == "ok" {
+                "the call returns `Ok` (an `Err` fails it)".to_string()
+            } else if name.starts_with("gate") {
+                "the call panics unless this holds".to_string()
+            } else {
+                String::new()
+            };
+            if !doc.is_empty() {
+                println!("  /-- {doc} -/");
+            }
+            println!("  {name} : {p}");
         }
-        println!("  st.post = {post} ∧");
-        println!("  st.writes = {writes} ∧");
-        println!("  st.ret = {ret}\n");
+        println!("  post : st.post = {post}");
+        println!("  writes : st.writes = {writes}");
+        println!("  ret : st.ret = {ret}\n");
+        if open {
+            println!("def {fn_id} : Step → Prop := fun st => ∃ u : Unk, {ns}.Spec st u\n");
+        } else {
+            println!("abbrev {fn_id} : Step → Prop := fun st => {ns}.Spec st\n");
+        }
         if check {
             // the same terms, evaluated: (labelled conjuncts, post, writes, open key?).
             println!("def {fn_id}.check (st : Step) (u : Unk) : List (String × Bool) × Storage × List Key × Bool :=");
@@ -5921,14 +6001,67 @@ fn emit_lean_model(entries: &[ModelEntry], check: bool) {
             println!("  ([{}],\n   {post}, {writes}, {})\n", items.join(",\n    "), rb.unk_key);
         }
     }
-    let names: Vec<String> = entries.iter().map(|e| san(&e.name)).collect();
-    println!("/-- the contract's entry points (each a `Step → Prop`). -/");
+    let names: Vec<String> = entries.iter().map(|e| san(&e.name)).filter(|n| n != "__constructor").collect();
+    println!("/-- the contract's entry points (each a `Step → Prop`; the constructor runs");
+    println!("    only at deployment, so it is not one of them). -/");
     println!("def entries : List (Step → Prop) := [{}]\n", names.join(", "));
+    // what can change between two calls without the contract.
+    let durs = DURABILITY.with(|d| d.borrow().clone());
+    let expiring: Vec<(String, String)> = layout
+        .iter()
+        .filter(|(n, _, _)| !n.contains('.') && durs.get(n).is_none_or(|d| d == "temporary" || d == "?"))
+        .filter_map(|(_, ps, body)| {
+            let name = body.split('"').nth(1)?.to_string();
+            let pat = if ps.is_empty() { format!(".var \"{name}\"") } else if body.starts_with(".entry") { format!(".entry \"{name}\" _") } else { format!(".tup \"{name}\" _") };
+            Some((name, pat))
+        })
+        .collect();
+    println!("/-- Keys in temporary storage: they can expire between calls. -/");
+    println!("def temporary : Key → Bool");
+    for (_, pat) in &expiring {
+        println!("  | {pat} => true");
+    }
+    println!("  | .fld k _ => temporary k");
+    println!("  | .has k => temporary k");
+    println!("  | _ => false\n");
+    println!("{}", LEAN_RUN);
     if check {
         let cs: Vec<String> = entries.iter().map(|e| format!("(\"{}\", {}.check)", e.name, san(&e.name))).collect();
         println!("def checkers : List (String × (Step → Unk → List (String × Bool) × Storage × List Key × Bool)) :=\n  [{}]\n", cs.join(",\n   "));
     }
     println!("end Contract");
+}
+
+/// The address of an auth conjunct `[(pc) →] who ∈ st.call.signers`.
+fn auth_who(p: &str) -> String {
+    let before = p.split(" ∈ st.call.signers").next().unwrap_or("");
+    let who = match before.rsplit_once("→ ") {
+        Some((_, w)) => w,
+        None => before,
+    };
+    unparen(who)
+}
+
+/// `t` without one pair of enclosing parentheses, if it has them.
+fn unparen(t: &str) -> String {
+    let t = t.trim();
+    if t.starts_with('(') && t.ends_with(')') {
+        let mut depth = 0;
+        for (i, c) in t.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 && i + 1 < t.len() {
+                        return t.to_string(); // `(a) (b)`: not one group
+                    }
+                }
+                _ => {}
+            }
+        }
+        return t[1..t.len() - 1].to_string();
+    }
+    t.to_string()
 }
 
 /// Drop redundant parentheses from a rendered Lean term: around an atom
@@ -5972,6 +6105,27 @@ fn tidy(t: &str) -> String {
     }
     b.iter().enumerate().filter(|(i, _)| !drop[*i]).map(|(_, c)| c).collect()
 }
+
+/// Outside activity and runs, after `entries` / `temporary`.
+const LEAN_RUN: &str = r#"/-- What the rest of the ledger can do between two calls of the contract at `me`.
+    Any token balance can change: other people's transfers, mints, tokens sent
+    straight to the contract. The exception is the contract's own balances,
+    which can only grow, since lowering them needs its authorization. The
+    contract's own storage is untouched (only the contract writes it), except
+    that temporary entries can expire. -/
+def Outside (me : Addr) (s s' : Storage) : Prop :=
+  ∀ k : Key, match k with
+    | .bal t a => a = me → s (.bal t a) ≤ s' (.bal t a)
+    | k => temporary k = true ∨ s' k = s k
+
+/-- A history of the contract at `me`, from storage `s` to `t`: its calls (each
+    admitted by one of its entry points) interleaved with outside activity. -/
+inductive Run (me : Addr) : Storage → Storage → Prop
+  | refl (s : Storage) : Run me s s
+  | call {s : Storage} (st : Step) : Run me s st.pre → st.call.self = me →
+      (∃ e ∈ entries, e st) → Run me s st.post
+  | outside {s t t' : Storage} : Run me s t → Outside me t t' → Run me s t'
+"#;
 
 /// The fixed part of every emitted model.
 const LEAN_PRELUDE: &str = r#"-- Auto-emitted by stellar-diver: a relational model of the contract, one
@@ -6047,6 +6201,25 @@ def bal (t : Addr) (s : Storage) (a : Addr) : Int := s (.bal t a)
 def xfer (t : Addr) (s : Storage) (src dst : Addr) (amt : Int) : Storage :=
   let s1 := s.set (.bal t src) (bal t s src - amt)
   s1.set (.bal t dst) (bal t s1 dst + amt)
+@[simp] theorem Storage.set_get (s : Storage) (k k' : Key) (v : Int) :
+    (s.set k v) k' = if k' = k then v else s k' := rfl
+/-- a balance after a transfer: plus what came in, minus what went out. -/
+@[simp] theorem bal_xfer (t t' : Addr) (s : Storage) (src dst : Addr) (amt : Int) (a : Addr) :
+    bal t (xfer t' s src dst amt) a
+      = bal t s a + (if t = t' ∧ a = dst then amt else 0) - (if t = t' ∧ a = src then amt else 0) := by
+  simp only [bal, xfer, Storage.set_get, Key.bal.injEq]
+  by_cases h1 : a = dst <;> by_cases h2 : a = src <;> by_cases h3 : t = t' <;> simp_all <;> omega
+/-- a transfer touches only balances. -/
+@[simp] theorem xfer_other (t : Addr) (s : Storage) (src dst : Addr) (amt : Int) (k : Key)
+    (h : ∀ t a, k ≠ .bal t a) : xfer t s src dst amt k = s k := by
+  simp only [xfer, Storage.set_get]; simp [h]
+/-- a write to a key that isn't a balance leaves every balance alone. -/
+@[simp] theorem bal_set (t : Addr) (s : Storage) (k : Key) (v : Int) (a : Addr) (h : ∀ t a, k ≠ .bal t a) :
+    bal t (s.set k v) a = bal t s a := by
+  simp only [bal, Storage.set_get]; simp [Ne.symm (h t a)]
+
+/-- SEP-41: a transfer succeeds only for a non-negative amount the sender holds. -/
+abbrev xferOk (t : Addr) (s : Storage) (src _dst : Addr) (amt : Int) : Prop := 0 ≤ amt ∧ amt ≤ bal t s src
 /-- storage after a call into another contract the model doesn't interpret: the
     contract's own storage is unchanged (Soroban forbids re-entry); token
     ledgers take `h`'s values. -/
