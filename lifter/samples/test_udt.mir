@@ -1,0 +1,3680 @@
+// MIR for `add` 0 diver
+
+fn add(_1: Val, _2: Val) -> Val {
+    debug a => _1;
+    debug b => _2;
+    debug arg_payload => _3;
+    debug arg_payload1 => _4;
+    debug frame => _5;
+    debug slot8 => _6;
+    debug slot16 => _7;
+    debug fp => _9;
+    debug fp3 => _11;
+    debug ld => _12;
+    debug cmp => _13;
+    debug l1.0 => _15;
+    debug to_val185 => _0;
+    debug obj_from_i64 => _14;
+    debug payload183 => _15;
+    debug l1.1 => _22;
+    debug slot32 => _16;
+    debug ld5 => _17;
+    debug slot24 => _18;
+    debug ld6 => _19;
+    debug slot17 => _20;
+    debug ld7 => _21;
+    debug zx8 => _22;
+    debug fp12 => _24;
+    debug ld14 => _25;
+    debug cmp17 => _26;
+    debug ld21 => _27;
+    debug ld23 => _28;
+    debug ld25 => _29;
+    debug zx26 => _30;
+    debug l1.2.lcssa246 => _46;
+    debug add78 => _22;
+    debug eqz87223 => _33;
+    debug add64 => _22;
+    debug eqz222 => _36;
+    debug to_val => _98;
+    debug vec_len => _37;
+    debug payload => _38;
+    debug slot56 => _39;
+    debug slot48 => _40;
+    debug lshr => _41;
+    debug slot60 => _42;
+    debug t31 => _43;
+    debug fp35 => _45;
+    debug l1.2 => _46;
+    debug ld37 => _47;
+    debug cmp38 => _48;
+    debug sel42 => _49;
+    debug ld44 => _50;
+    debug add => _51;
+    debug cmp54.not224 => _54;
+    debug l0.0 => _30;
+    debug add167 => _55;
+    debug cmp169 => _56;
+    debug l0.1.lcssa245 => _74;
+    debug add153 => _30;
+    debug cmp155 => _59;
+    debug add136 => _30;
+    debug eqz145225 => _64;
+    debug to_val93 => _114;
+    debug vec_len94 => _65;
+    debug payload95 => _66;
+    debug slot5696 => _67;
+    debug slot4898 => _68;
+    debug lshr100 => _69;
+    debug slot60101 => _70;
+    debug t102 => _71;
+    debug fp106 => _73;
+    debug l0.1 => _74;
+    debug ld108 => _75;
+    debug cmp109 => _76;
+    debug sel113 => _77;
+    debug ld115 => _78;
+    debug add120 => _79;
+    debug cmp126.not226 => _82;
+    debug cmp178 => _84;
+    debug shl => _85;
+    debug or => _15;
+    let mut _0: Val;
+    let mut _3: u64;
+    let mut _4: u64;
+    let mut _5: *mut u8;
+    let mut _6: *mut u8;
+    let mut _7: *mut u8;
+    let mut _8: u32;
+    let mut _9: u64;
+    let mut _10: u32;
+    let mut _11: u64;
+    let mut _12: u8;
+    let mut _13: bool;
+    let mut _14: Val;
+    let mut _15: u64;
+    let mut _16: *mut u8;
+    let mut _17: u64;
+    let mut _18: *mut u8;
+    let mut _19: u64;
+    let mut _20: *mut u8;
+    let mut _21: u8;
+    let mut _22: u64;
+    let mut _23: u32;
+    let mut _24: u64;
+    let mut _25: u8;
+    let mut _26: bool;
+    let mut _27: u64;
+    let mut _28: u64;
+    let mut _29: u8;
+    let mut _30: u64;
+    let mut _31: bool;
+    let mut _32: bool;
+    let mut _33: bool;
+    let mut _34: bool;
+    let mut _35: bool;
+    let mut _36: bool;
+    let mut _37: Val;
+    let mut _38: u64;
+    let mut _39: *mut u8;
+    let mut _40: *mut u8;
+    let mut _41: u64;
+    let mut _42: *mut u8;
+    let mut _43: u32;
+    let mut _44: u32;
+    let mut _45: u64;
+    let mut _46: u64;
+    let mut _47: u64;
+    let mut _48: bool;
+    let mut _49: u32;
+    let mut _50: u64;
+    let mut _51: u64;
+    let mut _52: bool;
+    let mut _53: bool;
+    let mut _54: bool;
+    let mut _55: u64;
+    let mut _56: bool;
+    let mut _57: bool;
+    let mut _58: bool;
+    let mut _59: bool;
+    let mut _60: bool;
+    let mut _61: bool;
+    let mut _62: bool;
+    let mut _63: bool;
+    let mut _64: bool;
+    let mut _65: Val;
+    let mut _66: u64;
+    let mut _67: *mut u8;
+    let mut _68: *mut u8;
+    let mut _69: u64;
+    let mut _70: *mut u8;
+    let mut _71: u32;
+    let mut _72: u32;
+    let mut _73: u64;
+    let mut _74: u64;
+    let mut _75: u64;
+    let mut _76: bool;
+    let mut _77: u32;
+    let mut _78: u64;
+    let mut _79: u64;
+    let mut _80: bool;
+    let mut _81: bool;
+    let mut _82: bool;
+    let mut _83: u64;
+    let mut _84: bool;
+    let mut _85: u64;
+    let mut _86: [u64; 8];
+    let mut _87: *mut [u64; 8];
+    let mut _88: ();
+    let mut _89: !;
+    let mut _90: !;
+    let mut _91: ();
+    let mut _92: i64;
+    let mut _93: i64;
+    let mut _94: i64;
+    let mut _95: i64;
+    let mut _96: i64;
+    let mut _97: i64;
+    let mut _98: Val;
+    let mut _99: *mut u32;
+    let mut _100: *mut u32;
+    let mut _101: ();
+    let mut _102: i64;
+    let mut _103: i64;
+    let mut _104: i64;
+    let mut _105: i64;
+    let mut _106: i64;
+    let mut _107: i64;
+    let mut _108: i64;
+    let mut _109: i64;
+    let mut _110: i64;
+    let mut _111: i64;
+    let mut _112: i64;
+    let mut _113: i64;
+    let mut _114: Val;
+    let mut _115: *mut u32;
+    let mut _116: *mut u32;
+    let mut _117: ();
+    let mut _118: i64;
+    let mut _119: i64;
+    let mut _120: i64;
+
+    bb0: {
+        _3 = copy (_1.0: u64);
+        _4 = copy (_2.0: u64);
+        _86 = [const 0_u64; 8];
+        _87 = &raw mut _86;
+        _5 = copy _87 as *mut u8 (PtrToPtr);
+        _6 = Offset(copy _5, const 8_isize);
+        _86[1 of 8] = copy _4;
+        _86[0 of 8] = copy _3;
+        _7 = Offset(copy _5, const 16_isize);
+        _8 = copy _7 as u32 (PointerExposeProvenance);
+        _9 = copy _8 as u64 (IntToInt);
+        _10 = copy _5 as u32 (PointerExposeProvenance);
+        _11 = copy _10 as u64 (IntToInt);
+        _88 = f13(copy _9, move _11) -> [return: bb21, unwind unreachable];
+    }
+
+    bb1: {
+        _0 = Val(copy _15);
+        return;
+    }
+
+    bb2: {
+        _14 = obj_from_i64(move _55) -> [return: bb22, unwind unreachable];
+    }
+
+    bb3: {
+        _89 = panic() -> unwind unreachable;
+    }
+
+    bb4: {
+        switchInt(copy _25) -> [3: bb15, 1: bb14, 2: bb35, otherwise: bb23];
+    }
+
+    bb5: {
+        _90 = trap() -> unwind unreachable;
+    }
+
+    bb6: {
+        _16 = Offset(copy _5, const 32_isize);
+        _17 = copy _86[4 of 8];
+        _18 = Offset(copy _5, const 24_isize);
+        _19 = copy _86[3 of 8];
+        _20 = Offset(copy _5, const 17_isize);
+        _21 = copy (*_20);
+        _22 = copy _21 as u64 (IntToInt);
+        _23 = copy _6 as u32 (PointerExposeProvenance);
+        _24 = copy _23 as u64 (IntToInt);
+        _91 = f13(copy _9, move _24) -> [return: bb24, unwind unreachable];
+    }
+
+    bb7: {
+        _27 = copy _86[4 of 8];
+        _28 = copy _86[3 of 8];
+        _29 = copy (*_20);
+        _30 = copy _29 as u64 (IntToInt);
+        switchInt(copy _12) -> [3: bb9, 1: bb8, 2: bb28, otherwise: bb25];
+    }
+
+    bb8: {
+        _22 = Add(copy _19, copy _17);
+        _95 = copy _17 as i64 (IntToInt);
+        _34 = Lt(copy _95, const 0_i64);
+        _96 = copy _22 as i64 (IntToInt);
+        _97 = copy _19 as i64 (IntToInt);
+        _35 = Ge(copy _96, copy _97);
+        _36 = BitXor(copy _34, copy _35);
+        switchInt(copy _36) -> [0: bb3, otherwise: bb27];
+    }
+
+    bb9: {
+        _98 = Val(copy _17);
+        _37 = vec_len(move _98) -> [return: bb29, unwind unreachable];
+    }
+
+    bb10: {
+        _101 = f25(copy _9, copy _45) -> [return: bb30, unwind unreachable];
+    }
+
+    bb11: {
+        _49 = copy _47 as u32 (IntToInt);
+        switchInt(copy _49) -> [2: bb31, 1: bb3, otherwise: bb12];
+    }
+
+    bb12: {
+        _50 = copy _86[3 of 8];
+        _51 = Add(copy _50, copy _46);
+        _102 = copy _50 as i64 (IntToInt);
+        _52 = Lt(copy _102, const 0_i64);
+        _103 = copy _51 as i64 (IntToInt);
+        _104 = copy _46 as i64 (IntToInt);
+        _53 = Ge(copy _103, copy _104);
+        _54 = BitXor(copy _52, copy _53);
+        switchInt(copy _54) -> [0: bb3, otherwise: bb32];
+    }
+
+    bb13: {
+        _55 = Add(copy _30, copy _22);
+        _105 = copy _55 as i64 (IntToInt);
+        _106 = copy _22 as i64 (IntToInt);
+        _56 = Lt(copy _105, copy _106);
+        _107 = copy _30 as i64 (IntToInt);
+        _57 = Lt(copy _107, const 0_i64);
+        _58 = BitXor(copy _57, copy _56);
+        switchInt(copy _58) -> [0: bb19, otherwise: bb3];
+    }
+
+    bb14: {
+        _30 = Add(copy _28, copy _27);
+        _111 = copy _27 as i64 (IntToInt);
+        _62 = Lt(copy _111, const 0_i64);
+        _112 = copy _30 as i64 (IntToInt);
+        _113 = copy _28 as i64 (IntToInt);
+        _63 = Ge(copy _112, copy _113);
+        _64 = BitXor(copy _62, copy _63);
+        switchInt(copy _64) -> [0: bb3, otherwise: bb34];
+    }
+
+    bb15: {
+        _114 = Val(copy _27);
+        _65 = vec_len(move _114) -> [return: bb36, unwind unreachable];
+    }
+
+    bb16: {
+        _117 = f25(copy _9, copy _73) -> [return: bb37, unwind unreachable];
+    }
+
+    bb17: {
+        _77 = copy _75 as u32 (IntToInt);
+        switchInt(copy _77) -> [2: bb38, 1: bb3, otherwise: bb18];
+    }
+
+    bb18: {
+        _78 = copy _86[3 of 8];
+        _79 = Add(copy _78, copy _74);
+        _118 = copy _78 as i64 (IntToInt);
+        _80 = Lt(copy _118, const 0_i64);
+        _119 = copy _79 as i64 (IntToInt);
+        _120 = copy _74 as i64 (IntToInt);
+        _81 = Ge(copy _119, copy _120);
+        _82 = BitXor(copy _80, copy _81);
+        switchInt(copy _82) -> [0: bb3, otherwise: bb39];
+    }
+
+    bb19: {
+        _83 = Add(copy _55, const 18410715276690587648_u64);
+        _84 = Lt(copy _83, const 18374686479671623680_u64);
+        switchInt(copy _84) -> [0: bb20, otherwise: bb2];
+    }
+
+    bb20: {
+        _85 = Shl(copy _55, const 8_u64);
+        _15 = BitOr(copy _85, const 7_u64);
+        goto -> bb1;
+    }
+
+    bb21: {
+        _12 = copy (*_7);
+        _13 = Eq(copy _12, const 4_u8);
+        switchInt(copy _12) -> [4: bb5, otherwise: bb6];
+    }
+
+    bb22: {
+        _15 = copy (_14.0: u64);
+        goto -> bb1;
+    }
+
+    bb23: {
+        _30 = const 0_u64;
+        goto -> bb13;
+    }
+
+    bb24: {
+        _25 = copy (*_7);
+        _26 = Eq(copy _25, const 4_u8);
+        switchInt(copy _25) -> [4: bb5, otherwise: bb7];
+    }
+
+    bb25: {
+        _22 = const 0_u64;
+        goto -> bb4;
+    }
+
+    bb26: {
+        goto -> bb4;
+    }
+
+    bb27: {
+        goto -> bb4;
+    }
+
+    bb28: {
+        goto -> bb4;
+    }
+
+    bb29: {
+        _38 = copy (_37.0: u64);
+        _39 = Offset(copy _5, const 56_isize);
+        _99 = copy _39 as *mut u32 (PtrToPtr);
+        (*_99) = const 0_u32;
+        _40 = Offset(copy _5, const 48_isize);
+        _86[6 of 8] = copy _17;
+        _41 = Shr(copy _38, const 32_u64);
+        _42 = Offset(copy _5, const 60_isize);
+        _43 = copy _41 as u32 (IntToInt);
+        _100 = copy _42 as *mut u32 (PtrToPtr);
+        (*_100) = copy _43;
+        _44 = copy _40 as u32 (PointerExposeProvenance);
+        _45 = copy _44 as u64 (IntToInt);
+        _46 = const 0_u64;
+        goto -> bb10;
+    }
+
+    bb30: {
+        _47 = copy _86[2 of 8];
+        _48 = Gt(copy _47, const 2_u64);
+        switchInt(copy _48) -> [0: bb11, otherwise: bb3];
+    }
+
+    bb31: {
+        _22 = Add(copy _46, copy _19);
+        _92 = copy _46 as i64 (IntToInt);
+        _31 = Lt(copy _92, const 0_i64);
+        _93 = copy _22 as i64 (IntToInt);
+        _94 = copy _19 as i64 (IntToInt);
+        _32 = Ge(copy _93, copy _94);
+        _33 = BitXor(copy _31, copy _32);
+        switchInt(copy _33) -> [0: bb3, otherwise: bb26];
+    }
+
+    bb32: {
+        _46 = copy _51;
+        goto -> bb10;
+    }
+
+    bb33: {
+        goto -> bb13;
+    }
+
+    bb34: {
+        goto -> bb13;
+    }
+
+    bb35: {
+        goto -> bb13;
+    }
+
+    bb36: {
+        _66 = copy (_65.0: u64);
+        _67 = Offset(copy _5, const 56_isize);
+        _115 = copy _67 as *mut u32 (PtrToPtr);
+        (*_115) = const 0_u32;
+        _68 = Offset(copy _5, const 48_isize);
+        _86[6 of 8] = copy _27;
+        _69 = Shr(copy _66, const 32_u64);
+        _70 = Offset(copy _5, const 60_isize);
+        _71 = copy _69 as u32 (IntToInt);
+        _116 = copy _70 as *mut u32 (PtrToPtr);
+        (*_116) = copy _71;
+        _72 = copy _68 as u32 (PointerExposeProvenance);
+        _73 = copy _72 as u64 (IntToInt);
+        _74 = const 0_u64;
+        goto -> bb16;
+    }
+
+    bb37: {
+        _75 = copy _86[2 of 8];
+        _76 = Gt(copy _75, const 2_u64);
+        switchInt(copy _76) -> [0: bb17, otherwise: bb3];
+    }
+
+    bb38: {
+        _30 = Add(copy _74, copy _28);
+        _108 = copy _30 as i64 (IntToInt);
+        _109 = copy _28 as i64 (IntToInt);
+        _59 = Lt(copy _108, copy _109);
+        _110 = copy _74 as i64 (IntToInt);
+        _60 = Lt(copy _110, const 0_i64);
+        _61 = BitXor(copy _60, copy _59);
+        switchInt(copy _61) -> [0: bb33, otherwise: bb3];
+    }
+
+    bb39: {
+        _74 = copy _79;
+        goto -> bb16;
+    }
+}
+
+// MIR for `recursive` 0 diver
+
+fn recursive(_1: Val) -> Val {
+    debug a => _1;
+    debug arg_payload => _2;
+    debug frame => _3;
+    debug slot8 => _4;
+    debug fp => _6;
+    debug ld4 => _7;
+    debug cmp => _8;
+    debug slot24 => _9;
+    debug ld5 => _10;
+    debug to_val => _30;
+    debug vec_len => _11;
+    debug payload => _12;
+    debug cmp6 => _13;
+    debug l0.0 => _24;
+    debug to_val37 => _0;
+    debug vec_front => _14;
+    debug payload17 => _15;
+    debug ld19 => _16;
+    debug cmp20 => _17;
+    debug slot16 => _18;
+    debug ld23 => _19;
+    debug ld25 => _20;
+    debug z => _21;
+    debug or => _22;
+    debug v_u32_1048752 => const Val(4504355541614596_u64);
+    debug to_val1 => _32;
+    debug v_u32_2 => const Val(8589934596_u64);
+    debug Map__a____b__ => _23;
+    debug payload42 => _24;
+    let mut _0: Val;
+    let mut _2: u64;
+    let mut _3: *mut u8;
+    let mut _4: *mut u8;
+    let mut _5: u32;
+    let mut _6: u64;
+    let mut _7: u64;
+    let mut _8: bool;
+    let mut _9: *mut u8;
+    let mut _10: u64;
+    let mut _11: Val;
+    let mut _12: u64;
+    let mut _13: bool;
+    let mut _14: Val;
+    let mut _15: u64;
+    let mut _16: u64;
+    let mut _17: bool;
+    let mut _18: *mut u8;
+    let mut _19: u64;
+    let mut _20: u64;
+    let mut _21: u64;
+    let mut _22: u64;
+    let mut _23: Val;
+    let mut _24: u64;
+    let mut _25: [u64; 4];
+    let mut _26: *mut [u64; 4];
+    let mut _27: *mut u32;
+    let mut _28: ();
+    let mut _29: !;
+    let mut _30: Val;
+    let mut _31: ();
+    let mut _32: Val;
+
+    bb0: {
+        _2 = copy (_1.0: u64);
+        _25 = [const 0_u64; 4];
+        _26 = &raw mut _25;
+        _3 = copy _26 as *mut u8 (PtrToPtr);
+        _4 = Offset(copy _3, const 8_isize);
+        _27 = copy _4 as *mut u32 (PtrToPtr);
+        (*_27) = const 2_u32;
+        _5 = copy _4 as u32 (PointerExposeProvenance);
+        _6 = copy _5 as u64 (IntToInt);
+        _28 = f21(copy _6, move _1) -> [return: bb6, unwind unreachable];
+    }
+
+    bb1: {
+        _29 = trap() -> unwind unreachable;
+    }
+
+    bb2: {
+        _9 = Offset(copy _3, const 24_isize);
+        _10 = copy _25[3 of 4];
+        _30 = Val(copy _10);
+        _11 = vec_len(copy _30) -> [return: bb7, unwind unreachable];
+    }
+
+    bb3: {
+        _0 = Val(copy _24);
+        return;
+    }
+
+    bb4: {
+        _14 = vec_front(move _30) -> [return: bb9, unwind unreachable];
+    }
+
+    bb5: {
+        _18 = Offset(copy _3, const 16_isize);
+        _19 = copy _25[2 of 4];
+        _20 = copy _25[3 of 4];
+        _25[2 of 4] = copy _20;
+        _25[1 of 4] = copy _19;
+        _21 = Shl(copy _6, const 32_u64);
+        _22 = BitOr(copy _21, const 4_u64);
+        _32 = Val(copy _22);
+        _23 = map_new_from_linear_memory(const Val(4504355541614596_u64), move _32, const Val(8589934596_u64)) -> [return: bb11, unwind unreachable];
+    }
+
+    bb6: {
+        _7 = copy _25[1 of 4];
+        _8 = Eq(copy _7, const 1_u64);
+        switchInt(copy _7) -> [1: bb1, otherwise: bb2];
+    }
+
+    bb7: {
+        _12 = copy (_11.0: u64);
+        _13 = Gt(copy _12, const 4294967295_u64);
+        switchInt(copy _13) -> [0: bb8, otherwise: bb4];
+    }
+
+    bb8: {
+        _24 = const 2_u64;
+        goto -> bb3;
+    }
+
+    bb9: {
+        _15 = copy (_14.0: u64);
+        _31 = f21(copy _6, move _14) -> [return: bb10, unwind unreachable];
+    }
+
+    bb10: {
+        _16 = copy _25[1 of 4];
+        _17 = Eq(copy _16, const 1_u64);
+        switchInt(copy _16) -> [1: bb1, otherwise: bb5];
+    }
+
+    bb11: {
+        _24 = copy (_23.0: u64);
+        goto -> bb3;
+    }
+}
+
+// MIR for `recursive_enum` 0 diver
+
+fn recursive_enum(_1: Val, _2: Val) -> Val {
+    debug a => _1;
+    debug key => _2;
+    debug arg_payload => _3;
+    debug arg_payload1 => _4;
+    debug frame => _5;
+    debug slot24 => _6;
+    debug and => _7;
+    debug cmp.not => _8;
+    debug slot48.sink => _6;
+    debug to_val => _1;
+    debug vec_len => _9;
+    debug payload => _10;
+    debug slot16 => _11;
+    debug slot8 => _12;
+    debug lshr => _13;
+    debug slot20 => _14;
+    debug t => _15;
+    debug fp => _17;
+    debug cmp.not.not => _18;
+    debug v_u32_0 => const Val(4_u64);
+    debug vec_get => _19;
+    debug payload372 => _20;
+    debug fp366 => _21;
+    debug t19 => _22;
+    debug to_val373 => _19;
+    debug v_u32_1048792 => const Val(4504527340306436_u64);
+    debug v_u32_2 => const Val(8589934596_u64);
+    debug symbol_index_in_linear_memory => _23;
+    debug payload374 => _24;
+    debug cmp32 => _25;
+    debug cond.not => _26;
+    debug ld129 => _27;
+    debug ld132 => _28;
+    debug cmp => _29;
+    debug l0.0 => _102;
+    debug to_val240 => _0;
+    debug brif218.not => _30;
+    debug sub.narrow => _31;
+    debug cmp157.not => _32;
+    debug brif135.not => _33;
+    debug and137 => _34;
+    debug cmp138.not => _35;
+    debug or.cond260 => _35;
+    debug sub.narrow379 => _36;
+    debug cmp44.not => _37;
+    debug slot48 => _38;
+    debug cmp.not380 => _39;
+    debug zx => _40;
+    debug v => _41;
+    debug shl => _42;
+    debug or => _43;
+    debug to_val382 => _114;
+    debug to_val10383 => _115;
+    debug vec_get384 => _44;
+    debug payload385 => _45;
+    debug fp367 => _46;
+    debug add => _47;
+    debug ld59 => _48;
+    debug cmp60 => _49;
+    debug and64 => _50;
+    debug cmp65.not => _51;
+    debug or.cond => _51;
+    debug slot40 => _52;
+    debug ld68 => _53;
+    debug and70 => _54;
+    debug to_val71 => _117;
+    debug to_val72 => _118;
+    debug map_has => _55;
+    debug payload73 => _56;
+    debug cmp74.not => _57;
+    debug map_get => _58;
+    debug payload81 => _59;
+    debug and82 => _60;
+    debug cmp83.not => _61;
+    debug to_val87 => _58;
+    debug vec_len88 => _62;
+    debug payload89 => _63;
+    debug lshr94 => _64;
+    debug t96 => _65;
+    debug cmp.not.not386 => _66;
+    debug vec_get388 => _67;
+    debug payload389 => _68;
+    debug t108 => _69;
+    debug to_val390 => _67;
+    debug symbol_index_in_linear_memory391 => _70;
+    debug payload392 => _71;
+    debug cmp123 => _72;
+    debug cond241.not => _73;
+    debug ld212 => _74;
+    debug ld215 => _75;
+    debug cmp393 => _76;
+    debug cmp.not394 => _77;
+    debug zx396 => _78;
+    debug v397 => _79;
+    debug shl398 => _80;
+    debug or399 => _81;
+    debug to_val400 => _119;
+    debug to_val10401 => _120;
+    debug vec_get402 => _82;
+    debug payload403 => _83;
+    debug add404 => _84;
+    debug ld174 => _85;
+    debug cmp175 => _86;
+    debug ld179 => _87;
+    debug ld181 => _88;
+    debug ld193 => _89;
+    debug brif195.not => _90;
+    debug ld197 => _91;
+    debug z => _92;
+    debug or405 => _93;
+    debug v_u32_1048752 => const Val(4504355541614596_u64);
+    debug to_val1 => _123;
+    debug Map__a____b__ => _94;
+    debug payload407 => _95;
+    debug vec_new_from_linear_memory => _96;
+    debug payload408 => _102;
+    debug v_u32_1048768 => const Val(4504424261091332_u64);
+    debug v_u32_12 => const Val(51539607556_u64);
+    debug Symbol__NotRecursive__ => _97;
+    debug payload410 => _98;
+    debug z411 => _99;
+    debug or412 => _100;
+    debug to_val413 => _124;
+    debug v_u32_1 => const Val(4294967300_u64);
+    debug vec_new_from_linear_memory414 => _101;
+    debug payload415 => _102;
+    let mut _0: Val;
+    let mut _3: u64;
+    let mut _4: u64;
+    let mut _5: *mut u8;
+    let mut _6: *mut u8;
+    let mut _7: u64;
+    let mut _8: bool;
+    let mut _9: Val;
+    let mut _10: u64;
+    let mut _11: *mut u8;
+    let mut _12: *mut u8;
+    let mut _13: u64;
+    let mut _14: *mut u8;
+    let mut _15: u32;
+    let mut _16: u32;
+    let mut _17: u64;
+    let mut _18: bool;
+    let mut _19: Val;
+    let mut _20: u64;
+    let mut _21: *mut u8;
+    let mut _22: u8;
+    let mut _23: Val;
+    let mut _24: u64;
+    let mut _25: bool;
+    let mut _26: bool;
+    let mut _27: u32;
+    let mut _28: u32;
+    let mut _29: bool;
+    let mut _30: bool;
+    let mut _31: u32;
+    let mut _32: bool;
+    let mut _33: bool;
+    let mut _34: u64;
+    let mut _35: bool;
+    let mut _36: u32;
+    let mut _37: bool;
+    let mut _38: *mut u8;
+    let mut _39: bool;
+    let mut _40: u64;
+    let mut _41: u64;
+    let mut _42: u64;
+    let mut _43: u64;
+    let mut _44: Val;
+    let mut _45: u64;
+    let mut _46: *mut u8;
+    let mut _47: u32;
+    let mut _48: u64;
+    let mut _49: bool;
+    let mut _50: u64;
+    let mut _51: bool;
+    let mut _52: *mut u8;
+    let mut _53: u64;
+    let mut _54: u64;
+    let mut _55: Val;
+    let mut _56: u64;
+    let mut _57: bool;
+    let mut _58: Val;
+    let mut _59: u64;
+    let mut _60: u64;
+    let mut _61: bool;
+    let mut _62: Val;
+    let mut _63: u64;
+    let mut _64: u64;
+    let mut _65: u32;
+    let mut _66: bool;
+    let mut _67: Val;
+    let mut _68: u64;
+    let mut _69: u8;
+    let mut _70: Val;
+    let mut _71: u64;
+    let mut _72: bool;
+    let mut _73: bool;
+    let mut _74: u32;
+    let mut _75: u32;
+    let mut _76: bool;
+    let mut _77: bool;
+    let mut _78: u64;
+    let mut _79: u64;
+    let mut _80: u64;
+    let mut _81: u64;
+    let mut _82: Val;
+    let mut _83: u64;
+    let mut _84: u32;
+    let mut _85: u64;
+    let mut _86: bool;
+    let mut _87: u64;
+    let mut _88: u64;
+    let mut _89: u32;
+    let mut _90: bool;
+    let mut _91: u64;
+    let mut _92: u64;
+    let mut _93: u64;
+    let mut _94: Val;
+    let mut _95: u64;
+    let mut _96: Val;
+    let mut _97: Val;
+    let mut _98: u64;
+    let mut _99: u64;
+    let mut _100: u64;
+    let mut _101: Val;
+    let mut _102: u64;
+    let mut _103: [u64; 8];
+    let mut _104: *mut [u64; 8];
+    let mut _105: *mut u32;
+    let mut _106: *mut u64;
+    let mut _107: !;
+    let mut _108: *mut u32;
+    let mut _109: *mut u32;
+    let mut _110: !;
+    let mut _111: !;
+    let mut _112: !;
+    let mut _113: !;
+    let mut _114: Val;
+    let mut _115: Val;
+    let mut _116: ();
+    let mut _117: Val;
+    let mut _118: Val;
+    let mut _119: Val;
+    let mut _120: Val;
+    let mut _121: ();
+    let mut _122: ();
+    let mut _123: Val;
+    let mut _124: Val;
+
+    bb0: {
+        _3 = copy (_1.0: u64);
+        _4 = copy (_2.0: u64);
+        _103 = [const 0_u64; 8];
+        _104 = &raw mut _103;
+        _5 = copy _104 as *mut u8 (PtrToPtr);
+        _6 = Offset(copy _5, const 24_isize);
+        _105 = copy _6 as *mut u32 (PtrToPtr);
+        (*_105) = const 3_u32;
+        _7 = BitAnd(copy _3, const 255_u64);
+        _8 = Eq(copy _7, const 75_u64);
+        switchInt(copy _7) -> [75: bb3, otherwise: bb2];
+    }
+
+    bb1: {
+        _106 = copy _6 as *mut u64 (PtrToPtr);
+        (*_106) = const 2_u64;
+        goto -> bb2;
+    }
+
+    bb2: {
+        _107 = trap() -> unwind unreachable;
+    }
+
+    bb3: {
+        _9 = vec_len(copy _1) -> [return: bb33, unwind unreachable];
+    }
+
+    bb4: {
+        _19 = vec_get(move _1, const Val(4_u64)) -> [return: bb35, unwind unreachable];
+    }
+
+    bb5: {
+        _23 = symbol_index_in_linear_memory(move _19, const Val(4504527340306436_u64), const Val(8589934596_u64)) -> [return: bb36, unwind unreachable];
+    }
+
+    bb6: {
+        _26 = Lt(copy _24, const 4294967296_u64);
+        _27 = copy (*_108);
+        _28 = copy (*_109);
+        _29 = Lt(copy _28, copy _27);
+        switchInt(copy _26) -> [0: bb17, otherwise: bb14];
+    }
+
+    bb7: {
+        _0 = Val(copy _102);
+        return;
+    }
+
+    bb8: {
+        switchInt(copy _76) -> [0: bb10, otherwise: bb9];
+    }
+
+    bb9: {
+        _110 = panic() -> unwind unreachable;
+    }
+
+    bb10: {
+        _30 = Eq(copy _75, copy _74);
+        switchInt(copy _30) -> [0: bb2, otherwise: bb32];
+    }
+
+    bb11: {
+        switchInt(copy _76) -> [0: bb13, otherwise: bb12];
+    }
+
+    bb12: {
+        _111 = panic() -> unwind unreachable;
+    }
+
+    bb13: {
+        _31 = Sub(copy _75, copy _74);
+        _32 = Lt(copy _31, const 2_u32);
+        switchInt(copy _32) -> [0: bb2, otherwise: bb28];
+    }
+
+    bb14: {
+        switchInt(copy _29) -> [0: bb16, otherwise: bb15];
+    }
+
+    bb15: {
+        _112 = panic() -> unwind unreachable;
+    }
+
+    bb16: {
+        _33 = Eq(copy _28, copy _27);
+        _34 = BitAnd(copy _4, const 255_u64);
+        _35 = Eq(copy _34, const 4_u64);
+        switchInt(copy _33) -> [0: bb38, otherwise: bb37];
+    }
+
+    bb17: {
+        switchInt(copy _29) -> [0: bb19, otherwise: bb18];
+    }
+
+    bb18: {
+        _113 = panic() -> unwind unreachable;
+    }
+
+    bb19: {
+        _36 = Sub(copy _28, copy _27);
+        _37 = Lt(copy _36, const 2_u32);
+        switchInt(copy _37) -> [0: bb2, otherwise: bb20];
+    }
+
+    bb20: {
+        _38 = Offset(copy _5, const 48_isize);
+        _39 = Lt(copy _27, copy _28);
+        switchInt(copy _39) -> [0: bb40, otherwise: bb21];
+    }
+
+    bb21: {
+        _40 = copy _27 as u64 (IntToInt);
+        _41 = copy _103[1 of 8];
+        _42 = Shl(copy _40, const 32_u64);
+        _43 = BitOr(copy _42, const 4_u64);
+        _114 = Val(copy _41);
+        _115 = Val(copy _43);
+        _44 = vec_get(move _114, move _115) -> [return: bb41, unwind unreachable];
+    }
+
+    bb22: {
+        _52 = Offset(copy _5, const 40_isize);
+        _53 = copy _103[5 of 8];
+        _54 = BitAnd(copy _4, const 18446744069414584324_u64);
+        _117 = Val(copy _53);
+        _118 = Val(copy _54);
+        _55 = map_has(copy _117, copy _118) -> [return: bb45, unwind unreachable];
+    }
+
+    bb23: {
+        _58 = map_get(move _117, move _118) -> [return: bb47, unwind unreachable];
+    }
+
+    bb24: {
+        _62 = vec_len(copy _58) -> [return: bb48, unwind unreachable];
+    }
+
+    bb25: {
+        _67 = vec_get(move _58, const Val(4_u64)) -> [return: bb50, unwind unreachable];
+    }
+
+    bb26: {
+        _70 = symbol_index_in_linear_memory(move _67, const Val(4504527340306436_u64), const Val(8589934596_u64)) -> [return: bb51, unwind unreachable];
+    }
+
+    bb27: {
+        _73 = Lt(copy _71, const 4294967296_u64);
+        _74 = copy (*_108);
+        _75 = copy (*_109);
+        _76 = Lt(copy _75, copy _74);
+        switchInt(copy _73) -> [0: bb11, otherwise: bb8];
+    }
+
+    bb28: {
+        _77 = Lt(copy _74, copy _75);
+        switchInt(copy _77) -> [0: bb52, otherwise: bb29];
+    }
+
+    bb29: {
+        _78 = copy _74 as u64 (IntToInt);
+        _79 = copy _103[1 of 8];
+        _80 = Shl(copy _78, const 32_u64);
+        _81 = BitOr(copy _80, const 4_u64);
+        _119 = Val(copy _79);
+        _120 = Val(copy _81);
+        _82 = vec_get(move _119, move _120) -> [return: bb53, unwind unreachable];
+    }
+
+    bb30: {
+        _87 = copy _103[5 of 8];
+        _88 = copy _103[4 of 8];
+        (*_105) = const 3_u32;
+        _122 = f30(copy _17, const 1048780_u64, const 9_u64) -> [return: bb55, unwind unreachable];
+    }
+
+    bb31: {
+        _91 = copy _103[4 of 8];
+        _103[4 of 8] = copy _87;
+        _103[3 of 8] = copy _88;
+        _92 = Shl(copy _17, const 32_u64);
+        _93 = BitOr(copy _92, const 4_u64);
+        _123 = Val(copy _93);
+        _94 = map_new_from_linear_memory(const Val(4504355541614596_u64), copy _123, const Val(8589934596_u64)) -> [return: bb56, unwind unreachable];
+    }
+
+    bb32: {
+        (*_105) = const 3_u32;
+        _97 = symbol_new_from_linear_memory(const Val(4504424261091332_u64), const Val(51539607556_u64)) -> [return: bb58, unwind unreachable];
+    }
+
+    bb33: {
+        _10 = copy (_9.0: u64);
+        _11 = Offset(copy _5, const 16_isize);
+        _108 = copy _11 as *mut u32 (PtrToPtr);
+        (*_108) = const 0_u32;
+        _12 = Offset(copy _5, const 8_isize);
+        _103[1 of 8] = copy _3;
+        _13 = Shr(copy _10, const 32_u64);
+        _14 = Offset(copy _5, const 20_isize);
+        _15 = copy _13 as u32 (IntToInt);
+        _109 = copy _14 as *mut u32 (PtrToPtr);
+        (*_109) = copy _15;
+        _16 = copy _6 as u32 (PointerExposeProvenance);
+        _17 = copy _16 as u64 (IntToInt);
+        _18 = Eq(copy _15, const 0_u32);
+        switchInt(copy _15) -> [0: bb34, otherwise: bb4];
+    }
+
+    bb34: {
+        goto -> bb1;
+    }
+
+    bb35: {
+        _20 = copy (_19.0: u64);
+        _21 = Offset(copy _5, const 32_isize);
+        _103[4 of 8] = copy _20;
+        (*_108) = const 1_u32;
+        _103[3 of 8] = const 0_u64;
+        _22 = copy _20 as u8 (IntToInt);
+        switchInt(copy _22) -> [74: bb5, 14: bb5, otherwise: bb2];
+    }
+
+    bb36: {
+        _24 = copy (_23.0: u64);
+        _25 = Gt(copy _24, const 8589934591_u64);
+        switchInt(copy _25) -> [0: bb6, otherwise: bb2];
+    }
+
+    bb37: {
+        switchInt(copy _35) -> [0: bb2, otherwise: bb39];
+    }
+
+    bb38: {
+        _35 = const false;
+        goto -> bb2;
+    }
+
+    bb39: {
+        _102 = const 2_u64;
+        goto -> bb7;
+    }
+
+    bb40: {
+        _6 = copy _38;
+        goto -> bb1;
+    }
+
+    bb41: {
+        _45 = copy (_44.0: u64);
+        _46 = Offset(copy _5, const 56_isize);
+        _103[7 of 8] = copy _45;
+        _47 = Add(copy _27, const 1_u32);
+        (*_108) = copy _47;
+        _103[6 of 8] = const 0_u64;
+        _116 = f22(copy _17, move _44) -> [return: bb42, unwind unreachable];
+    }
+
+    bb42: {
+        _48 = copy _103[3 of 8];
+        _49 = Ne(copy _48, const 1_u64);
+        _50 = BitAnd(copy _4, const 255_u64);
+        _51 = Eq(copy _50, const 4_u64);
+        switchInt(copy _48) -> [1: bb44, otherwise: bb43];
+    }
+
+    bb43: {
+        switchInt(copy _51) -> [0: bb2, otherwise: bb22];
+    }
+
+    bb44: {
+        _51 = const false;
+        goto -> bb2;
+    }
+
+    bb45: {
+        _56 = copy (_55.0: u64);
+        _57 = Eq(copy _56, const 1_u64);
+        switchInt(copy _56) -> [1: bb23, otherwise: bb46];
+    }
+
+    bb46: {
+        _102 = const 2_u64;
+        goto -> bb7;
+    }
+
+    bb47: {
+        _59 = copy (_58.0: u64);
+        _60 = BitAnd(copy _59, const 255_u64);
+        _61 = Eq(copy _60, const 75_u64);
+        switchInt(copy _60) -> [75: bb24, otherwise: bb2];
+    }
+
+    bb48: {
+        _63 = copy (_62.0: u64);
+        (*_108) = const 0_u32;
+        _103[1 of 8] = copy _59;
+        _64 = Shr(copy _63, const 32_u64);
+        _65 = copy _64 as u32 (IntToInt);
+        (*_109) = copy _65;
+        _66 = Eq(copy _65, const 0_u32);
+        switchInt(copy _65) -> [0: bb49, otherwise: bb25];
+    }
+
+    bb49: {
+        goto -> bb1;
+    }
+
+    bb50: {
+        _68 = copy (_67.0: u64);
+        _103[4 of 8] = copy _68;
+        (*_108) = const 1_u32;
+        _103[3 of 8] = const 0_u64;
+        _69 = copy _68 as u8 (IntToInt);
+        switchInt(copy _69) -> [74: bb26, 14: bb26, otherwise: bb2];
+    }
+
+    bb51: {
+        _71 = copy (_70.0: u64);
+        _72 = Gt(copy _71, const 8589934591_u64);
+        switchInt(copy _72) -> [0: bb27, otherwise: bb2];
+    }
+
+    bb52: {
+        _6 = copy _38;
+        goto -> bb1;
+    }
+
+    bb53: {
+        _83 = copy (_82.0: u64);
+        _103[7 of 8] = copy _83;
+        _84 = Add(copy _74, const 1_u32);
+        (*_108) = copy _84;
+        _103[6 of 8] = const 0_u64;
+        _121 = f22(copy _17, move _82) -> [return: bb54, unwind unreachable];
+    }
+
+    bb54: {
+        _85 = copy _103[3 of 8];
+        _86 = Eq(copy _85, const 1_u64);
+        switchInt(copy _85) -> [1: bb2, otherwise: bb30];
+    }
+
+    bb55: {
+        _89 = copy (*_105);
+        _90 = Eq(copy _89, const 0_u32);
+        switchInt(copy _89) -> [0: bb31, otherwise: bb2];
+    }
+
+    bb56: {
+        _95 = copy (_94.0: u64);
+        _103[4 of 8] = copy _95;
+        _103[3 of 8] = copy _91;
+        _96 = vec_new_from_linear_memory(move _123, const Val(8589934596_u64)) -> [return: bb57, unwind unreachable];
+    }
+
+    bb57: {
+        _102 = copy (_96.0: u64);
+        goto -> bb7;
+    }
+
+    bb58: {
+        _98 = copy (_97.0: u64);
+        _103[4 of 8] = copy _98;
+        _103[3 of 8] = copy _98;
+        _99 = Shl(copy _17, const 32_u64);
+        _100 = BitOr(copy _99, const 4_u64);
+        _124 = Val(copy _100);
+        _101 = vec_new_from_linear_memory(move _124, const Val(4294967300_u64)) -> [return: bb59, unwind unreachable];
+    }
+
+    bb59: {
+        _102 = copy (_101.0: u64);
+        goto -> bb7;
+    }
+}
+
+// MIR for `f13` 0 diver
+
+fn f13(_1: u64, _2: u64) -> () {
+    debug a0 => _1;
+    debug a1 => _2;
+    debug frame => _3;
+    debug slot24 => _4;
+    debug p => _97;
+    debug v => _6;
+    debug and => _7;
+    debug cmp => _8;
+    debug l5.0.sink => _26;
+    debug p303 => _100;
+    debug to_val => _101;
+    debug vec_len => _10;
+    debug payload => _11;
+    debug slot16 => _12;
+    debug slot8 => _13;
+    debug lshr => _14;
+    debug slot20 => _15;
+    debug t => _16;
+    debug fp => _18;
+    debug fp13 => _20;
+    debug cmp.not.not => _21;
+    debug v_u32_0 => const Val(4_u64);
+    debug vec_get => _22;
+    debug payload304 => _23;
+    debug fp299 => _24;
+    debug t20 => _25;
+    debug z => _74;
+    debug l1.0 => _74;
+    debug l3.0 => _68;
+    debug l4.0 => _11;
+    debug l5.0 => _26;
+    debug l6.0 => _63;
+    debug p305 => _105;
+    debug p306 => _108;
+    debug p307 => _111;
+    debug t308 => _31;
+    debug p309 => _114;
+    debug to_val310 => _22;
+    debug v_u32_1048692 => const Val(4504097843576836_u64);
+    debug v_u32_4 => const Val(17179869188_u64);
+    debug symbol_index_in_linear_memory => _33;
+    debug payload311 => _34;
+    debug lshr32 => _68;
+    debug cmp33 => _35;
+    debug sel => _36;
+    debug ld38 => _37;
+    debug ld41 => _38;
+    debug cmp312 => _39;
+    debug sub.narrow => _40;
+    debug cmp165.not => _41;
+    debug sub.narrow315 => _42;
+    debug cmp121.not => _43;
+    debug sub.narrow317 => _44;
+    debug cmp53.not => _45;
+    debug brif44.not => _46;
+    debug ld61 => _47;
+    debug cmp62.not => _48;
+    debug ld66 => _49;
+    debug fp301 => _50;
+    debug and83 => _51;
+    debug cmp84.not => _52;
+    debug ld91 => _53;
+    debug slot48 => _54;
+    debug fp92 => _56;
+    debug ld94 => _57;
+    debug brif96.not => _58;
+    debug slot56 => _59;
+    debug ld97 => _11;
+    debug ld99 => _60;
+    debug ld103 => _61;
+    debug brif105.not => _62;
+    debug ld106 => _63;
+    debug and107 => _64;
+    debug cmp108.not => _65;
+    debug ld112 => _68;
+    debug ld129 => _66;
+    debug cmp130.not => _67;
+    debug ld134 => _68;
+    debug and135 => _69;
+    debug cmp136.not => _70;
+    debug lshr140 => _71;
+    debug t141 => _72;
+    debug cmp142 => _73;
+    debug select => _74;
+    debug cmp148 => _75;
+    debug select152 => _74;
+    debug cmp154 => _76;
+    debug ld173 => _77;
+    debug cmp174.not => _78;
+    debug ld178 => _79;
+    debug and179 => _80;
+    debug cmp180.not => _81;
+    debug slot48189 => _82;
+    debug fp302 => _83;
+    debug fp201 => _85;
+    debug shl => _86;
+    debug or => _87;
+    debug to_val202 => _129;
+    debug to_val203 => _130;
+    debug v_u32_2 => const Val(8589934596_u64);
+    debug vec_unpack_to_linear_memory => _88;
+    debug ld205 => _89;
+    debug ld209 => _90;
+    debug cmp210 => _91;
+    debug ld214 => _68;
+    debug and215 => _92;
+    debug cmp216.not => _93;
+    debug ld220 => _11;
+    let mut _0: ();
+    let mut _3: *mut u8;
+    let mut _4: *mut u8;
+    let mut _5: u32;
+    let mut _6: u64;
+    let mut _7: u64;
+    let mut _8: bool;
+    let mut _9: u32;
+    let mut _10: Val;
+    let mut _11: u64;
+    let mut _12: *mut u8;
+    let mut _13: *mut u8;
+    let mut _14: u64;
+    let mut _15: *mut u8;
+    let mut _16: u32;
+    let mut _17: u32;
+    let mut _18: u64;
+    let mut _19: u32;
+    let mut _20: u64;
+    let mut _21: bool;
+    let mut _22: Val;
+    let mut _23: u64;
+    let mut _24: *mut u8;
+    let mut _25: u8;
+    let mut _26: u8;
+    let mut _27: u32;
+    let mut _28: u32;
+    let mut _29: u32;
+    let mut _30: u32;
+    let mut _31: u8;
+    let mut _32: u32;
+    let mut _33: Val;
+    let mut _34: u64;
+    let mut _35: bool;
+    let mut _36: u32;
+    let mut _37: u32;
+    let mut _38: u32;
+    let mut _39: bool;
+    let mut _40: u32;
+    let mut _41: bool;
+    let mut _42: u32;
+    let mut _43: bool;
+    let mut _44: u32;
+    let mut _45: bool;
+    let mut _46: bool;
+    let mut _47: u64;
+    let mut _48: bool;
+    let mut _49: u64;
+    let mut _50: *mut u8;
+    let mut _51: u64;
+    let mut _52: bool;
+    let mut _53: u64;
+    let mut _54: *mut u8;
+    let mut _55: u32;
+    let mut _56: u64;
+    let mut _57: u32;
+    let mut _58: bool;
+    let mut _59: *mut u8;
+    let mut _60: u64;
+    let mut _61: u32;
+    let mut _62: bool;
+    let mut _63: u64;
+    let mut _64: u64;
+    let mut _65: bool;
+    let mut _66: u64;
+    let mut _67: bool;
+    let mut _68: u64;
+    let mut _69: u64;
+    let mut _70: bool;
+    let mut _71: u64;
+    let mut _72: u32;
+    let mut _73: bool;
+    let mut _74: u64;
+    let mut _75: bool;
+    let mut _76: bool;
+    let mut _77: u64;
+    let mut _78: bool;
+    let mut _79: u64;
+    let mut _80: u64;
+    let mut _81: bool;
+    let mut _82: *mut u8;
+    let mut _83: *mut u8;
+    let mut _84: u32;
+    let mut _85: u64;
+    let mut _86: u64;
+    let mut _87: u64;
+    let mut _88: Val;
+    let mut _89: u64;
+    let mut _90: u64;
+    let mut _91: bool;
+    let mut _92: u64;
+    let mut _93: bool;
+    let mut _94: [u64; 8];
+    let mut _95: *mut [u64; 8];
+    let mut _96: usize;
+    let mut _97: *mut u8;
+    let mut _98: *mut u64;
+    let mut _99: usize;
+    let mut _100: *mut u8;
+    let mut _101: Val;
+    let mut _102: *mut u32;
+    let mut _103: *mut u32;
+    let mut _104: usize;
+    let mut _105: *mut u8;
+    let mut _106: *mut u64;
+    let mut _107: usize;
+    let mut _108: *mut u8;
+    let mut _109: *mut u64;
+    let mut _110: usize;
+    let mut _111: *mut u8;
+    let mut _112: *mut u64;
+    let mut _113: usize;
+    let mut _114: *mut u8;
+    let mut _115: !;
+    let mut _116: !;
+    let mut _117: !;
+    let mut _118: !;
+    let mut _119: ();
+    let mut _120: Val;
+    let mut _121: ();
+    let mut _122: Val;
+    let mut _123: ();
+    let mut _124: *mut u32;
+    let mut _125: Val;
+    let mut _126: ();
+    let mut _127: ();
+    let mut _128: ();
+    let mut _129: Val;
+    let mut _130: Val;
+    let mut _131: Val;
+    let mut _132: ();
+
+    bb0: {
+        _94 = [const 0_u64; 8];
+        _95 = &raw mut _94;
+        _3 = copy _95 as *mut u8 (PtrToPtr);
+        _4 = Offset(copy _3, const 24_isize);
+        _5 = copy _2 as u32 (IntToInt);
+        _96 = copy _5 as usize (IntToInt);
+        _97 = copy _96 as *mut u8 (PointerWithExposedProvenance);
+        _98 = copy _97 as *mut u64 (PtrToPtr);
+        _6 = copy (*_98);
+        _7 = BitAnd(copy _6, const 255_u64);
+        _8 = Eq(copy _7, const 75_u64);
+        switchInt(copy _7) -> [75: bb2, otherwise: bb33];
+    }
+
+    bb1: {
+        _9 = copy _1 as u32 (IntToInt);
+        _99 = copy _9 as usize (IntToInt);
+        _100 = copy _99 as *mut u8 (PointerWithExposedProvenance);
+        (*_100) = copy _26;
+        return;
+    }
+
+    bb2: {
+        _101 = Val(copy _6);
+        _10 = vec_len(copy _101) -> [return: bb34, unwind unreachable];
+    }
+
+    bb3: {
+        _22 = vec_get(move _101, const Val(4_u64)) -> [return: bb36, unwind unreachable];
+    }
+
+    bb4: {
+        _27 = copy _1 as u32 (IntToInt);
+        _28 = Add(copy _27, const 24_u32);
+        _104 = copy _28 as usize (IntToInt);
+        _105 = copy _104 as *mut u8 (PointerWithExposedProvenance);
+        _106 = copy _105 as *mut u64 (PtrToPtr);
+        (*_106) = copy _63;
+        _29 = Add(copy _27, const 16_u32);
+        _107 = copy _29 as usize (IntToInt);
+        _108 = copy _107 as *mut u8 (PointerWithExposedProvenance);
+        _109 = copy _108 as *mut u64 (PtrToPtr);
+        (*_109) = copy _68;
+        _30 = Add(copy _27, const 8_u32);
+        _110 = copy _30 as usize (IntToInt);
+        _111 = copy _110 as *mut u8 (PointerWithExposedProvenance);
+        _112 = copy _111 as *mut u64 (PtrToPtr);
+        (*_112) = copy _11;
+        _31 = copy _74 as u8 (IntToInt);
+        _32 = Add(copy _27, const 1_u32);
+        _113 = copy _32 as usize (IntToInt);
+        _114 = copy _113 as *mut u8 (PointerWithExposedProvenance);
+        (*_114) = copy _31;
+        goto -> bb1;
+    }
+
+    bb5: {
+        _33 = symbol_index_in_linear_memory(move _22, const Val(4504097843576836_u64), const Val(17179869188_u64)) -> [return: bb38, unwind unreachable];
+    }
+
+    bb6: {
+        _36 = copy _68 as u32 (IntToInt);
+        _37 = copy (*_103);
+        _38 = copy (*_102);
+        _39 = Lt(copy _38, copy _37);
+        switchInt(copy _36) -> [3: bb7, 1: bb13, 2: bb10, otherwise: bb16];
+    }
+
+    bb7: {
+        switchInt(copy _39) -> [0: bb9, otherwise: bb8];
+    }
+
+    bb8: {
+        _115 = panic() -> unwind unreachable;
+    }
+
+    bb9: {
+        _40 = Sub(copy _38, copy _37);
+        _41 = Lt(copy _40, const 2_u32);
+        switchInt(copy _41) -> [0: bb40, otherwise: bb28];
+    }
+
+    bb10: {
+        switchInt(copy _39) -> [0: bb12, otherwise: bb11];
+    }
+
+    bb11: {
+        _116 = panic() -> unwind unreachable;
+    }
+
+    bb12: {
+        _42 = Sub(copy _38, copy _37);
+        _43 = Lt(copy _42, const 2_u32);
+        switchInt(copy _43) -> [0: bb41, otherwise: bb25];
+    }
+
+    bb13: {
+        switchInt(copy _39) -> [0: bb15, otherwise: bb14];
+    }
+
+    bb14: {
+        _117 = panic() -> unwind unreachable;
+    }
+
+    bb15: {
+        _44 = Sub(copy _38, copy _37);
+        _45 = Lt(copy _44, const 2_u32);
+        switchInt(copy _45) -> [0: bb42, otherwise: bb19];
+    }
+
+    bb16: {
+        switchInt(copy _39) -> [0: bb18, otherwise: bb17];
+    }
+
+    bb17: {
+        _118 = panic() -> unwind unreachable;
+    }
+
+    bb18: {
+        _46 = Eq(copy _38, copy _37);
+        switchInt(copy _46) -> [0: bb43, otherwise: bb44];
+    }
+
+    bb19: {
+        _119 = f15(copy _18, move _20) -> [return: bb45, unwind unreachable];
+    }
+
+    bb20: {
+        _49 = copy _94[4 of 8];
+        _94[3 of 8] = const 2_u64;
+        _94[4 of 8] = const 2_u64;
+        _50 = Offset(copy _3, const 40_isize);
+        _94[5 of 8] = const 2_u64;
+        _51 = BitAnd(copy _49, const 255_u64);
+        _52 = Eq(copy _51, const 76_u64);
+        switchInt(copy _51) -> [76: bb21, otherwise: bb47];
+    }
+
+    bb21: {
+        _120 = Val(copy _49);
+        _121 = f18(move _120, const 1048728_u64, const 3_u64, move _18, const 3_u64) -> [return: bb48, unwind unreachable];
+    }
+
+    bb22: {
+        _59 = Offset(copy _3, const 56_isize);
+        _11 = copy _94[7 of 8];
+        _60 = copy _94[4 of 8];
+        _125 = Val(copy _60);
+        _126 = i64_try_from_val(move _56, move _125) -> [return: bb51, unwind unreachable];
+    }
+
+    bb23: {
+        _63 = copy _94[5 of 8];
+        _64 = BitAnd(copy _63, const 255_u64);
+        _65 = Eq(copy _64, const 75_u64);
+        switchInt(copy _64) -> [75: bb24, otherwise: bb53];
+    }
+
+    bb24: {
+        _68 = copy _94[7 of 8];
+        _74 = const 24_u64;
+        _26 = const 1_u8;
+        goto -> bb4;
+    }
+
+    bb25: {
+        _127 = f15(move _18, move _20) -> [return: bb54, unwind unreachable];
+    }
+
+    bb26: {
+        _68 = copy _94[4 of 8];
+        _69 = BitAnd(copy _68, const 255_u64);
+        _70 = Eq(copy _69, const 4_u64);
+        switchInt(copy _69) -> [4: bb27, otherwise: bb56];
+    }
+
+    bb27: {
+        _71 = Shr(copy _68, const 32_u64);
+        _72 = copy _71 as u32 (IntToInt);
+        _73 = Eq(copy _72, const 15_u32);
+        switchInt(copy _72) -> [15: bb57, otherwise: bb58];
+    }
+
+    bb28: {
+        _128 = f15(copy _18, move _20) -> [return: bb60, unwind unreachable];
+    }
+
+    bb29: {
+        _79 = copy _94[4 of 8];
+        _80 = BitAnd(copy _79, const 255_u64);
+        _81 = Eq(copy _80, const 75_u64);
+        switchInt(copy _80) -> [75: bb30, otherwise: bb62];
+    }
+
+    bb30: {
+        _82 = Offset(copy _3, const 48_isize);
+        _94[6 of 8] = const 2_u64;
+        _83 = Offset(copy _3, const 56_isize);
+        _94[7 of 8] = const 2_u64;
+        _84 = copy _82 as u32 (PointerExposeProvenance);
+        _85 = copy _84 as u64 (IntToInt);
+        _86 = Shl(copy _85, const 32_u64);
+        _87 = BitOr(copy _86, const 4_u64);
+        _129 = Val(copy _79);
+        _130 = Val(copy _87);
+        _88 = vec_unpack_to_linear_memory(move _129, move _130, const Val(8589934596_u64)) -> [return: bb63, unwind unreachable];
+    }
+
+    bb31: {
+        _68 = copy _94[7 of 8];
+        _92 = BitAnd(copy _68, const 255_u64);
+        _93 = Eq(copy _92, const 75_u64);
+        switchInt(copy _92) -> [75: bb32, otherwise: bb66];
+    }
+
+    bb32: {
+        _11 = copy _94[4 of 8];
+        _74 = const 16_u64;
+        _26 = const 3_u8;
+        _63 = const 0_u64;
+        goto -> bb4;
+    }
+
+    bb33: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb34: {
+        _11 = copy (_10.0: u64);
+        _12 = Offset(copy _3, const 16_isize);
+        _13 = Offset(copy _3, const 8_isize);
+        _94[1 of 8] = copy _6;
+        _14 = Shr(copy _11, const 32_u64);
+        _15 = Offset(copy _3, const 20_isize);
+        _16 = copy _14 as u32 (IntToInt);
+        _102 = copy _15 as *mut u32 (PtrToPtr);
+        (*_102) = copy _16;
+        _17 = copy _4 as u32 (PointerExposeProvenance);
+        _18 = copy _17 as u64 (IntToInt);
+        _19 = copy _13 as u32 (PointerExposeProvenance);
+        _20 = copy _19 as u64 (IntToInt);
+        _21 = Eq(copy _16, const 0_u32);
+        switchInt(copy _16) -> [0: bb35, otherwise: bb3];
+    }
+
+    bb35: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb36: {
+        _23 = copy (_22.0: u64);
+        _24 = Offset(copy _3, const 32_isize);
+        _94[4 of 8] = copy _23;
+        _103 = copy _12 as *mut u32 (PtrToPtr);
+        (*_103) = const 1_u32;
+        _94[3 of 8] = const 0_u64;
+        _25 = copy _23 as u8 (IntToInt);
+        _74 = BitAnd(copy _23, const 255_u64);
+        switchInt(copy _25) -> [74: bb5, 14: bb5, otherwise: bb37];
+    }
+
+    bb37: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb38: {
+        _34 = copy (_33.0: u64);
+        _68 = Shr(copy _34, const 32_u64);
+        _35 = Gt(copy _34, const 17179869183_u64);
+        switchInt(copy _35) -> [0: bb6, otherwise: bb39];
+    }
+
+    bb39: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb40: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb41: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb42: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb43: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb44: {
+        _26 = const 0_u8;
+        _63 = const 0_u64;
+        goto -> bb4;
+    }
+
+    bb45: {
+        _47 = copy _94[3 of 8];
+        _48 = Eq(copy _47, const 0_u64);
+        switchInt(copy _47) -> [0: bb20, otherwise: bb46];
+    }
+
+    bb46: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb47: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb48: {
+        _53 = copy _94[3 of 8];
+        _54 = Offset(copy _3, const 48_isize);
+        _55 = copy _54 as u32 (PointerExposeProvenance);
+        _56 = copy _55 as u64 (IntToInt);
+        _122 = Val(copy _53);
+        _123 = i64_try_from_val(copy _56, move _122) -> [return: bb49, unwind unreachable];
+    }
+
+    bb49: {
+        _124 = copy _54 as *mut u32 (PtrToPtr);
+        _57 = copy (*_124);
+        _58 = Eq(copy _57, const 0_u32);
+        switchInt(copy _57) -> [0: bb22, otherwise: bb50];
+    }
+
+    bb50: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb51: {
+        _61 = copy (*_124);
+        _62 = Eq(copy _61, const 0_u32);
+        switchInt(copy _61) -> [0: bb23, otherwise: bb52];
+    }
+
+    bb52: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb53: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb54: {
+        _66 = copy _94[3 of 8];
+        _67 = Eq(copy _66, const 0_u64);
+        switchInt(copy _66) -> [0: bb26, otherwise: bb55];
+    }
+
+    bb55: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb56: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb57: {
+        _74 = const 15_u64;
+        _75 = Eq(copy _72, const 10_u32);
+        switchInt(copy _75) -> [0: bb67, otherwise: bb59];
+    }
+
+    bb58: {
+        _74 = const 9_u64;
+        _75 = Eq(copy _72, const 10_u32);
+        switchInt(copy _75) -> [0: bb69, otherwise: bb59];
+    }
+
+    bb59: {
+        _74 = const 10_u64;
+        goto -> bb68;
+    }
+
+    bb60: {
+        _77 = copy _94[3 of 8];
+        _78 = Eq(copy _77, const 0_u64);
+        switchInt(copy _77) -> [0: bb29, otherwise: bb61];
+    }
+
+    bb61: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb62: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb63: {
+        _89 = copy _94[6 of 8];
+        _131 = Val(copy _89);
+        _132 = i64_try_from_val(move _18, move _131) -> [return: bb64, unwind unreachable];
+    }
+
+    bb64: {
+        _90 = copy _94[3 of 8];
+        _91 = Eq(copy _90, const 1_u64);
+        switchInt(copy _90) -> [1: bb65, otherwise: bb31];
+    }
+
+    bb65: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb66: {
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+
+    bb67: {
+        goto -> bb68;
+    }
+
+    bb68: {
+        _76 = Eq(copy _74, const 9_u64);
+        _26 = const 2_u8;
+        _63 = const 0_u64;
+        goto -> bb4;
+    }
+
+    bb69: {
+        _76 = Eq(copy _74, const 9_u64);
+        _26 = const 4_u8;
+        goto -> bb1;
+    }
+}
+
+// MIR for `f15` 0 diver
+
+fn f15(_1: u64, _2: u64) -> () {
+    debug a0 => _1;
+    debug a1 => _2;
+    debug p => _20;
+    debug v => _5;
+    debug p32 => _23;
+    debug v33 => _7;
+    debug cmp.not => _8;
+    debug .pre => _16;
+    debug .pre-phi => _16;
+    debug l2.0 => _9;
+    debug p34 => _26;
+    debug zx => _10;
+    debug p35 => _29;
+    debug v36 => _11;
+    debug shl => _12;
+    debug or => _13;
+    debug to_val => _31;
+    debug to_val10 => _32;
+    debug vec_get => _14;
+    debug payload => _15;
+    debug p37 => _34;
+    debug add => _18;
+    let mut _0: ();
+    let mut _3: u32;
+    let mut _4: u32;
+    let mut _5: u32;
+    let mut _6: u32;
+    let mut _7: u32;
+    let mut _8: bool;
+    let mut _9: u64;
+    let mut _10: u64;
+    let mut _11: u64;
+    let mut _12: u64;
+    let mut _13: u64;
+    let mut _14: Val;
+    let mut _15: u64;
+    let mut _16: u32;
+    let mut _17: u32;
+    let mut _18: u32;
+    let mut _19: usize;
+    let mut _20: *mut u8;
+    let mut _21: *mut u32;
+    let mut _22: usize;
+    let mut _23: *mut u8;
+    let mut _24: *mut u32;
+    let mut _25: usize;
+    let mut _26: *mut u8;
+    let mut _27: *mut u64;
+    let mut _28: usize;
+    let mut _29: *mut u8;
+    let mut _30: *mut u64;
+    let mut _31: Val;
+    let mut _32: Val;
+    let mut _33: usize;
+    let mut _34: *mut u8;
+    let mut _35: *mut u64;
+
+    bb0: {
+        _3 = copy _2 as u32 (IntToInt);
+        _4 = Add(copy _3, const 8_u32);
+        _19 = copy _4 as usize (IntToInt);
+        _20 = copy _19 as *mut u8 (PointerWithExposedProvenance);
+        _21 = copy _20 as *mut u32 (PtrToPtr);
+        _5 = copy (*_21);
+        _6 = Add(copy _3, const 12_u32);
+        _22 = copy _6 as usize (IntToInt);
+        _23 = copy _22 as *mut u8 (PointerWithExposedProvenance);
+        _24 = copy _23 as *mut u32 (PtrToPtr);
+        _7 = copy (*_24);
+        _8 = Lt(copy _5, copy _7);
+        switchInt(copy _8) -> [0: bb1, otherwise: bb3];
+    }
+
+    bb1: {
+        _16 = copy _1 as u32 (IntToInt);
+        _9 = const 2_u64;
+        goto -> bb2;
+    }
+
+    bb2: {
+        _25 = copy _16 as usize (IntToInt);
+        _26 = copy _25 as *mut u8 (PointerWithExposedProvenance);
+        _27 = copy _26 as *mut u64 (PtrToPtr);
+        (*_27) = copy _9;
+        return;
+    }
+
+    bb3: {
+        _10 = copy _5 as u64 (IntToInt);
+        _28 = copy _3 as usize (IntToInt);
+        _29 = copy _28 as *mut u8 (PointerWithExposedProvenance);
+        _30 = copy _29 as *mut u64 (PtrToPtr);
+        _11 = copy (*_30);
+        _12 = Shl(copy _10, const 32_u64);
+        _13 = BitOr(copy _12, const 4_u64);
+        _31 = Val(copy _11);
+        _32 = Val(copy _13);
+        _14 = vec_get(move _31, move _32) -> [return: bb4, unwind unreachable];
+    }
+
+    bb4: {
+        _15 = copy (_14.0: u64);
+        _16 = copy _1 as u32 (IntToInt);
+        _17 = Add(copy _16, const 8_u32);
+        _33 = copy _17 as usize (IntToInt);
+        _34 = copy _33 as *mut u8 (PointerWithExposedProvenance);
+        _35 = copy _34 as *mut u64 (PtrToPtr);
+        (*_35) = copy _15;
+        _18 = Add(copy _5, const 1_u32);
+        (*_21) = copy _18;
+        _9 = const 0_u64;
+        goto -> bb2;
+    }
+}
+
+// MIR for `f18` 0 diver
+
+fn f18(_1: Val, _2: u64, _3: u64, _4: u64, _5: u64) -> () {
+    debug a0 => _1;
+    debug a1 => _2;
+    debug a2 => _3;
+    debug a3 => _4;
+    debug a4 => _5;
+    debug t => _6;
+    debug t2 => _7;
+    debug cmp => _8;
+    debug z => _9;
+    debug or => _10;
+    debug z8 => _11;
+    debug or10 => _12;
+    debug z13 => _13;
+    debug or15 => _14;
+    debug to_val => _1;
+    debug to_val16 => _16;
+    debug to_val17 => _17;
+    debug to_val18 => _18;
+    debug map_unpack_to_linear_memory => _15;
+    let mut _0: ();
+    let mut _6: u32;
+    let mut _7: u32;
+    let mut _8: bool;
+    let mut _9: u64;
+    let mut _10: u64;
+    let mut _11: u64;
+    let mut _12: u64;
+    let mut _13: u64;
+    let mut _14: u64;
+    let mut _15: Val;
+    let mut _16: Val;
+    let mut _17: Val;
+    let mut _18: Val;
+    let mut _19: !;
+
+    bb0: {
+        _6 = copy _3 as u32 (IntToInt);
+        _7 = copy _5 as u32 (IntToInt);
+        _8 = Eq(copy _6, copy _7);
+        switchInt(copy _8) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _9 = Shl(copy _2, const 32_u64);
+        _10 = BitOr(copy _9, const 4_u64);
+        _11 = Shl(copy _4, const 32_u64);
+        _12 = BitOr(copy _11, const 4_u64);
+        _13 = Shl(copy _3, const 32_u64);
+        _14 = BitOr(copy _13, const 4_u64);
+        _16 = Val(copy _10);
+        _17 = Val(copy _12);
+        _18 = Val(copy _14);
+        _15 = map_unpack_to_linear_memory(move _1, move _16, move _17, move _18) -> [return: bb3, unwind unreachable];
+    }
+
+    bb2: {
+        _19 = trap() -> unwind unreachable;
+    }
+
+    bb3: {
+        return;
+    }
+}
+
+// MIR for `i64_try_from_val` 0 diver
+
+fn i64_try_from_val(_1: u64, _2: Val) -> () {
+    debug a0 => _1;
+    debug a1 => _2;
+    debug t => _3;
+    debug l1.0 => _7;
+    debug l3.0 => _4;
+    debug p => _9;
+    debug p18 => _12;
+    debug to_val => _2;
+    debug obj_to_i64 => _7;
+    debug ashr => _7;
+    let mut _0: ();
+    let mut _3: u8;
+    let mut _4: u64;
+    let mut _5: u32;
+    let mut _6: u32;
+    let mut _7: u64;
+    let mut _8: usize;
+    let mut _9: *mut u8;
+    let mut _10: *mut u64;
+    let mut _11: usize;
+    let mut _12: *mut u8;
+    let mut _13: *mut u64;
+    let mut _14: i64;
+    let mut _15: i64;
+
+    bb0: {
+        _3 = copy (_2.0: u64) as u8 (IntToInt);
+        switchInt(copy _3) -> [65: bb2, 7: bb3, otherwise: bb4];
+    }
+
+    bb1: {
+        _5 = copy _1 as u32 (IntToInt);
+        _8 = copy _5 as usize (IntToInt);
+        _9 = copy _8 as *mut u8 (PointerWithExposedProvenance);
+        _10 = copy _9 as *mut u64 (PtrToPtr);
+        (*_10) = copy _4;
+        _6 = Add(copy _5, const 8_u32);
+        _11 = copy _6 as usize (IntToInt);
+        _12 = copy _11 as *mut u8 (PointerWithExposedProvenance);
+        _13 = copy _12 as *mut u64 (PtrToPtr);
+        (*_13) = copy _7;
+        return;
+    }
+
+    bb2: {
+        _7 = obj_to_i64(move _2) -> [return: bb5, unwind unreachable];
+    }
+
+    bb3: {
+        _14 = copy (_2.0: u64) as i64 (IntToInt);
+        _15 = Shr(copy _14, const 8_i64);
+        _7 = copy _15 as u64 (IntToInt);
+        _4 = const 0_u64;
+        goto -> bb1;
+    }
+
+    bb4: {
+        _7 = const 34359740419_u64;
+        _4 = const 1_u64;
+        goto -> bb1;
+    }
+
+    bb5: {
+        _4 = const 0_u64;
+        goto -> bb1;
+    }
+}
+
+// MIR for `panic` 0 diver
+
+fn panic() -> ! {
+    let mut _0: !;
+    let mut _1: !;
+
+    bb0: {
+        _1 = panic_fmt_32() -> unwind unreachable;
+    }
+}
+
+// MIR for `f21` 0 diver
+
+fn f21(_1: u64, _2: Val) -> () {
+    debug a0 => _1;
+    debug a1 => _2;
+    debug frame => _3;
+    debug fp => _4;
+    debug and => _5;
+    debug cmp9.not => _6;
+    debug l4.0 => _7;
+    debug p => _25;
+    debug fp13 => _10;
+    debug z8 => _11;
+    debug or10 => _12;
+    debug to_val => _2;
+    debug v_u32_1048752 => const Val(4504355541614596_u64);
+    debug to_val17 => _27;
+    debug v_u32_2 => const Val(8589934596_u64);
+    debug map_unpack_to_linear_memory => _13;
+    debug ld => _14;
+    debug t14 => _15;
+    debug ld26 => _16;
+    debug and27 => _17;
+    debug cmp28.not => _18;
+    debug p49 => _29;
+    debug p50 => _32;
+    let mut _0: ();
+    let mut _3: *mut u8;
+    let mut _4: *mut u8;
+    let mut _5: u64;
+    let mut _6: bool;
+    let mut _7: u64;
+    let mut _8: u32;
+    let mut _9: u32;
+    let mut _10: u64;
+    let mut _11: u64;
+    let mut _12: u64;
+    let mut _13: Val;
+    let mut _14: u64;
+    let mut _15: u8;
+    let mut _16: u64;
+    let mut _17: u64;
+    let mut _18: bool;
+    let mut _19: u32;
+    let mut _20: u32;
+    let mut _21: u32;
+    let mut _22: [u64; 2];
+    let mut _23: *mut [u64; 2];
+    let mut _24: usize;
+    let mut _25: *mut u8;
+    let mut _26: *mut u64;
+    let mut _27: Val;
+    let mut _28: usize;
+    let mut _29: *mut u8;
+    let mut _30: *mut u64;
+    let mut _31: usize;
+    let mut _32: *mut u8;
+    let mut _33: *mut u64;
+
+    bb0: {
+        _22 = [const 0_u64; 2];
+        _23 = &raw mut _22;
+        _3 = copy _23 as *mut u8 (PtrToPtr);
+        _22[0 of 2] = const 2_u64;
+        _4 = Offset(copy _3, const 8_isize);
+        _22[1 of 2] = const 2_u64;
+        _5 = BitAnd(copy (_2.0: u64), const 255_u64);
+        _6 = Eq(copy _5, const 76_u64);
+        switchInt(copy _5) -> [76: bb2, otherwise: bb5];
+    }
+
+    bb1: {
+        _8 = copy _1 as u32 (IntToInt);
+        _24 = copy _8 as usize (IntToInt);
+        _25 = copy _24 as *mut u8 (PointerWithExposedProvenance);
+        _26 = copy _25 as *mut u64 (PtrToPtr);
+        (*_26) = copy _7;
+        return;
+    }
+
+    bb2: {
+        _9 = copy _3 as u32 (PointerExposeProvenance);
+        _10 = copy _9 as u64 (IntToInt);
+        _11 = Shl(copy _10, const 32_u64);
+        _12 = BitOr(copy _11, const 4_u64);
+        _27 = Val(copy _12);
+        _13 = map_unpack_to_linear_memory(move _2, const Val(4504355541614596_u64), move _27, const Val(8589934596_u64)) -> [return: bb6, unwind unreachable];
+    }
+
+    bb3: {
+        _16 = copy _22[1 of 2];
+        _17 = BitAnd(copy _16, const 255_u64);
+        _18 = Eq(copy _17, const 75_u64);
+        switchInt(copy _17) -> [75: bb4, otherwise: bb8];
+    }
+
+    bb4: {
+        _19 = copy _1 as u32 (IntToInt);
+        _20 = Add(copy _19, const 16_u32);
+        _28 = copy _20 as usize (IntToInt);
+        _29 = copy _28 as *mut u8 (PointerWithExposedProvenance);
+        _30 = copy _29 as *mut u64 (PtrToPtr);
+        (*_30) = copy _16;
+        _21 = Add(copy _19, const 8_u32);
+        _31 = copy _21 as usize (IntToInt);
+        _32 = copy _31 as *mut u8 (PointerWithExposedProvenance);
+        _33 = copy _32 as *mut u64 (PtrToPtr);
+        (*_33) = copy _14;
+        _7 = const 0_u64;
+        goto -> bb1;
+    }
+
+    bb5: {
+        _7 = const 1_u64;
+        goto -> bb1;
+    }
+
+    bb6: {
+        _14 = copy _22[0 of 2];
+        _15 = copy _14 as u8 (IntToInt);
+        switchInt(copy _15) -> [74: bb3, 14: bb3, otherwise: bb7];
+    }
+
+    bb7: {
+        _7 = const 1_u64;
+        goto -> bb1;
+    }
+
+    bb8: {
+        _7 = const 1_u64;
+        goto -> bb1;
+    }
+}
+
+// MIR for `f22` 0 diver
+
+fn f22(_1: u64, _2: Val) -> () {
+    debug a0 => _1;
+    debug a1 => _2;
+    debug frame => _3;
+    debug fp => _4;
+    debug and => _5;
+    debug cmp9.not => _6;
+    debug l4.0 => _7;
+    debug p => _25;
+    debug fp13 => _10;
+    debug z8 => _11;
+    debug or10 => _12;
+    debug to_val => _2;
+    debug v_u32_1048752 => const Val(4504355541614596_u64);
+    debug to_val17 => _27;
+    debug v_u32_2 => const Val(8589934596_u64);
+    debug map_unpack_to_linear_memory => _13;
+    debug ld => _14;
+    debug t14 => _15;
+    debug ld26 => _16;
+    debug and27 => _17;
+    debug cmp28.not => _18;
+    debug p49 => _29;
+    debug p50 => _32;
+    let mut _0: ();
+    let mut _3: *mut u8;
+    let mut _4: *mut u8;
+    let mut _5: u64;
+    let mut _6: bool;
+    let mut _7: u64;
+    let mut _8: u32;
+    let mut _9: u32;
+    let mut _10: u64;
+    let mut _11: u64;
+    let mut _12: u64;
+    let mut _13: Val;
+    let mut _14: u64;
+    let mut _15: u8;
+    let mut _16: u64;
+    let mut _17: u64;
+    let mut _18: bool;
+    let mut _19: u32;
+    let mut _20: u32;
+    let mut _21: u32;
+    let mut _22: [u64; 2];
+    let mut _23: *mut [u64; 2];
+    let mut _24: usize;
+    let mut _25: *mut u8;
+    let mut _26: *mut u64;
+    let mut _27: Val;
+    let mut _28: usize;
+    let mut _29: *mut u8;
+    let mut _30: *mut u64;
+    let mut _31: usize;
+    let mut _32: *mut u8;
+    let mut _33: *mut u64;
+
+    bb0: {
+        _22 = [const 0_u64; 2];
+        _23 = &raw mut _22;
+        _3 = copy _23 as *mut u8 (PtrToPtr);
+        _22[0 of 2] = const 2_u64;
+        _4 = Offset(copy _3, const 8_isize);
+        _22[1 of 2] = const 2_u64;
+        _5 = BitAnd(copy (_2.0: u64), const 255_u64);
+        _6 = Eq(copy _5, const 76_u64);
+        switchInt(copy _5) -> [76: bb2, otherwise: bb5];
+    }
+
+    bb1: {
+        _8 = copy _1 as u32 (IntToInt);
+        _24 = copy _8 as usize (IntToInt);
+        _25 = copy _24 as *mut u8 (PointerWithExposedProvenance);
+        _26 = copy _25 as *mut u64 (PtrToPtr);
+        (*_26) = copy _7;
+        return;
+    }
+
+    bb2: {
+        _9 = copy _3 as u32 (PointerExposeProvenance);
+        _10 = copy _9 as u64 (IntToInt);
+        _11 = Shl(copy _10, const 32_u64);
+        _12 = BitOr(copy _11, const 4_u64);
+        _27 = Val(copy _12);
+        _13 = map_unpack_to_linear_memory(move _2, const Val(4504355541614596_u64), move _27, const Val(8589934596_u64)) -> [return: bb6, unwind unreachable];
+    }
+
+    bb3: {
+        _16 = copy _22[1 of 2];
+        _17 = BitAnd(copy _16, const 255_u64);
+        _18 = Eq(copy _17, const 76_u64);
+        switchInt(copy _17) -> [76: bb4, otherwise: bb8];
+    }
+
+    bb4: {
+        _19 = copy _1 as u32 (IntToInt);
+        _20 = Add(copy _19, const 16_u32);
+        _28 = copy _20 as usize (IntToInt);
+        _29 = copy _28 as *mut u8 (PointerWithExposedProvenance);
+        _30 = copy _29 as *mut u64 (PtrToPtr);
+        (*_30) = copy _16;
+        _21 = Add(copy _19, const 8_u32);
+        _31 = copy _21 as usize (IntToInt);
+        _32 = copy _31 as *mut u8 (PointerWithExposedProvenance);
+        _33 = copy _32 as *mut u64 (PtrToPtr);
+        (*_33) = copy _14;
+        _7 = const 0_u64;
+        goto -> bb1;
+    }
+
+    bb5: {
+        _7 = const 1_u64;
+        goto -> bb1;
+    }
+
+    bb6: {
+        _14 = copy _22[0 of 2];
+        _15 = copy _14 as u8 (IntToInt);
+        switchInt(copy _15) -> [74: bb3, 14: bb3, otherwise: bb7];
+    }
+
+    bb7: {
+        _7 = const 1_u64;
+        goto -> bb1;
+    }
+
+    bb8: {
+        _7 = const 1_u64;
+        goto -> bb1;
+    }
+}
+
+// MIR for `f25` 0 diver
+
+fn f25(_1: u64, _2: u64) -> () {
+    debug a0 => _1;
+    debug a1 => _2;
+    debug p => _22;
+    debug v => _5;
+    debug p35 => _25;
+    debug v36 => _7;
+    debug cmp.not => _8;
+    debug .pre => _18;
+    debug .pre-phi => _18;
+    debug l3.0 => _17;
+    debug p37 => _28;
+    debug zx => _9;
+    debug p38 => _31;
+    debug v39 => _10;
+    debug shl => _11;
+    debug or => _12;
+    debug to_val => _33;
+    debug to_val9 => _34;
+    debug vec_get => _13;
+    debug payload => _14;
+    debug t => _15;
+    debug to_val40 => _13;
+    debug obj_to_i64 => _16;
+    debug ashr => _16;
+    debug l1.0 => _16;
+    debug l3.041 => _17;
+    debug p42 => _38;
+    debug add => _20;
+    let mut _0: ();
+    let mut _3: u32;
+    let mut _4: u32;
+    let mut _5: u32;
+    let mut _6: u32;
+    let mut _7: u32;
+    let mut _8: bool;
+    let mut _9: u64;
+    let mut _10: u64;
+    let mut _11: u64;
+    let mut _12: u64;
+    let mut _13: Val;
+    let mut _14: u64;
+    let mut _15: u8;
+    let mut _16: u64;
+    let mut _17: u64;
+    let mut _18: u32;
+    let mut _19: u32;
+    let mut _20: u32;
+    let mut _21: usize;
+    let mut _22: *mut u8;
+    let mut _23: *mut u32;
+    let mut _24: usize;
+    let mut _25: *mut u8;
+    let mut _26: *mut u32;
+    let mut _27: usize;
+    let mut _28: *mut u8;
+    let mut _29: *mut u64;
+    let mut _30: usize;
+    let mut _31: *mut u8;
+    let mut _32: *mut u64;
+    let mut _33: Val;
+    let mut _34: Val;
+    let mut _35: i64;
+    let mut _36: i64;
+    let mut _37: usize;
+    let mut _38: *mut u8;
+    let mut _39: *mut u64;
+
+    bb0: {
+        _3 = copy _2 as u32 (IntToInt);
+        _4 = Add(copy _3, const 8_u32);
+        _21 = copy _4 as usize (IntToInt);
+        _22 = copy _21 as *mut u8 (PointerWithExposedProvenance);
+        _23 = copy _22 as *mut u32 (PtrToPtr);
+        _5 = copy (*_23);
+        _6 = Add(copy _3, const 12_u32);
+        _24 = copy _6 as usize (IntToInt);
+        _25 = copy _24 as *mut u8 (PointerWithExposedProvenance);
+        _26 = copy _25 as *mut u32 (PtrToPtr);
+        _7 = copy (*_26);
+        _8 = Lt(copy _5, copy _7);
+        switchInt(copy _8) -> [0: bb1, otherwise: bb3];
+    }
+
+    bb1: {
+        _18 = copy _1 as u32 (IntToInt);
+        _17 = const 2_u64;
+        goto -> bb2;
+    }
+
+    bb2: {
+        _27 = copy _18 as usize (IntToInt);
+        _28 = copy _27 as *mut u8 (PointerWithExposedProvenance);
+        _29 = copy _28 as *mut u64 (PtrToPtr);
+        (*_29) = copy _17;
+        return;
+    }
+
+    bb3: {
+        _9 = copy _5 as u64 (IntToInt);
+        _30 = copy _3 as usize (IntToInt);
+        _31 = copy _30 as *mut u8 (PointerWithExposedProvenance);
+        _32 = copy _31 as *mut u64 (PtrToPtr);
+        _10 = copy (*_32);
+        _11 = Shl(copy _9, const 32_u64);
+        _12 = BitOr(copy _11, const 4_u64);
+        _33 = Val(copy _10);
+        _34 = Val(copy _12);
+        _13 = vec_get(move _33, move _34) -> [return: bb7, unwind unreachable];
+    }
+
+    bb4: {
+        _16 = obj_to_i64(move _13) -> [return: bb9, unwind unreachable];
+    }
+
+    bb5: {
+        _35 = copy _14 as i64 (IntToInt);
+        _36 = Shr(copy _35, const 8_i64);
+        _16 = copy _36 as u64 (IntToInt);
+        _17 = const 0_u64;
+        goto -> bb6;
+    }
+
+    bb6: {
+        _18 = copy _1 as u32 (IntToInt);
+        _19 = Add(copy _18, const 8_u32);
+        _37 = copy _19 as usize (IntToInt);
+        _38 = copy _37 as *mut u8 (PointerWithExposedProvenance);
+        _39 = copy _38 as *mut u64 (PtrToPtr);
+        (*_39) = copy _16;
+        _20 = Add(copy _5, const 1_u32);
+        (*_23) = copy _20;
+        goto -> bb2;
+    }
+
+    bb7: {
+        _14 = copy (_13.0: u64);
+        _15 = copy _14 as u8 (IntToInt);
+        switchInt(copy _15) -> [65: bb4, 7: bb5, otherwise: bb8];
+    }
+
+    bb8: {
+        _16 = const 34359740419_u64;
+        _17 = const 1_u64;
+        goto -> bb6;
+    }
+
+    bb9: {
+        _17 = const 0_u64;
+        goto -> bb6;
+    }
+}
+
+// MIR for `f30` 0 diver
+
+fn f30(_1: u64, _2: u64, _3: u64) -> () {
+    debug a0 => _1;
+    debug a1 => _2;
+    debug a2 => _3;
+    debug t => _4;
+    debug cmp => _5;
+    debug t9 => _6;
+    debug p => _203;
+    debug v => _7;
+    debug zx => _8;
+    debug t11 => _9;
+    debug cmp12 => _10;
+    debug l3.0 => _18;
+    debug p101 => _205;
+    debug p102 => _208;
+    debug z72 => _13;
+    debug or74 => _14;
+    debug z77 => _15;
+    debug or79 => _16;
+    debug to_val => _210;
+    debug to_val80 => _211;
+    debug symbol_new_from_linear_memory => _17;
+    debug payload => _18;
+    debug l5.0 => _201;
+    debug add.1 => _19;
+    debug p.1 => _213;
+    debug v.1 => _20;
+    debug zx.1 => _21;
+    debug t11.1 => _22;
+    debug cmp12.1 => _23;
+    debug add17.1 => _24;
+    debug and.1 => _25;
+    debug cmp22.1 => _26;
+    debug add27.1 => _27;
+    debug and30.1 => _28;
+    debug cmp33.1 => _29;
+    debug add38.1 => _30;
+    debug and41.1 => _31;
+    debug cmp44.1 => _32;
+    debug add49.1 => _33;
+    debug z50.1 => _36;
+    debug add57.1 => _34;
+    debug z58.1 => _36;
+    debug add53.1 => _35;
+    debug z54.1 => _36;
+    debug l5.0.1 => _36;
+    debug and64 => _37;
+    debug shl60.1 => _38;
+    debug and64.1 => _39;
+    debug or65.1 => _40;
+    debug add.2 => _41;
+    debug p.2 => _215;
+    debug v.2 => _42;
+    debug zx.2 => _43;
+    debug t11.2 => _44;
+    debug cmp12.2 => _45;
+    debug add17.2 => _46;
+    debug and.2 => _47;
+    debug cmp22.2 => _48;
+    debug add27.2 => _49;
+    debug and30.2 => _50;
+    debug cmp33.2 => _51;
+    debug add38.2 => _52;
+    debug and41.2 => _53;
+    debug cmp44.2 => _54;
+    debug add49.2 => _55;
+    debug z50.2 => _58;
+    debug add57.2 => _56;
+    debug z58.2 => _58;
+    debug add53.2 => _57;
+    debug z54.2 => _58;
+    debug l5.0.2 => _58;
+    debug add.3 => _59;
+    debug p.3 => _217;
+    debug v.3 => _60;
+    debug zx.3 => _61;
+    debug t11.3 => _62;
+    debug cmp12.3 => _63;
+    debug add17.3 => _64;
+    debug and.3 => _65;
+    debug cmp22.3 => _66;
+    debug add27.3 => _67;
+    debug and30.3 => _68;
+    debug cmp33.3 => _69;
+    debug add38.3 => _70;
+    debug and41.3 => _71;
+    debug cmp44.3 => _72;
+    debug add49.3 => _73;
+    debug z50.3 => _76;
+    debug add57.3 => _74;
+    debug z58.3 => _76;
+    debug add53.3 => _75;
+    debug z54.3 => _76;
+    debug l5.0.3 => _76;
+    debug and64.2 => _78;
+    debug shl60.3 => _80;
+    debug and64.3 => _81;
+    debug or65.3 => _82;
+    debug add.4 => _83;
+    debug p.4 => _219;
+    debug v.4 => _84;
+    debug zx.4 => _85;
+    debug t11.4 => _86;
+    debug cmp12.4 => _87;
+    debug add17.4 => _88;
+    debug and.4 => _89;
+    debug cmp22.4 => _90;
+    debug add27.4 => _91;
+    debug and30.4 => _92;
+    debug cmp33.4 => _93;
+    debug add38.4 => _94;
+    debug and41.4 => _95;
+    debug cmp44.4 => _96;
+    debug add49.4 => _97;
+    debug z50.4 => _100;
+    debug add57.4 => _98;
+    debug z58.4 => _100;
+    debug add53.4 => _99;
+    debug z54.4 => _100;
+    debug l5.0.4 => _100;
+    debug add.5 => _101;
+    debug p.5 => _221;
+    debug v.5 => _102;
+    debug zx.5 => _103;
+    debug t11.5 => _104;
+    debug cmp12.5 => _105;
+    debug add17.5 => _106;
+    debug and.5 => _107;
+    debug cmp22.5 => _108;
+    debug add27.5 => _109;
+    debug and30.5 => _110;
+    debug cmp33.5 => _111;
+    debug add38.5 => _112;
+    debug and41.5 => _113;
+    debug cmp44.5 => _114;
+    debug add49.5 => _115;
+    debug z50.5 => _118;
+    debug add57.5 => _116;
+    debug z58.5 => _118;
+    debug add53.5 => _117;
+    debug z54.5 => _118;
+    debug l5.0.5 => _118;
+    debug and64.4 => _120;
+    debug shl60.5 => _122;
+    debug and64.5 => _123;
+    debug or65.5 => _124;
+    debug add.6 => _125;
+    debug p.6 => _223;
+    debug v.6 => _126;
+    debug zx.6 => _127;
+    debug t11.6 => _128;
+    debug cmp12.6 => _129;
+    debug add17.6 => _130;
+    debug and.6 => _131;
+    debug cmp22.6 => _132;
+    debug add27.6 => _133;
+    debug and30.6 => _134;
+    debug cmp33.6 => _135;
+    debug add38.6 => _136;
+    debug and41.6 => _137;
+    debug cmp44.6 => _138;
+    debug add49.6 => _139;
+    debug z50.6 => _142;
+    debug add57.6 => _140;
+    debug z58.6 => _142;
+    debug add53.6 => _141;
+    debug z54.6 => _142;
+    debug l5.0.6 => _142;
+    debug add.7 => _143;
+    debug p.7 => _225;
+    debug v.7 => _144;
+    debug zx.7 => _145;
+    debug t11.7 => _146;
+    debug cmp12.7 => _147;
+    debug add17.7 => _148;
+    debug and.7 => _149;
+    debug cmp22.7 => _150;
+    debug add27.7 => _151;
+    debug and30.7 => _152;
+    debug cmp33.7 => _153;
+    debug add38.7 => _154;
+    debug and41.7 => _155;
+    debug cmp44.7 => _156;
+    debug add49.7 => _157;
+    debug z50.7 => _160;
+    debug add57.7 => _158;
+    debug z58.7 => _160;
+    debug add53.7 => _159;
+    debug z54.7 => _160;
+    debug l5.0.7 => _160;
+    debug and64.6 => _162;
+    debug shl60.7 => _164;
+    debug and64.7 => _165;
+    debug or65.7 => _166;
+    debug add.8 => _167;
+    debug p.8 => _227;
+    debug v.8 => _168;
+    debug zx.8 => _169;
+    debug t11.8 => _170;
+    debug cmp12.8 => _171;
+    debug add17.8 => _172;
+    debug and.8 => _173;
+    debug cmp22.8 => _174;
+    debug add27.8 => _175;
+    debug and30.8 => _176;
+    debug cmp33.8 => _177;
+    debug add38.8 => _178;
+    debug and41.8 => _179;
+    debug cmp44.8 => _180;
+    debug add49.8 => _181;
+    debug z50.8 => _184;
+    debug add57.8 => _182;
+    debug z58.8 => _184;
+    debug add53.8 => _183;
+    debug z54.8 => _184;
+    debug l5.0.8 => _184;
+    debug and64.8 => _186;
+    debug shl => _188;
+    debug or => _18;
+    debug add17 => _189;
+    debug and => _190;
+    debug cmp22 => _191;
+    debug add57 => _192;
+    debug z58 => _201;
+    debug add53 => _193;
+    debug z54 => _201;
+    debug add27 => _194;
+    debug and30 => _195;
+    debug cmp33 => _196;
+    debug add38 => _197;
+    debug and41 => _198;
+    debug cmp44 => _199;
+    debug add49 => _200;
+    debug z50 => _201;
+    let mut _0: ();
+    let mut _4: u32;
+    let mut _5: bool;
+    let mut _6: u32;
+    let mut _7: u8;
+    let mut _8: u64;
+    let mut _9: u32;
+    let mut _10: bool;
+    let mut _11: u32;
+    let mut _12: u32;
+    let mut _13: u64;
+    let mut _14: u64;
+    let mut _15: u64;
+    let mut _16: u64;
+    let mut _17: Val;
+    let mut _18: u64;
+    let mut _19: u32;
+    let mut _20: u8;
+    let mut _21: u64;
+    let mut _22: u32;
+    let mut _23: bool;
+    let mut _24: u32;
+    let mut _25: u32;
+    let mut _26: bool;
+    let mut _27: u32;
+    let mut _28: u32;
+    let mut _29: bool;
+    let mut _30: u32;
+    let mut _31: u32;
+    let mut _32: bool;
+    let mut _33: u64;
+    let mut _34: u64;
+    let mut _35: u64;
+    let mut _36: u64;
+    let mut _37: u64;
+    let mut _38: u64;
+    let mut _39: u64;
+    let mut _40: u64;
+    let mut _41: u32;
+    let mut _42: u8;
+    let mut _43: u64;
+    let mut _44: u32;
+    let mut _45: bool;
+    let mut _46: u32;
+    let mut _47: u32;
+    let mut _48: bool;
+    let mut _49: u32;
+    let mut _50: u32;
+    let mut _51: bool;
+    let mut _52: u32;
+    let mut _53: u32;
+    let mut _54: bool;
+    let mut _55: u64;
+    let mut _56: u64;
+    let mut _57: u64;
+    let mut _58: u64;
+    let mut _59: u32;
+    let mut _60: u8;
+    let mut _61: u64;
+    let mut _62: u32;
+    let mut _63: bool;
+    let mut _64: u32;
+    let mut _65: u32;
+    let mut _66: bool;
+    let mut _67: u32;
+    let mut _68: u32;
+    let mut _69: bool;
+    let mut _70: u32;
+    let mut _71: u32;
+    let mut _72: bool;
+    let mut _73: u64;
+    let mut _74: u64;
+    let mut _75: u64;
+    let mut _76: u64;
+    let mut _77: u64;
+    let mut _78: u64;
+    let mut _79: u64;
+    let mut _80: u64;
+    let mut _81: u64;
+    let mut _82: u64;
+    let mut _83: u32;
+    let mut _84: u8;
+    let mut _85: u64;
+    let mut _86: u32;
+    let mut _87: bool;
+    let mut _88: u32;
+    let mut _89: u32;
+    let mut _90: bool;
+    let mut _91: u32;
+    let mut _92: u32;
+    let mut _93: bool;
+    let mut _94: u32;
+    let mut _95: u32;
+    let mut _96: bool;
+    let mut _97: u64;
+    let mut _98: u64;
+    let mut _99: u64;
+    let mut _100: u64;
+    let mut _101: u32;
+    let mut _102: u8;
+    let mut _103: u64;
+    let mut _104: u32;
+    let mut _105: bool;
+    let mut _106: u32;
+    let mut _107: u32;
+    let mut _108: bool;
+    let mut _109: u32;
+    let mut _110: u32;
+    let mut _111: bool;
+    let mut _112: u32;
+    let mut _113: u32;
+    let mut _114: bool;
+    let mut _115: u64;
+    let mut _116: u64;
+    let mut _117: u64;
+    let mut _118: u64;
+    let mut _119: u64;
+    let mut _120: u64;
+    let mut _121: u64;
+    let mut _122: u64;
+    let mut _123: u64;
+    let mut _124: u64;
+    let mut _125: u32;
+    let mut _126: u8;
+    let mut _127: u64;
+    let mut _128: u32;
+    let mut _129: bool;
+    let mut _130: u32;
+    let mut _131: u32;
+    let mut _132: bool;
+    let mut _133: u32;
+    let mut _134: u32;
+    let mut _135: bool;
+    let mut _136: u32;
+    let mut _137: u32;
+    let mut _138: bool;
+    let mut _139: u64;
+    let mut _140: u64;
+    let mut _141: u64;
+    let mut _142: u64;
+    let mut _143: u32;
+    let mut _144: u8;
+    let mut _145: u64;
+    let mut _146: u32;
+    let mut _147: bool;
+    let mut _148: u32;
+    let mut _149: u32;
+    let mut _150: bool;
+    let mut _151: u32;
+    let mut _152: u32;
+    let mut _153: bool;
+    let mut _154: u32;
+    let mut _155: u32;
+    let mut _156: bool;
+    let mut _157: u64;
+    let mut _158: u64;
+    let mut _159: u64;
+    let mut _160: u64;
+    let mut _161: u64;
+    let mut _162: u64;
+    let mut _163: u64;
+    let mut _164: u64;
+    let mut _165: u64;
+    let mut _166: u64;
+    let mut _167: u32;
+    let mut _168: u8;
+    let mut _169: u64;
+    let mut _170: u32;
+    let mut _171: bool;
+    let mut _172: u32;
+    let mut _173: u32;
+    let mut _174: bool;
+    let mut _175: u32;
+    let mut _176: u32;
+    let mut _177: bool;
+    let mut _178: u32;
+    let mut _179: u32;
+    let mut _180: bool;
+    let mut _181: u64;
+    let mut _182: u64;
+    let mut _183: u64;
+    let mut _184: u64;
+    let mut _185: u64;
+    let mut _186: u64;
+    let mut _187: u64;
+    let mut _188: u64;
+    let mut _189: u32;
+    let mut _190: u32;
+    let mut _191: bool;
+    let mut _192: u64;
+    let mut _193: u64;
+    let mut _194: u32;
+    let mut _195: u32;
+    let mut _196: bool;
+    let mut _197: u32;
+    let mut _198: u32;
+    let mut _199: bool;
+    let mut _200: u64;
+    let mut _201: u64;
+    let mut _202: usize;
+    let mut _203: *mut u8;
+    let mut _204: usize;
+    let mut _205: *mut u8;
+    let mut _206: *mut u64;
+    let mut _207: usize;
+    let mut _208: *mut u8;
+    let mut _209: *mut u64;
+    let mut _210: Val;
+    let mut _211: Val;
+    let mut _212: usize;
+    let mut _213: *mut u8;
+    let mut _214: usize;
+    let mut _215: *mut u8;
+    let mut _216: usize;
+    let mut _217: *mut u8;
+    let mut _218: usize;
+    let mut _219: *mut u8;
+    let mut _220: usize;
+    let mut _221: *mut u8;
+    let mut _222: usize;
+    let mut _223: *mut u8;
+    let mut _224: usize;
+    let mut _225: *mut u8;
+    let mut _226: usize;
+    let mut _227: *mut u8;
+
+    bb0: {
+        _4 = copy _3 as u32 (IntToInt);
+        _5 = Gt(copy _4, const 9_u32);
+        switchInt(copy _5) -> [0: bb1, otherwise: bb3];
+    }
+
+    bb1: {
+        _6 = copy _2 as u32 (IntToInt);
+        _202 = copy _6 as usize (IntToInt);
+        _203 = copy _202 as *mut u8 (PointerWithExposedProvenance);
+        _7 = copy (*_203);
+        _8 = copy _7 as u64 (IntToInt);
+        _9 = copy _7 as u32 (IntToInt);
+        _10 = Eq(copy _7, const 95_u8);
+        switchInt(copy _7) -> [95: bb67, otherwise: bb61];
+    }
+
+    bb2: {
+        _11 = copy _1 as u32 (IntToInt);
+        _204 = copy _11 as usize (IntToInt);
+        _205 = copy _204 as *mut u8 (PointerWithExposedProvenance);
+        _206 = copy _205 as *mut u64 (PtrToPtr);
+        (*_206) = const 0_u64;
+        _12 = Add(copy _11, const 8_u32);
+        _207 = copy _12 as usize (IntToInt);
+        _208 = copy _207 as *mut u8 (PointerWithExposedProvenance);
+        _209 = copy _208 as *mut u64 (PtrToPtr);
+        (*_209) = copy _18;
+        return;
+    }
+
+    bb3: {
+        _13 = Shl(copy _2, const 32_u64);
+        _14 = BitOr(copy _13, const 4_u64);
+        _15 = Shl(copy _3, const 32_u64);
+        _16 = BitOr(copy _15, const 4_u64);
+        _210 = Val(copy _14);
+        _211 = Val(copy _16);
+        _17 = symbol_new_from_linear_memory(move _210, move _211) -> [return: bb68, unwind unreachable];
+    }
+
+    bb4: {
+        _19 = Add(copy _6, const 1_u32);
+        _212 = copy _19 as usize (IntToInt);
+        _213 = copy _212 as *mut u8 (PointerWithExposedProvenance);
+        _20 = copy (*_213);
+        _21 = copy _20 as u64 (IntToInt);
+        _22 = copy _20 as u32 (IntToInt);
+        _23 = Eq(copy _20, const 95_u8);
+        switchInt(copy _20) -> [95: bb69, otherwise: bb5];
+    }
+
+    bb5: {
+        _24 = Add(copy _22, const 208_u32);
+        _25 = BitAnd(copy _24, const 254_u32);
+        _26 = Lt(copy _25, const 10_u32);
+        switchInt(copy _26) -> [0: bb6, otherwise: bb10];
+    }
+
+    bb6: {
+        _27 = Add(copy _22, const 191_u32);
+        _28 = BitAnd(copy _27, const 254_u32);
+        _29 = Lt(copy _28, const 26_u32);
+        switchInt(copy _29) -> [0: bb7, otherwise: bb9];
+    }
+
+    bb7: {
+        _30 = Add(copy _22, const 159_u32);
+        _31 = BitAnd(copy _30, const 254_u32);
+        _32 = Gt(copy _31, const 25_u32);
+        switchInt(copy _32) -> [0: bb8, otherwise: bb3];
+    }
+
+    bb8: {
+        _33 = Add(copy _21, const 4294967237_u64);
+        _36 = BitAnd(copy _33, const 4294967295_u64);
+        goto -> bb11;
+    }
+
+    bb9: {
+        _34 = Add(copy _21, const 4294967243_u64);
+        _36 = BitAnd(copy _34, const 4294967295_u64);
+        goto -> bb11;
+    }
+
+    bb10: {
+        _35 = Add(copy _21, const 4294967250_u64);
+        _36 = BitAnd(copy _35, const 4294967295_u64);
+        goto -> bb11;
+    }
+
+    bb11: {
+        _37 = Shl(copy _201, const 6_u64);
+        _38 = BitAnd(copy _37, const 16320_u64);
+        _39 = BitAnd(copy _36, const 255_u64);
+        _40 = BitOr(copy _39, copy _38);
+        _41 = Add(copy _6, const 2_u32);
+        _214 = copy _41 as usize (IntToInt);
+        _215 = copy _214 as *mut u8 (PointerWithExposedProvenance);
+        _42 = copy (*_215);
+        _43 = copy _42 as u64 (IntToInt);
+        _44 = copy _42 as u32 (IntToInt);
+        _45 = Eq(copy _42, const 95_u8);
+        switchInt(copy _42) -> [95: bb70, otherwise: bb12];
+    }
+
+    bb12: {
+        _46 = Add(copy _44, const 208_u32);
+        _47 = BitAnd(copy _46, const 254_u32);
+        _48 = Lt(copy _47, const 10_u32);
+        switchInt(copy _48) -> [0: bb13, otherwise: bb17];
+    }
+
+    bb13: {
+        _49 = Add(copy _44, const 191_u32);
+        _50 = BitAnd(copy _49, const 254_u32);
+        _51 = Lt(copy _50, const 26_u32);
+        switchInt(copy _51) -> [0: bb14, otherwise: bb16];
+    }
+
+    bb14: {
+        _52 = Add(copy _44, const 159_u32);
+        _53 = BitAnd(copy _52, const 254_u32);
+        _54 = Gt(copy _53, const 25_u32);
+        switchInt(copy _54) -> [0: bb15, otherwise: bb3];
+    }
+
+    bb15: {
+        _55 = Add(copy _43, const 4294967237_u64);
+        _58 = BitAnd(copy _55, const 4294967295_u64);
+        goto -> bb18;
+    }
+
+    bb16: {
+        _56 = Add(copy _43, const 4294967243_u64);
+        _58 = BitAnd(copy _56, const 4294967295_u64);
+        goto -> bb18;
+    }
+
+    bb17: {
+        _57 = Add(copy _43, const 4294967250_u64);
+        _58 = BitAnd(copy _57, const 4294967295_u64);
+        goto -> bb18;
+    }
+
+    bb18: {
+        _59 = Add(copy _6, const 3_u32);
+        _216 = copy _59 as usize (IntToInt);
+        _217 = copy _216 as *mut u8 (PointerWithExposedProvenance);
+        _60 = copy (*_217);
+        _61 = copy _60 as u64 (IntToInt);
+        _62 = copy _60 as u32 (IntToInt);
+        _63 = Eq(copy _60, const 95_u8);
+        switchInt(copy _60) -> [95: bb71, otherwise: bb19];
+    }
+
+    bb19: {
+        _64 = Add(copy _62, const 208_u32);
+        _65 = BitAnd(copy _64, const 254_u32);
+        _66 = Lt(copy _65, const 10_u32);
+        switchInt(copy _66) -> [0: bb20, otherwise: bb24];
+    }
+
+    bb20: {
+        _67 = Add(copy _62, const 191_u32);
+        _68 = BitAnd(copy _67, const 254_u32);
+        _69 = Lt(copy _68, const 26_u32);
+        switchInt(copy _69) -> [0: bb21, otherwise: bb23];
+    }
+
+    bb21: {
+        _70 = Add(copy _62, const 159_u32);
+        _71 = BitAnd(copy _70, const 254_u32);
+        _72 = Gt(copy _71, const 25_u32);
+        switchInt(copy _72) -> [0: bb22, otherwise: bb3];
+    }
+
+    bb22: {
+        _73 = Add(copy _61, const 4294967237_u64);
+        _76 = BitAnd(copy _73, const 4294967295_u64);
+        goto -> bb25;
+    }
+
+    bb23: {
+        _74 = Add(copy _61, const 4294967243_u64);
+        _76 = BitAnd(copy _74, const 4294967295_u64);
+        goto -> bb25;
+    }
+
+    bb24: {
+        _75 = Add(copy _61, const 4294967250_u64);
+        _76 = BitAnd(copy _75, const 4294967295_u64);
+        goto -> bb25;
+    }
+
+    bb25: {
+        _77 = Shl(copy _40, const 12_u64);
+        _78 = Shl(copy _58, const 6_u64);
+        _79 = BitAnd(copy _78, const 16320_u64);
+        _80 = BitOr(copy _77, copy _79);
+        _81 = BitAnd(copy _76, const 255_u64);
+        _82 = BitOr(copy _81, copy _80);
+        _83 = Add(copy _6, const 4_u32);
+        _218 = copy _83 as usize (IntToInt);
+        _219 = copy _218 as *mut u8 (PointerWithExposedProvenance);
+        _84 = copy (*_219);
+        _85 = copy _84 as u64 (IntToInt);
+        _86 = copy _84 as u32 (IntToInt);
+        _87 = Eq(copy _84, const 95_u8);
+        switchInt(copy _84) -> [95: bb72, otherwise: bb26];
+    }
+
+    bb26: {
+        _88 = Add(copy _86, const 208_u32);
+        _89 = BitAnd(copy _88, const 254_u32);
+        _90 = Lt(copy _89, const 10_u32);
+        switchInt(copy _90) -> [0: bb27, otherwise: bb31];
+    }
+
+    bb27: {
+        _91 = Add(copy _86, const 191_u32);
+        _92 = BitAnd(copy _91, const 254_u32);
+        _93 = Lt(copy _92, const 26_u32);
+        switchInt(copy _93) -> [0: bb28, otherwise: bb30];
+    }
+
+    bb28: {
+        _94 = Add(copy _86, const 159_u32);
+        _95 = BitAnd(copy _94, const 254_u32);
+        _96 = Gt(copy _95, const 25_u32);
+        switchInt(copy _96) -> [0: bb29, otherwise: bb3];
+    }
+
+    bb29: {
+        _97 = Add(copy _85, const 4294967237_u64);
+        _100 = BitAnd(copy _97, const 4294967295_u64);
+        goto -> bb32;
+    }
+
+    bb30: {
+        _98 = Add(copy _85, const 4294967243_u64);
+        _100 = BitAnd(copy _98, const 4294967295_u64);
+        goto -> bb32;
+    }
+
+    bb31: {
+        _99 = Add(copy _85, const 4294967250_u64);
+        _100 = BitAnd(copy _99, const 4294967295_u64);
+        goto -> bb32;
+    }
+
+    bb32: {
+        _101 = Add(copy _6, const 5_u32);
+        _220 = copy _101 as usize (IntToInt);
+        _221 = copy _220 as *mut u8 (PointerWithExposedProvenance);
+        _102 = copy (*_221);
+        _103 = copy _102 as u64 (IntToInt);
+        _104 = copy _102 as u32 (IntToInt);
+        _105 = Eq(copy _102, const 95_u8);
+        switchInt(copy _102) -> [95: bb73, otherwise: bb33];
+    }
+
+    bb33: {
+        _106 = Add(copy _104, const 208_u32);
+        _107 = BitAnd(copy _106, const 254_u32);
+        _108 = Lt(copy _107, const 10_u32);
+        switchInt(copy _108) -> [0: bb34, otherwise: bb38];
+    }
+
+    bb34: {
+        _109 = Add(copy _104, const 191_u32);
+        _110 = BitAnd(copy _109, const 254_u32);
+        _111 = Lt(copy _110, const 26_u32);
+        switchInt(copy _111) -> [0: bb35, otherwise: bb37];
+    }
+
+    bb35: {
+        _112 = Add(copy _104, const 159_u32);
+        _113 = BitAnd(copy _112, const 254_u32);
+        _114 = Gt(copy _113, const 25_u32);
+        switchInt(copy _114) -> [0: bb36, otherwise: bb3];
+    }
+
+    bb36: {
+        _115 = Add(copy _103, const 4294967237_u64);
+        _118 = BitAnd(copy _115, const 4294967295_u64);
+        goto -> bb39;
+    }
+
+    bb37: {
+        _116 = Add(copy _103, const 4294967243_u64);
+        _118 = BitAnd(copy _116, const 4294967295_u64);
+        goto -> bb39;
+    }
+
+    bb38: {
+        _117 = Add(copy _103, const 4294967250_u64);
+        _118 = BitAnd(copy _117, const 4294967295_u64);
+        goto -> bb39;
+    }
+
+    bb39: {
+        _119 = Shl(copy _82, const 12_u64);
+        _120 = Shl(copy _100, const 6_u64);
+        _121 = BitAnd(copy _120, const 16320_u64);
+        _122 = BitOr(copy _119, copy _121);
+        _123 = BitAnd(copy _118, const 255_u64);
+        _124 = BitOr(copy _123, copy _122);
+        _125 = Add(copy _6, const 6_u32);
+        _222 = copy _125 as usize (IntToInt);
+        _223 = copy _222 as *mut u8 (PointerWithExposedProvenance);
+        _126 = copy (*_223);
+        _127 = copy _126 as u64 (IntToInt);
+        _128 = copy _126 as u32 (IntToInt);
+        _129 = Eq(copy _126, const 95_u8);
+        switchInt(copy _126) -> [95: bb74, otherwise: bb40];
+    }
+
+    bb40: {
+        _130 = Add(copy _128, const 208_u32);
+        _131 = BitAnd(copy _130, const 254_u32);
+        _132 = Lt(copy _131, const 10_u32);
+        switchInt(copy _132) -> [0: bb41, otherwise: bb45];
+    }
+
+    bb41: {
+        _133 = Add(copy _128, const 191_u32);
+        _134 = BitAnd(copy _133, const 254_u32);
+        _135 = Lt(copy _134, const 26_u32);
+        switchInt(copy _135) -> [0: bb42, otherwise: bb44];
+    }
+
+    bb42: {
+        _136 = Add(copy _128, const 159_u32);
+        _137 = BitAnd(copy _136, const 254_u32);
+        _138 = Gt(copy _137, const 25_u32);
+        switchInt(copy _138) -> [0: bb43, otherwise: bb3];
+    }
+
+    bb43: {
+        _139 = Add(copy _127, const 4294967237_u64);
+        _142 = BitAnd(copy _139, const 4294967295_u64);
+        goto -> bb46;
+    }
+
+    bb44: {
+        _140 = Add(copy _127, const 4294967243_u64);
+        _142 = BitAnd(copy _140, const 4294967295_u64);
+        goto -> bb46;
+    }
+
+    bb45: {
+        _141 = Add(copy _127, const 4294967250_u64);
+        _142 = BitAnd(copy _141, const 4294967295_u64);
+        goto -> bb46;
+    }
+
+    bb46: {
+        _143 = Add(copy _6, const 7_u32);
+        _224 = copy _143 as usize (IntToInt);
+        _225 = copy _224 as *mut u8 (PointerWithExposedProvenance);
+        _144 = copy (*_225);
+        _145 = copy _144 as u64 (IntToInt);
+        _146 = copy _144 as u32 (IntToInt);
+        _147 = Eq(copy _144, const 95_u8);
+        switchInt(copy _144) -> [95: bb75, otherwise: bb47];
+    }
+
+    bb47: {
+        _148 = Add(copy _146, const 208_u32);
+        _149 = BitAnd(copy _148, const 254_u32);
+        _150 = Lt(copy _149, const 10_u32);
+        switchInt(copy _150) -> [0: bb48, otherwise: bb52];
+    }
+
+    bb48: {
+        _151 = Add(copy _146, const 191_u32);
+        _152 = BitAnd(copy _151, const 254_u32);
+        _153 = Lt(copy _152, const 26_u32);
+        switchInt(copy _153) -> [0: bb49, otherwise: bb51];
+    }
+
+    bb49: {
+        _154 = Add(copy _146, const 159_u32);
+        _155 = BitAnd(copy _154, const 254_u32);
+        _156 = Gt(copy _155, const 25_u32);
+        switchInt(copy _156) -> [0: bb50, otherwise: bb3];
+    }
+
+    bb50: {
+        _157 = Add(copy _145, const 4294967237_u64);
+        _160 = BitAnd(copy _157, const 4294967295_u64);
+        goto -> bb53;
+    }
+
+    bb51: {
+        _158 = Add(copy _145, const 4294967243_u64);
+        _160 = BitAnd(copy _158, const 4294967295_u64);
+        goto -> bb53;
+    }
+
+    bb52: {
+        _159 = Add(copy _145, const 4294967250_u64);
+        _160 = BitAnd(copy _159, const 4294967295_u64);
+        goto -> bb53;
+    }
+
+    bb53: {
+        _161 = Shl(copy _124, const 12_u64);
+        _162 = Shl(copy _142, const 6_u64);
+        _163 = BitAnd(copy _162, const 16320_u64);
+        _164 = BitOr(copy _161, copy _163);
+        _165 = BitAnd(copy _160, const 255_u64);
+        _166 = BitOr(copy _165, copy _164);
+        _167 = Add(copy _6, const 8_u32);
+        _226 = copy _167 as usize (IntToInt);
+        _227 = copy _226 as *mut u8 (PointerWithExposedProvenance);
+        _168 = copy (*_227);
+        _169 = copy _168 as u64 (IntToInt);
+        _170 = copy _168 as u32 (IntToInt);
+        _171 = Eq(copy _168, const 95_u8);
+        switchInt(copy _168) -> [95: bb76, otherwise: bb54];
+    }
+
+    bb54: {
+        _172 = Add(copy _170, const 208_u32);
+        _173 = BitAnd(copy _172, const 254_u32);
+        _174 = Lt(copy _173, const 10_u32);
+        switchInt(copy _174) -> [0: bb55, otherwise: bb59];
+    }
+
+    bb55: {
+        _175 = Add(copy _170, const 191_u32);
+        _176 = BitAnd(copy _175, const 254_u32);
+        _177 = Lt(copy _176, const 26_u32);
+        switchInt(copy _177) -> [0: bb56, otherwise: bb58];
+    }
+
+    bb56: {
+        _178 = Add(copy _170, const 159_u32);
+        _179 = BitAnd(copy _178, const 254_u32);
+        _180 = Gt(copy _179, const 25_u32);
+        switchInt(copy _180) -> [0: bb57, otherwise: bb3];
+    }
+
+    bb57: {
+        _181 = Add(copy _169, const 4294967237_u64);
+        _184 = BitAnd(copy _181, const 4294967295_u64);
+        goto -> bb60;
+    }
+
+    bb58: {
+        _182 = Add(copy _169, const 4294967243_u64);
+        _184 = BitAnd(copy _182, const 4294967295_u64);
+        goto -> bb60;
+    }
+
+    bb59: {
+        _183 = Add(copy _169, const 4294967250_u64);
+        _184 = BitAnd(copy _183, const 4294967295_u64);
+        goto -> bb60;
+    }
+
+    bb60: {
+        _185 = Shl(copy _166, const 14_u64);
+        _186 = Shl(copy _184, const 8_u64);
+        _187 = BitAnd(copy _186, const 65280_u64);
+        _188 = BitOr(copy _185, copy _187);
+        _18 = BitOr(copy _188, const 14_u64);
+        goto -> bb2;
+    }
+
+    bb61: {
+        _189 = Add(copy _9, const 208_u32);
+        _190 = BitAnd(copy _189, const 254_u32);
+        _191 = Lt(copy _190, const 10_u32);
+        switchInt(copy _191) -> [0: bb64, otherwise: bb63];
+    }
+
+    bb62: {
+        _192 = Add(copy _8, const 4294967243_u64);
+        _201 = BitAnd(copy _192, const 4294967295_u64);
+        goto -> bb4;
+    }
+
+    bb63: {
+        _193 = Add(copy _8, const 4294967250_u64);
+        _201 = BitAnd(copy _193, const 4294967295_u64);
+        goto -> bb4;
+    }
+
+    bb64: {
+        _194 = Add(copy _9, const 191_u32);
+        _195 = BitAnd(copy _194, const 254_u32);
+        _196 = Lt(copy _195, const 26_u32);
+        switchInt(copy _196) -> [0: bb65, otherwise: bb62];
+    }
+
+    bb65: {
+        _197 = Add(copy _9, const 159_u32);
+        _198 = BitAnd(copy _197, const 254_u32);
+        _199 = Gt(copy _198, const 25_u32);
+        switchInt(copy _199) -> [0: bb66, otherwise: bb3];
+    }
+
+    bb66: {
+        _200 = Add(copy _8, const 4294967237_u64);
+        _201 = BitAnd(copy _200, const 4294967295_u64);
+        goto -> bb4;
+    }
+
+    bb67: {
+        _201 = const 1_u64;
+        goto -> bb4;
+    }
+
+    bb68: {
+        _18 = copy (_17.0: u64);
+        goto -> bb2;
+    }
+
+    bb69: {
+        _36 = const 1_u64;
+        goto -> bb11;
+    }
+
+    bb70: {
+        _58 = const 1_u64;
+        goto -> bb18;
+    }
+
+    bb71: {
+        _76 = const 1_u64;
+        goto -> bb25;
+    }
+
+    bb72: {
+        _100 = const 1_u64;
+        goto -> bb32;
+    }
+
+    bb73: {
+        _118 = const 1_u64;
+        goto -> bb39;
+    }
+
+    bb74: {
+        _142 = const 1_u64;
+        goto -> bb46;
+    }
+
+    bb75: {
+        _160 = const 1_u64;
+        goto -> bb53;
+    }
+
+    bb76: {
+        _184 = const 1_u64;
+        goto -> bb60;
+    }
+}
+
+// MIR for `panic_fmt_32` 0 diver
+
+fn panic_fmt_32() -> ! {
+    let mut _0: !;
+    let mut _1: !;
+
+    bb0: {
+        _1 = trap() -> unwind unreachable;
+    }
+}
+

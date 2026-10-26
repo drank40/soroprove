@@ -1,0 +1,12 @@
+target/
+samples/*/target/
+*.ll
+*.bc
+# ...except the checked-in sample goldens, which are the regression gate.
+!samples/*.ll
+# rustc -Zdump-mir output, should stellar-diver-mir ever leave it behind.
+mir_dump/
+# fingerprints/gen.sh builds the reference contract here when
+# DIVER_FINGERPRINTS points at the repo; the tables next to it are kept.
+fingerprints/build/
+samples/contract/src/

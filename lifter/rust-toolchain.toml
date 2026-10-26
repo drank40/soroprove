@@ -1,0 +1,7 @@
+# Pinned, not floating: fixture wasm must be byte-reproducible, because the
+# whole point of the corpus is that a codegen change is visible as a diff.
+# rustup auto-installs any target listed here.
+[toolchain]
+channel = "1.97.1"
+targets = ["wasm32v1-none", "wasm32-unknown-unknown"]
+profile = "minimal"

@@ -1,0 +1,15 @@
+[package]
+name = "stellar-diver"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wasmparser = "0.258"
+inkwell = { version = "0.10", features = ["llvm18-1-prefer-dynamic"] }
+# contractspecv0 is XDR; this is its definition, at the protocol the host runs.
+stellar-xdr = { version = "25", default-features = false, features = ["curr", "std"] }
+# The reference build keeps symbol names; the fingerprint table stores them demangled.
+rustc-demangle = "0.1"
+
+[build-dependencies]
+serde_json = "1"

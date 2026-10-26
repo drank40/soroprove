@@ -1,0 +1,44 @@
+# Closed-source Soroban contracts on mainnet: no public source found and not
+# verified on stellar.expert. Gathered 2026-09-11 from the top holders of the
+# top-10 assets (stellar.expert) plus soroban-ret's two closed-source corpus
+# binaries. One contract id per line; comments give the wasm hash prefix,
+# what the spec says it is, USD held and invocation count at the time.
+#
+# Fetch any of them with:
+#   stellar contract fetch --id <ID> --rpc-url https://mainnet.sorobanrpc.com \
+#     --network-passphrase "Public Global Stellar Network ; September 2015" --out-file <ID>.wasm
+
+# 2e2a4078  SHX lockup (escrow with claim_after; ~60% of SHX supply)  $222,785,079  1 contract(s)  110 invocations
+CCA5HAZCPEYXD7JBKAJCVUZUXAK7V5ZFU3QMJO33OJH2OHL3OGLS2P7M
+
+# 003710b3  concentrated-liquidity AMM pools (Uniswap-v3 style, upgradeable)  $11,292,161  6 contract(s)  4 invocations
+CBVHBZSZOS6KRDJ4D44FU2YLIENOVSSLM3UGKW6XQMVIFUAMWIWCVH2U
+CD7ZJUQEJODTJXWJMDJRV7UHCANOBX3FC6KXJV3DMIFX3JXUWMF3U3T5
+CDMJRRH5MAJLB7T5SQAWQOOL7UJ3BABGTURSVKIE6AEDSXESDDJIBVCT
+CC22BLZAFTS7M6Z25HOMKDLV65PBP5CIHFER2OTZB5IRNL3YBWDXKDFF
+CA75VVHLWSM7W6ULNQI7ZJYDFOMQCCPKIDDDHBAL5KOKHWWKWQ5S7MHO
+CCR2CH4GQVCZHG7CHFVMNANCK45CU5DVKXZIIITDZQAU3CEJZ7RQH2MQ
+
+# cc74acb5  bridge with secp256k1-signed withdrawals  $8,804,846  1 contract(s)  100,149 invocations
+CCLWL5NYSV2WJQ3VBU44AMDHEVKEPA45N2QP2LL62O3JVKPGWWAQUVAG
+
+# 4b3d9f6b  ERC-4626-style vault (deposit/mint/redeem, pause)  $468,649  1 contract(s)  246 invocations
+CCL3WITWFFXIHV2I52ECV5DPIEOFSTU3PBPR53ILPLF2IP5KHECXRUTY
+
+# e13706e4  Merkle-tree airdrop claims  $110,192  1 contract(s)  232 invocations
+CAAMRQZ5W24TKAJIIP6DZZE3OWRVKVW4MTD6ZMGERMDJRZALFUETZVGE
+
+# d70a8fce  incident claims contract (attacker, claim_deadline, seed_records_batch)  $90,278  1 contract(s)  63 invocations
+CBADTMSUI6I6IEL5AFQCCIBWMNHVIZYCVT4XHVJHPSTZ6LZAKYPKLYMC
+
+# a03bfb74  second lockup contract  $37,131  1 contract(s)  35 invocations
+CDUJK2IBGZ62CZF4PD4BDTNIXTW6SWBP5LA5PANZSCBWW3EYSQZG2BX6
+
+# c40cf437  arbitrage bot (s/u/w entry points, admin-upgradeable)  $17,935  1 contract(s)  40,879 invocations
+CDJALYGXIYSTNMBQIK3BNQ5UTGVUEINQUZB6CWMJC65CAA4I4OVFXFDM
+
+# soroban-ret benchmark-data/mainnet, closed source (not in the holder scan)
+# unknown-oracle-CAWGFKEL  Allbridge gas oracle (by its error codes)
+CAWGFKEL4XSE7JHVZLFIXSDVK7HNI57VFU4OPVRV7NHECRXCZ3ZNDNTR
+# arb-bot-contract-CCBVCCNP  arbitrage bot
+CCBVCCNPIFMCXW7S3GBM6IOQBD5TEUCSQ6WWJGB5VIXZCRVJJQHQQE23

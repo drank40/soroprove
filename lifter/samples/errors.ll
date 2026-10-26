@@ -1,0 +1,167 @@
+; sdk 26.0.1 rustc 1.95.0; fingerprints 26.0.1+rustc1.95.0.txt: 2 of 2 helpers named, 0 by shape
+; ModuleID = 'diver'
+source_filename = "diver"
+
+%Val = type { i64 }
+
+@g0 = global i64 1048576
+@g1 = constant i64 1048604
+@g2 = constant i64 1048604
+@g3 = constant i64 1048608
+
+; Function Attrs: nounwind willreturn memory(none)
+declare %Val @soroban.val.from_payload(i64) #0
+
+; Function Attrs: nounwind willreturn memory(none)
+declare i64 @soroban.val.payload(%Val) #0
+
+; Function Attrs: nounwind willreturn memory(none)
+declare i64 @soroban.storage_type(i64) #0
+
+; Function Attrs: memory(inaccessiblemem: readwrite)
+declare %Val @diver.unknown() #1
+
+; Function Attrs: memory(inaccessiblemem: readwrite)
+declare i64 @diver.unknown.i64() #1
+
+; Function Attrs: noreturn
+declare void @soroban.trap() #2
+
+declare i64 @soroban.load8u(i64)
+
+declare i64 @soroban.load8s(i64)
+
+declare i64 @soroban.load16u(i64)
+
+declare i64 @soroban.load16s(i64)
+
+declare i64 @soroban.load32u(i64)
+
+declare i64 @soroban.load32s(i64)
+
+declare i64 @soroban.load64(i64)
+
+declare void @soroban.store8(i64, i64)
+
+declare void @soroban.store16(i64, i64)
+
+declare void @soroban.store32(i64, i64)
+
+declare void @soroban.store64(i64, i64)
+
+; Function Attrs: memory(inaccessiblemem: readwrite)
+declare %Val @context.fail_with_error(%Val) #3
+
+; Function Attrs: memory(inaccessiblemem: readwrite)
+declare %Val @ledger.put_contract_data(%Val, %Val, i64) #4
+
+define "spec.type"="Result<Symbol, Error>" "wasm.type"="i64" %Val @hello(%Val "spec.name"="flag" "spec.type"="Flag" "wasm.type"="i64" %0) #5 {
+entry:
+  %l0 = alloca i64, align 8
+  %l1 = alloca i64, align 8
+  %arg_payload = call i64 @soroban.val.payload(%Val %0)
+  store i64 %arg_payload, ptr %l0, align 4
+  store i64 0, ptr %l1, align 4
+  %get = load i64, ptr %l0, align 4
+  %cmp = icmp ugt i64 %get, 21474836479
+  %zext = zext i1 %cmp to i64
+  %brif = icmp ne i64 %zext, 0
+  br i1 %brif, label %c1, label %fall2
+
+c1:                                               ; preds = %fall3, %fall2, %entry
+  call void @soroban.trap()
+  unreachable
+
+fall2:                                            ; preds = %entry
+  %get1 = load i64, ptr %l0, align 4
+  %and = and i64 %get1, 255
+  %cmp2 = icmp ne i64 %and, 4
+  %zext3 = zext i1 %cmp2 to i64
+  %brif4 = icmp ne i64 %zext3, 0
+  br i1 %brif4, label %c1, label %fall3
+
+fall3:                                            ; preds = %fall2
+  %get5 = load i64, ptr %l0, align 4
+  %lshr = lshr i64 %get5, 32
+  %t = trunc i64 %lshr to i32
+  %and6 = and i32 %t, 255
+  %z = zext i32 %and6 to i64
+  store i64 %z, ptr %l1, align 4
+  %t7 = trunc i64 %z to i32
+  %cmp8 = icmp eq i32 %t7, 5
+  %zext9 = zext i1 %cmp8 to i64
+  %brif10 = icmp ne i64 %zext9, 0
+  br i1 %brif10, label %c1, label %fall4
+
+fall4:                                            ; preds = %fall3
+  %v_Symbol__persisted__ = call %Val @soroban.val.from_payload(i64 3867323444879862030)
+  %v_true = call %Val @soroban.val.from_payload(i64 1)
+  %Persistent = call i64 @soroban.storage_type(i64 1)
+  %put_contract_data = call %Val @ledger.put_contract_data(%Val %v_Symbol__persisted__, %Val %v_true, i64 %Persistent)
+  store i64 4294967299, ptr %l0, align 4
+  %get11 = load i64, ptr %l1, align 4
+  %sel = trunc i64 %get11 to i32
+  switch i32 %sel, label %c7 [
+    i32 0, label %c6
+    i32 1, label %c5
+    i32 2, label %c9
+    i32 3, label %c8
+  ]
+
+c5:                                               ; preds = %c6, %fall4
+  %get12 = load i64, ptr %l0, align 4
+  %to_val = call %Val @soroban.val.from_payload(i64 %get12)
+  ret %Val %to_val
+
+c6:                                               ; preds = %fall4
+  store i64 196144296974, ptr %l0, align 4
+  br label %c5
+
+c7:                                               ; preds = %fall4
+  call void @Env_fail_with_error(i64 38654705667)
+  call void @soroban.trap()
+  unreachable
+
+c8:                                               ; preds = %fall4
+  call void @panic_fmt()
+  call void @soroban.trap()
+  unreachable
+
+c9:                                               ; preds = %fall4
+  call void @Env_fail_with_error(i64 4294967299)
+  call void @soroban.trap()
+  unreachable
+}
+
+define void @Env_fail_with_error(i64 "wasm.type"="i64" %0) #6 {
+entry:
+  %l0 = alloca i64, align 8
+  store i64 %0, ptr %l0, align 4
+  %get = load i64, ptr %l0, align 4
+  %to_val = call %Val @soroban.val.from_payload(i64 %get)
+  %fail_with_error = call %Val @context.fail_with_error(%Val %to_val)
+  ret void
+}
+
+define void @panic_fmt() #7 {
+entry:
+  call void @soroban.trap()
+  unreachable
+}
+
+attributes #0 = { nounwind willreturn memory(none) }
+attributes #1 = { memory(inaccessiblemem: readwrite) }
+attributes #2 = { noreturn }
+attributes #3 = { memory(inaccessiblemem: readwrite) "soroban.import"="x.5" "soroban.sig"="(Error) -> Void" }
+attributes #4 = { memory(inaccessiblemem: readwrite) "soroban.import"="l._" "soroban.sig"="(Val, Val, StorageType) -> Void" }
+attributes #5 = { "spec.sig"="fn hello(flag: Flag) -> Result<Symbol, Error>" }
+attributes #6 = { "sdk.name"="<soroban_sdk::env::Env as soroban_env_common::env::Env>::fail_with_error" }
+attributes #7 = { "sdk.name"="core::panicking::panic_fmt" }
+
+!soroban.spec = !{!0, !1, !2}
+!soroban.rodata = !{!3}
+
+!0 = !{!"enum Flag { A = 0, B = 1, C = 2, D = 3, E = 4 }"}
+!1 = !{!"error Error { AnError = 1 }"}
+!2 = !{!"fn hello(flag: Flag) -> Result<Symbol, Error>"}
+!3 = !{!"1048576 53704563563167198dc68a50ebb7537045635631bc0404eaa49e3628"}

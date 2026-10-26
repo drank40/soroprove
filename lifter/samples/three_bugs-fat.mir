@@ -1,0 +1,308 @@
+// MIR for `read` 0 diver
+
+fn read(_1: Val, _2: Val) -> Val {
+    debug a => _1;
+    debug b => _2;
+    debug frame => _3;
+    debug arg_payload => _4;
+    debug arg_payload1 => _5;
+    debug and => _6;
+    debug cmp.not => _7;
+    debug and2 => _8;
+    debug cmp3.not => _9;
+    debug or.cond => _9;
+    debug slot8 => _10;
+    debug fp11 => _11;
+    debug fp => _13;
+    debug z7 => _14;
+    debug or9 => _15;
+    debug v_u32_1048624 => const Val(4503805785800708_u64);
+    debug to_val15 => _27;
+    debug v_u32_2 => const Val(8589934596_u64);
+    debug pair_key => _16;
+    debug payload => _17;
+    debug vec_new_from_linear_memory => _18;
+    debug payload13 => _19;
+    debug to_val14 => _18;
+    debug Persistent => const StorageType::Persistent;
+    debug has_contract_data => _20;
+    debug payload15 => _21;
+    debug cmp => _22;
+    debug zext => _23;
+    debug to_val => _0;
+    let mut _0: Val;
+    let mut _3: *mut u8;
+    let mut _4: u64;
+    let mut _5: u64;
+    let mut _6: u64;
+    let mut _7: bool;
+    let mut _8: u64;
+    let mut _9: bool;
+    let mut _10: *mut u8;
+    let mut _11: *mut u8;
+    let mut _12: u32;
+    let mut _13: u64;
+    let mut _14: u64;
+    let mut _15: u64;
+    let mut _16: Val;
+    let mut _17: u64;
+    let mut _18: Val;
+    let mut _19: u64;
+    let mut _20: Val;
+    let mut _21: u64;
+    let mut _22: bool;
+    let mut _23: u64;
+    let mut _24: [u64; 4];
+    let mut _25: *mut [u64; 4];
+    let mut _26: !;
+    let mut _27: Val;
+
+    bb0: {
+        _24 = [const 0_u64; 4];
+        _25 = &raw mut _24;
+        _3 = copy _25 as *mut u8 (PtrToPtr);
+        _4 = copy (_1.0: u64);
+        _5 = copy (_2.0: u64);
+        _6 = BitAnd(copy _4, const 255_u64);
+        _7 = Eq(copy _6, const 77_u64);
+        _8 = BitAnd(copy _5, const 255_u64);
+        _9 = Eq(copy _8, const 77_u64);
+        switchInt(copy _6) -> [77: bb3, otherwise: bb4];
+    }
+
+    bb1: {
+        _26 = trap() -> unwind unreachable;
+    }
+
+    bb2: {
+        _10 = Offset(copy _3, const 8_isize);
+        _11 = Offset(copy _3, const 16_isize);
+        _12 = copy _10 as u32 (PointerExposeProvenance);
+        _13 = copy _12 as u64 (IntToInt);
+        _24[2 of 4] = copy _5;
+        _24[1 of 4] = copy _4;
+        _14 = Shl(copy _13, const 32_u64);
+        _15 = BitOr(copy _14, const 4_u64);
+        _27 = Val(copy _15);
+        _16 = map_new_from_linear_memory(const Val(4503805785800708_u64), copy _27, const Val(8589934596_u64)) -> [return: bb5, unwind unreachable];
+    }
+
+    bb3: {
+        switchInt(copy _9) -> [0: bb1, otherwise: bb2];
+    }
+
+    bb4: {
+        _9 = const false;
+        goto -> bb1;
+    }
+
+    bb5: {
+        _17 = copy (_16.0: u64);
+        _24[2 of 4] = copy _17;
+        _24[1 of 4] = const 1852552974_u64;
+        _18 = vec_new_from_linear_memory(move _27, const Val(8589934596_u64)) -> [return: bb6, unwind unreachable];
+    }
+
+    bb6: {
+        _19 = copy (_18.0: u64);
+        _20 = has_contract_data(move _18, const StorageType::Persistent) -> [return: bb7, unwind unreachable];
+    }
+
+    bb7: {
+        _21 = copy (_20.0: u64);
+        _22 = Eq(copy _21, const 1_u64);
+        _23 = copy _22 as u64 (IntToInt);
+        _0 = Val(copy _23);
+        return;
+    }
+}
+
+// MIR for `pick` 0 diver
+
+fn pick(_1: Val) -> Val {
+    debug f => _1;
+    debug arg_payload => _2;
+    debug and => _3;
+    debug cmp.not => _4;
+    debug cmp2 => _5;
+    debug or.cond => _6;
+    debug l0.0 => _7;
+    debug to_val => _0;
+    debug lshr => _8;
+    debug sel => _9;
+    let mut _0: Val;
+    let mut _2: u64;
+    let mut _3: u64;
+    let mut _4: bool;
+    let mut _5: bool;
+    let mut _6: bool;
+    let mut _7: u64;
+    let mut _8: u64;
+    let mut _9: u32;
+    let mut _10: !;
+    let mut _11: ();
+    let mut _12: !;
+    let mut _13: !;
+
+    bb0: {
+        _2 = copy (_1.0: u64);
+        _3 = BitAnd(copy _2, const 255_u64);
+        _4 = Ne(copy _3, const 4_u64);
+        _5 = Gt(copy _2, const 21474836479_u64);
+        _6 = BitOr(copy _5, copy _4);
+        switchInt(copy _6) -> [0: bb7, otherwise: bb6];
+    }
+
+    bb1: {
+        _0 = Val(copy _7);
+        return;
+    }
+
+    bb2: {
+        _7 = const 9742_u64;
+        goto -> bb1;
+    }
+
+    bb3: {
+        _7 = const 10766_u64;
+        goto -> bb1;
+    }
+
+    bb4: {
+        _10 = f24() -> unwind unreachable;
+    }
+
+    bb5: {
+        _11 = f15() -> [return: bb8, unwind unreachable];
+    }
+
+    bb6: {
+        _13 = trap() -> unwind unreachable;
+    }
+
+    bb7: {
+        _8 = Shr(copy _2, const 32_u64);
+        _9 = copy _8 as u32 (IntToInt);
+        switchInt(copy _9) -> [4: bb3, 1: bb9, 2: bb5, 3: bb4, otherwise: bb2];
+    }
+
+    bb8: {
+        _12 = trap() -> unwind unreachable;
+    }
+
+    bb9: {
+        _7 = const 4294967299_u64;
+        goto -> bb1;
+    }
+}
+
+// MIR for `set_flag` 0 diver
+
+fn set_flag() -> Val {
+    debug v_Symbol__f__ => const Val(11022_u64);
+    debug v_true => const Val(1_u64);
+    debug Persistent => const StorageType::Persistent;
+    debug put_contract_data => _1;
+    debug v_void => const Val(2_u64);
+    let mut _0: Val;
+    let mut _1: Val;
+
+    bb0: {
+        _1 = put_contract_data(const Val(11022_u64), const Val(1_u64), const StorageType::Persistent) -> [return: bb1, unwind unreachable];
+    }
+
+    bb1: {
+        _0 = const Val(2_u64);
+        return;
+    }
+}
+
+// MIR for `panic_fmt` 0 diver
+
+fn panic_fmt() -> ! {
+    let mut _0: !;
+    let mut _1: !;
+
+    bb0: {
+        _1 = trap() -> unwind unreachable;
+    }
+}
+
+// MIR for `f15` 0 diver
+
+fn f15() -> () {
+    debug v_Error_type_0__code_1_ => const Val(4294967299_u64);
+    debug fail_with_error => _1;
+    let mut _0: ();
+    let mut _1: Val;
+
+    bb0: {
+        _1 = fail_with_error(const Val(4294967299_u64)) -> [return: bb1, unwind unreachable];
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+// MIR for `f24` 0 diver
+
+fn f24() -> ! {
+    let mut _0: !;
+    let mut _1: !;
+
+    bb0: {
+        _1 = f25() -> unwind unreachable;
+    }
+}
+
+// MIR for `f25` 0 diver
+
+fn f25() -> ! {
+    debug frame => _1;
+    debug slot16 => _2;
+    debug slot12 => _3;
+    debug slot28 => _4;
+    debug slot24 => _5;
+    debug slot20 => _7;
+    let mut _0: !;
+    let mut _1: *mut u8;
+    let mut _2: *mut u8;
+    let mut _3: *mut u8;
+    let mut _4: *mut u8;
+    let mut _5: *mut u8;
+    let mut _6: u32;
+    let mut _7: *mut u8;
+    let mut _8: [u64; 4];
+    let mut _9: *mut [u64; 4];
+    let mut _10: *mut u32;
+    let mut _11: *mut u32;
+    let mut _12: *mut u16;
+    let mut _13: *mut u32;
+    let mut _14: *mut u32;
+    let mut _15: !;
+
+    bb0: {
+        _8 = [const 0_u64; 4];
+        _9 = &raw mut _8;
+        _1 = copy _9 as *mut u8 (PtrToPtr);
+        _2 = Offset(copy _1, const 16_isize);
+        _10 = copy _2 as *mut u32 (PtrToPtr);
+        (*_10) = const 29_u32;
+        _3 = Offset(copy _1, const 12_isize);
+        _11 = copy _3 as *mut u32 (PtrToPtr);
+        (*_11) = const 1048576_u32;
+        _4 = Offset(copy _1, const 28_isize);
+        _12 = copy _4 as *mut u16 (PtrToPtr);
+        (*_12) = const 1_u16;
+        _5 = Offset(copy _1, const 24_isize);
+        _13 = copy _5 as *mut u32 (PtrToPtr);
+        (*_13) = const 1048604_u32;
+        _6 = copy _3 as u32 (PointerExposeProvenance);
+        _7 = Offset(copy _1, const 20_isize);
+        _14 = copy _7 as *mut u32 (PtrToPtr);
+        (*_14) = copy _6;
+        _15 = panic_fmt() -> unwind unreachable;
+    }
+}
+

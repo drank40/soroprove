@@ -1,0 +1,122 @@
+// MIR for `hello` 0 diver
+
+fn hello(_1: Val) -> Val {
+    debug flag => _1;
+    debug arg_payload => _2;
+    debug cmp => _3;
+    debug and => _4;
+    debug cmp2.not => _5;
+    debug or.cond => _6;
+    debug lshr => _7;
+    debug t => _8;
+    debug v_Symbol__persisted__ => const Val(3867323444879862030_u64);
+    debug v_true => const Val(1_u64);
+    debug Persistent => const StorageType::Persistent;
+    debug put_contract_data => _9;
+    debug l0.0 => _10;
+    debug to_val => _0;
+    let mut _0: Val;
+    let mut _2: u64;
+    let mut _3: bool;
+    let mut _4: u64;
+    let mut _5: bool;
+    let mut _6: bool;
+    let mut _7: u64;
+    let mut _8: u32;
+    let mut _9: Val;
+    let mut _10: u64;
+    let mut _11: !;
+    let mut _12: ();
+    let mut _13: !;
+    let mut _14: !;
+    let mut _15: ();
+    let mut _16: !;
+
+    bb0: {
+        _2 = copy (_1.0: u64);
+        _3 = Lt(copy _2, const 21474836480_u64);
+        _4 = BitAnd(copy _2, const 255_u64);
+        _5 = Eq(copy _4, const 4_u64);
+        _6 = BitAnd(copy _3, copy _5);
+        switchInt(copy _6) -> [0: bb1, otherwise: bb2];
+    }
+
+    bb1: {
+        _11 = trap() -> unwind unreachable;
+    }
+
+    bb2: {
+        _7 = Shr(copy _2, const 32_u64);
+        _8 = copy _7 as u32 (IntToInt);
+        _9 = put_contract_data(const Val(3867323444879862030_u64), const Val(1_u64), const StorageType::Persistent) -> [return: bb8, unwind unreachable];
+    }
+
+    bb3: {
+        _0 = Val(copy _10);
+        return;
+    }
+
+    bb4: {
+        _10 = const 196144296974_u64;
+        goto -> bb3;
+    }
+
+    bb5: {
+        _12 = Env_fail_with_error(const Val(38654705667_u64)) -> [return: bb10, unwind unreachable];
+    }
+
+    bb6: {
+        _14 = panic_fmt() -> unwind unreachable;
+    }
+
+    bb7: {
+        _15 = Env_fail_with_error(const Val(4294967299_u64)) -> [return: bb11, unwind unreachable];
+    }
+
+    bb8: {
+        switchInt(copy _8) -> [0: bb4, 1: bb9, 2: bb7, 3: bb6, otherwise: bb5];
+    }
+
+    bb9: {
+        _10 = const 4294967299_u64;
+        goto -> bb3;
+    }
+
+    bb10: {
+        _13 = trap() -> unwind unreachable;
+    }
+
+    bb11: {
+        _16 = trap() -> unwind unreachable;
+    }
+}
+
+// MIR for `Env_fail_with_error` 0 diver
+
+fn Env_fail_with_error(_1: Val) -> () {
+    debug a0 => _1;
+    debug to_val => _1;
+    debug fail_with_error => _2;
+    let mut _0: ();
+    let mut _2: Val;
+
+    bb0: {
+        _2 = fail_with_error(move _1) -> [return: bb1, unwind unreachable];
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+// MIR for `panic_fmt` 0 diver
+
+fn panic_fmt() -> ! {
+    let mut _0: !;
+    let mut _1: !;
+
+    bb0: {
+        _1 = trap() -> unwind unreachable;
+    }
+}
+
