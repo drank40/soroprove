@@ -161,7 +161,7 @@ namespace trade
 @[simp] def s1 (st : Step) : Storage :=
   xfer (st.pre Offer.buy_token) st.pre (trade.buyer st) (pool st) (trade.amt1 st)
 @[simp] def amt2 (_st : Step) (u : Unk) : Int :=
-  u.i 1
+  u.i 4
 @[simp] def s2 (st : Step) (u : Unk) : Storage :=
   xfer (st.pre Offer.sell_token) (trade.s1 st) (pool st) (trade.buyer st) (trade.amt2 st u)
 @[simp] def amt3 (st : Step) : Int :=
@@ -189,7 +189,7 @@ structure trade.Spec (st : Step) (u : Unk) : Prop where
   /-- `trade.buyer st` authorized the call (`require_auth`) -/
   auth_buyer : (trade.buyer st) ∈ st.call.signers
   /-- the call panics unless this holds -/
-  gate1 : (trade.min_sell_token_amount st) ≤ (u.g 1)
+  gate1 : (trade.min_sell_token_amount st) ≤ (u.g 4)
   post : st.post = (trade.s3 st u)
   writes : st.writes = [.bal (st.pre Offer.buy_token) (trade.buyer st), .bal (st.pre Offer.buy_token) (pool st), .bal (st.pre Offer.sell_token) (pool st), .bal (st.pre Offer.sell_token) (trade.buyer st), .bal (st.pre Offer.buy_token) (st.pre Offer.seller)]
   ret : st.ret = 2

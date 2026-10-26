@@ -118,26 +118,28 @@ namespace __constructor
 @[simp] def symbol (st : Step) : Int := st.call.arg "symbol"
 @[simp] def s1 (st : Step) : Storage :=
   ((st.pre).set Admin (__constructor.admin st)).set (.has Admin) 1
-@[simp] def s2 (st : Step) (u : Unk) : Storage :=
-  ((((__constructor.s1 st).set METADATA.decimal (u.i 1)).set METADATA.name (__constructor.name st)).set METADATA.symbol (__constructor.symbol st)).set (.has METADATA) 1
+@[simp] def new_METADATA_decimal (st : Step) : Int :=
+  Int.tmod (__constructor.decimal st) 32
+@[simp] def s2 (st : Step) : Storage :=
+  ((((__constructor.s1 st).set METADATA.decimal (__constructor.new_METADATA_decimal st)).set METADATA.name (__constructor.name st)).set METADATA.symbol (__constructor.symbol st)).set (.has METADATA) 1
 end __constructor
 
 /-- `__constructor(admin: Address, decimal: u32, name: String, symbol: String)`: it succeeds exactly when `__constructor.Spec` holds.
     Its effects, in execution order:
     * `__constructor.s1`: write `Admin` := `__constructor.admin st`
-    * `__constructor.s2`: write `METADATA.decimal` := `u.i 1`, `METADATA.name` := `__constructor.name st`, `METADATA.symbol` := `__constructor.symbol st`
+    * `__constructor.s2`: write `METADATA.decimal` := `__constructor.new_METADATA_decimal st`, `METADATA.name` := `__constructor.name st`, `METADATA.symbol` := `__constructor.symbol st`
 -/
-structure __constructor.Spec (st : Step) (u : Unk) : Prop where
+structure __constructor.Spec (st : Step) : Prop where
   fn : st.call.fn = "__constructor"
   /-- not called by the contract itself (Soroban forbids re-entry) -/
   notReentrant : st.call.caller ≠ pool st
   /-- the call panics unless this holds -/
   gate1 : (__constructor.decimal st) < 19
-  post : st.post = (__constructor.s2 st u)
+  post : st.post = (__constructor.s2 st)
   writes : st.writes = [Admin, .has Admin, METADATA.decimal, METADATA.name, METADATA.symbol, .has METADATA]
   ret : st.ret = 2
 
-def __constructor : Step → Prop := fun st => ∃ u : Unk, __constructor.Spec st u
+abbrev __constructor : Step → Prop := fun st => __constructor.Spec st
 
 namespace allowance
 @[simp] def «from» (st : Step) : Addr := st.call.argA "from"
@@ -165,13 +167,13 @@ namespace approve
   Allowance.amount (approve.«from» st) (approve.spender st)
 @[simp] def key_Allowance_live_until_ledger (st : Step) : Key :=
   Allowance.live_until_ledger (approve.«from» st) (approve.spender st)
-@[simp] def s1 (st : Step) (u : Unk) : Storage :=
-  (((st.pre).set (approve.key_Allowance_amount st) (u.i 1)).set (approve.key_Allowance_live_until_ledger st) (approve.live_until_ledger st)).set (.has (Allowance (approve.«from» st) (approve.spender st))) 1
+@[simp] def s1 (st : Step) : Storage :=
+  (((st.pre).set (approve.key_Allowance_amount st) (approve.amount st)).set (approve.key_Allowance_live_until_ledger st) (approve.live_until_ledger st)).set (.has (Allowance (approve.«from» st) (approve.spender st))) 1
 end approve
 
 /-- `approve(from: Address, spender: Address, amount: i128, live_until_ledger: u32)`: it succeeds exactly when `approve.Spec` holds.
     Its effects, in execution order:
-    * `approve.s1`: write `approve.key_Allowance_amount st` := `u.i 1`, `approve.key_Allowance_live_until_ledger st` := `approve.live_until_ledger st`
+    * `approve.s1`: write `approve.key_Allowance_amount st` := `approve.amount st`, `approve.key_Allowance_live_until_ledger st` := `approve.live_until_ledger st`
 -/
 structure approve.Spec (st : Step) (u : Unk) : Prop where
   fn : st.call.fn = "approve"
@@ -179,7 +181,9 @@ structure approve.Spec (st : Step) (u : Unk) : Prop where
   notReentrant : st.call.caller ≠ pool st
   /-- `approve.«from» st` authorized the call (`require_auth`) -/
   auth_from : (approve.«from» st) ∈ st.call.signers
-  post : st.post = (approve.s1 st u)
+  /-- the call panics unless this holds -/
+  gate1 : (if (u.g 1) = 69 then (approve.amount st) else (u.g 2)) > -1
+  post : st.post = (approve.s1 st)
   writes : st.writes = [(approve.key_Allowance_amount st), (approve.key_Allowance_live_until_ledger st), .has (Allowance (approve.«from» st) (approve.spender st))]
   ret : st.ret = 2
 

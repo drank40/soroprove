@@ -1817,6 +1817,17 @@ fn val_tags(ty: &str, structs: &HashMap<String, Vec<(String, String)>>) -> Optio
     })
 }
 
+/// `tag(x) = k` (`ICmp_EQ(And(x, 255), k)`): `(x, k)`.
+fn tag_test(c: &Expr) -> Option<(Expr, i64)> {
+    match c {
+        Expr::Opaque(l, v) if l == "ICmp_EQ" && v.len() == 2 => match (&v[0], &v[1]) {
+            (Expr::Opaque(a, ax), Expr::Const(k)) if a == "And" && ax.len() == 2 && ax[1] == Expr::Const(255) => Some((ax[0].clone(), *k)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// In a successful run every argument has its spec type (the SDK's entrypoint
 /// wrapper traps when one fails to convert), and so do the fields of a struct
 /// argument: their Val-tag tests are decided. Folds the decided booleans.
@@ -1853,6 +1864,44 @@ fn assume_arg_types(e: &Expr, args: &Args, structs: &HashMap<String, Vec<(String
     let boolish = |x: &Expr| matches!(x, Expr::Opaque(l, _) if l.starts_with("ICmp_") || ["@true", "@false", "@not", "@and", "@or"].contains(&l.as_str()));
     let rec = |x: &Expr| assume_arg_types(x, args, structs);
     match e {
+        // a u32 argument's Val (`v·2³² + 4`) masked by `m·2³² + 4` (m = 2^k − 1,
+        // the compiler knowing `v < 2^k`): the value `v % 2^k`.
+        Expr::Opaque(l, xs) if l == "And" && xs.len() == 2
+            && matches!(&xs[0], Expr::Param(i) if args.get(*i).is_some_and(|a| a.2 == "u32"))
+            && matches!(xs[1], Expr::Const(c) if c & 0xffff_ffff == 4 && ((c >> 32) + 1).count_ones() == 1 && c >> 32 > 0) =>
+        {
+            let Expr::Const(c) = xs[1] else { unreachable!() };
+            Expr::Bin('%', Box::new(xs[0].clone()), Box::new(Expr::Const((c >> 32) + 1)))
+        }
+        // an if-chain over an argument's Val tag that tests every tag its type
+        // allows: the final `else` can't happen.
+        Expr::Opaque(l, xs) if l == "Select" && xs.len() == 3 && tag_test(&xs[0]).is_some() => {
+            fn chain(e: &Expr, x: &Expr, left: &[i64]) -> Expr {
+                if let Expr::Opaque(l, xs) = e {
+                    if l == "Select" && xs.len() == 3 {
+                        if let Some((y, k)) = tag_test(&xs[0]) {
+                            if y == *x && left.contains(&k) {
+                                let rest: Vec<i64> = left.iter().copied().filter(|t| *t != k).collect();
+                                if rest.is_empty() {
+                                    return xs[1].clone();
+                                }
+                                return Expr::Opaque(l.clone(), vec![xs[0].clone(), xs[1].clone(), chain(&xs[2], x, &rest)]);
+                            }
+                        }
+                    }
+                }
+                e.clone()
+            }
+            let (x, _) = tag_test(&xs[0]).unwrap();
+            let e2 = match ty(&x, args, structs).and_then(|t| val_tags(&t, structs)) {
+                Some(tags) => chain(e, &x, &tags),
+                None => e.clone(),
+            };
+            match &e2 {
+                Expr::Opaque(l2, ys) if l2 == "Select" => Expr::Opaque(l2.clone(), ys.iter().map(rec).collect()),
+                other => rec(other),
+            }
+        }
         Expr::Opaque(l, xs) if (l == "ICmp_EQ" || l == "ICmp_NE") && xs.len() == 2 => {
             if let (Expr::Opaque(a, ax), Expr::Const(k)) = (&xs[0], &xs[1]) {
                 if a == "And" && ax.len() == 2 && ax[1] == Expr::Const(255) {
@@ -2573,7 +2622,7 @@ fn value_expr<'c>(
     let mut e = fold_rich(simplify(value_expr_raw(v, g, module, memo, depth)));
     // shared subterms are cloned at every use, so trees can grow exponentially;
     // a guard operand worth naming is small — collapse anything huge.
-    if expr_size(&e, 1500) >= 1500 {
+    if expr_size(&e, rich_cap()) >= rich_cap() {
         e = Expr::Opaque("big".into(), vec![]);
     }
     RICH_MEMO.with(|m| m.borrow_mut().insert(key, e.clone()));
@@ -2585,9 +2634,64 @@ fn value_expr<'c>(
 /// - hi-limb phi `phi(x, AShr(x,63))` → `x` (the sign-extended hi limb);
 /// - Soroban bool decode `Select(And(b,255)==1, 1, Select(And(b,255)==0, 0, 2))`
 ///   → `@bool(b)`, and `And(@bool b, 1) == 0` → `@isfalse(b)`;
+/// rustc's inlined 64×32 multiply of a limb `x` by `y`: `(x >> 32)·y << 32 +
+/// (x & (2³²−1))·y` is `x·y`; and the sign restore of a sign-magnitude
+/// product, `c ? |a|·y : −(|a|·y)` with `|a| = c ? a : −a`, is `a·y`.
+fn fold_mul(e: &Expr) -> Option<Expr> {
+    let op = |x: &Expr, l: &str, n: usize| match x { Expr::Opaque(m, v) if m == l && v.len() == n => Some(v.clone()), _ => None };
+    let mul = |x: &Expr| match x { Expr::Bin('*', a, b) => Some(((**a).clone(), (**b).clone())), _ => None };
+    match e {
+        Expr::Bin('+', p, q) => {
+            for (hi, lo) in [(p, q), (q, p)] {
+                let sh = op(hi, "Shl", 2)?;
+                if sh[1] != Expr::Const(32) {
+                    continue;
+                }
+                let (m1, m2) = mul(&sh[0])?;
+                let (n1, n2) = mul(lo)?;
+                // (x >> 32) * y  and  (x & mask) * y, either factor order
+                for (xs, y1) in [(&m1, &m2), (&m2, &m1)] {
+                    let Some(r) = op(xs, "LShr", 2) else { continue };
+                    if r[1] != Expr::Const(32) {
+                        continue;
+                    }
+                    for (xm, y2) in [(&n1, &n2), (&n2, &n1)] {
+                        if let Some(a) = op(xm, "And", 2) {
+                            if a[1] == Expr::Const(0xffff_ffff) && a[0] == r[0] && y1 == y2 {
+                                return Some(Expr::Bin('*', Box::new(r[0].clone()), Box::new(y1.clone())));
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+        Expr::Opaque(l, v) if l == "Select" && v.len() == 3 => {
+            let neg = match &v[2] { Expr::Bin('-', z, x) if **z == Expr::Const(0) => (**x).clone(), _ => return None };
+            if neg != v[1] {
+                return None;
+            }
+            let (m1, m2) = mul(&v[1])?;
+            for (abs, y) in [(&m1, &m2), (&m2, &m1)] {
+                let s = op(abs, "Select", 3);
+                if let Some(s) = s {
+                    if s[0] == v[0] && s[2] == Expr::Bin('-', Box::new(Expr::Const(0)), Box::new(s[1].clone())) {
+                        return Some(Expr::Bin('*', Box::new(s[1].clone()), Box::new(y.clone())));
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 fn fold_rich(e: Expr) -> Expr {
     fn is_op(x: &Expr, l: &str) -> bool { matches!(x, Expr::Opaque(n, _) if n == l) }
     let args_of = |x: &Expr| -> Vec<Expr> { if let Expr::Opaque(_, xs) = x { xs.clone() } else { vec![] } };
+    if let Some(m) = fold_mul(&e) {
+        return m;
+    }
     match &e {
         Expr::Opaque(l, xs) if l == "phi" => {
             // only the exact limb idiom: every arm is x or its sign extension (a
@@ -3173,6 +3277,9 @@ thread_local! {
     static RICH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static RICH_MEMO: std::cell::RefCell<HashMap<(usize, usize), Expr>> = std::cell::RefCell::new(HashMap::new());
 }
+fn rich_cap() -> usize {
+    std::env::var("SLICE_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(1500)
+}
 fn rich() -> bool {
     RICH.with(|r| r.get())
 }
@@ -3235,6 +3342,11 @@ fn mem_before<'c>(
                     let (b, o) = ptr_base_off(sp);
                     if (b.as_str(), o) == (target.0.as_str(), target.1) {
                         return Some(value_expr(sv, g, module, memo, depth));
+                    }
+                    // `base + phi(k₁, k₂, …)`: which slot is written depends on the
+                    // path in; resolve per predecessor and join.
+                    if let Some(r) = phi_offset_store(i, sv, sp, blk, target, g, cfg, module, memo, depth) {
+                        return r;
                     }
                     let size = match sv { BasicValueEnum::IntValue(v) => (v.get_type().get_bit_width() as i64 + 7) / 8, _ => 8 };
                     if b == target.0 && o < target.1 + seen.width.max(1) && target.1 < o + size {
@@ -3389,6 +3501,64 @@ fn mem_before<'c>(
     };
     seen.done.insert(blk, r.clone());
     r
+}
+
+/// A store through `inttoptr(base + phi(consts))` with the phi in block `blk`
+/// (the store's own block): per predecessor, the stored value (its phi arm) if
+/// that arm's offset is the target, else the memory at the end of the
+/// predecessor; joined by the exact path conditions. None: not this shape.
+#[allow(clippy::too_many_arguments)]
+fn phi_offset_store<'c>(
+    store: InstructionValue<'c>,
+    sv: BasicValueEnum<'c>,
+    sp: BasicValueEnum<'c>,
+    blk: usize,
+    target: &(String, i64),
+    g: FunctionValue<'c>,
+    cfg: &Cfg<'c>,
+    module: &inkwell::module::Module<'c>,
+    memo: &mut HashMap<String, Option<Expr>>,
+    depth: u32,
+) -> Option<Option<Expr>> {
+    let itp = as_instr(sp).filter(|x| x.get_opcode() == InstructionOpcode::IntToPtr)?;
+    let add = itp.get_operand(0)?.value().and_then(as_instr).filter(|x| x.get_opcode() == InstructionOpcode::Add)?;
+    let (x, y) = (add.get_operand(0)?.value()?, add.get_operand(1)?.value()?);
+    let is_phi = |v: BasicValueEnum<'c>| as_instr(v).and_then(|p| inkwell::values::PhiValue::try_from(p).ok()).filter(|p| p.as_instruction().get_parent() == store.get_parent());
+    let (phi, base) = match (is_phi(x), is_phi(y)) {
+        (Some(p), None) => (p, y),
+        (None, Some(p)) => (p, x),
+        _ => return None,
+    };
+    let (bname, boff) = addr_base_off(base);
+    if bname != target.0 {
+        return None;
+    }
+    let mut arms: Vec<(usize, Expr)> = vec![];
+    for k in 0..phi.count_incoming() {
+        let (off, pred) = phi.get_incoming(k)?;
+        let BasicValueEnum::IntValue(c) = off else { return Some(None) };
+        let Some(c) = c.get_sign_extended_constant() else { return Some(None) };
+        let p = cfg.bidx(pred)?;
+        let v = if boff + c == target.1 {
+            // the stored value as it arrives from this predecessor
+            let svp = as_instr(sv)
+                .and_then(|i| inkwell::values::PhiValue::try_from(i).ok())
+                .filter(|q| q.as_instruction().get_parent() == store.get_parent())
+                .and_then(|q| (0..q.count_incoming()).filter_map(|j| q.get_incoming(j)).find(|(_, b)| *b == pred).map(|(v, _)| v))
+                .unwrap_or(sv);
+            value_expr(svp, g, module, memo, depth)
+        } else if (boff + c - target.1).abs() < 8 {
+            return Some(None); // a partial overlap
+        } else {
+            let mut seen = MemCtx::default();
+            // unknown on this path: open (a path that panics later drops out under the facts)
+            mem_before(cfg.blocks[p].get_last_instruction(), p, target, g, cfg, module, memo, depth, &mut seen)
+                .unwrap_or_else(|| Expr::Opaque("?".into(), vec![]))
+        };
+        arms.push((p, v));
+    }
+    let _ = blk;
+    Some(gate_by_reach(g, cfg, arms, Some(cfg.bidx(store.get_parent()?)?), module, memo))
 }
 
 /// Walk state for `mem_before`: blocks in progress (cycle guard) and resolved
@@ -5085,11 +5255,19 @@ fn lean_guard_term(
             && lean_cond(&xs[0], args, &mut HashMap::new(), &mut 0, &mut vec![], fnid).is_some() =>
         {
             let c = lean_cond(&xs[0], args, opmap, oc, decls, fnid).unwrap_or_else(|| "False".into());
-            format!(
+            let t = format!(
                 "(if {c} then {} else {})",
                 lean_guard_term(&xs[1], args, opmap, oc, decls, fnid),
                 lean_guard_term(&xs[2], args, opmap, oc, decls, fnid)
-            )
+            );
+            // built only from open values: it is just one open value.
+            if !t.contains("st") {
+                *oc += 1;
+                let nm = format!("(u.{} {oc})", if fnid.ends_with("_e") { "i" } else { "g" });
+                decls.push(nm.clone());
+                return nm;
+            }
+            t
         }
         // storage read / vec read / unrecognized op: a fresh opaque Step-term.
         // (We do NOT merge by rendered shape — different i128 reconstructions
@@ -5776,7 +5954,7 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
         // the key's presence: set → 1, remove → 0.
         sets.push((format!(".has ({key})"), Expr::Const(if del { 0 } else { 1 })));
         // a long key gets a name: `key_MinterStats` (fields: `key_MinterStats_consumed_limit`).
-        let mut name_key = |k: &str, defs: &mut Vec<(String, &'static str, String)>| -> String {
+        let name_key = |k: &str, defs: &mut Vec<(String, &'static str, String)>| -> String {
             if k.len() <= 60 || !k.contains(' ') {
                 return k.to_string();
             }
