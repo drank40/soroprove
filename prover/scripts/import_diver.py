@@ -14,12 +14,13 @@ contract `key` in the vocabulary: playground/vocab.js, or a JSON file of contrac
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import re
 import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-DIVER = pathlib.Path.home() / "doc/work/stellar/stellar-diver"
+DIVER = pathlib.Path(os.environ.get("DIVER_HOME", ROOT.parent / "lifter"))   # soroprove's lifter/
 
 
 def vocabulary(src, name, key, storage, mod="Diver", title=None):

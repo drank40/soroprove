@@ -21,7 +21,8 @@ import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
-DIVER = pathlib.Path(os.environ.get("DIVER_HOME", pathlib.Path.home() / "doc/work/stellar/stellar-diver"))
+# The lifter: `lifter/` next to `prover/` in the soroprove repository (or $DIVER_HOME).
+DIVER = pathlib.Path(os.environ.get("DIVER_HOME", ROOT.parent / "lifter"))
 UPLOADS = HERE / "uploads.json"
 MAX_WASM = 4 << 20
 LOCK = threading.Lock()   # one ingestion at a time (lake, uploads.json)

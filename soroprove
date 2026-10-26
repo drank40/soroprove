@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Soroprove: build, serve and test everything from one place.
+#
+#   ./soroprove setup [--runtime]    build the lifter, the Lean libraries and the editor
+#                                    (--runtime: also the Lean Soroban runtime and its oracles)
+#   ./soroprove serve [PORT [HOST]]  the editor: drop a wasm, write invariants as blocks, prove
+#   ./soroprove test [--vibe]        every check that runs offline, then the full pipeline
+#                                    (--vibe: plus a live agent on your Claude subscription)
+#   ./soroprove import X.wasm        model a contract without the editor
+#
+# Needs: Rust + LLVM 18 (lifter/shell.nix provides them under Nix), elan (Lean), Python 3,
+# Node (the editor's Blockly), and for vibe the `claude` CLI, logged in.
+set -euo pipefail
+cd "$(dirname "$0")"
+TOP=$PWD
+
+say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
+
+build_lifter() {
+  say "lifter: stellar-diver and slice"
+  if command -v nix-shell >/dev/null; then (cd lifter && nix-shell --run "cargo build --release")
+  else (cd lifter && cargo build --release); fi
+}
+
+# lifter/lean-examples/*.ll are generated (and git-ignored): lift them from examples/.
+lift_examples() {
+  say "lifter: lift examples/*.wasm into lifter/lean-examples/"
+  (cd examples && sha256sum --quiet -c SHA256SUMS)
+  for w in examples/*.wasm; do
+    n=$(basename "$w" .wasm)
+    lifter/target/release/stellar-diver "$w" --inline > "lifter/lean-examples/$n.ll"
+  done
+}
+
+build_prover() {
+  say "prover: Lean library, stellar-diver models, editor"
+  (cd prover && lake build && lake build $(ls StellarLean/Diver/*.lean | sed 's|\.lean$||; s|/|.|g'))
+  (cd prover/playground && npm install --silent --no-audit --no-fund)
+}
+
+build_runtime() {
+  say "runtime: pinned sources, Lean runtime, oracles"
+  (cd runtime && tools/fetch_vendor.sh && mkdir -p vendor/network && cp network/* vendor/network/)
+  mkdir -p runtime/corpus/examples
+  for n in token liquidity_pool increment; do cp "examples/$n.wasm" "runtime/corpus/examples/soroban_${n}_contract.wasm"; done
+  (cd runtime && lake build && lake build sl)
+  (cd runtime/difftest && cargo build --release --bin e2e_lp_oracle)
+  (cd runtime/difftest-prod && cargo build --release)
+}
+
+case "${1:-}" in
+  setup)
+    build_lifter; lift_examples; build_prover
+    if [ "${2:-}" = "--runtime" ]; then build_runtime; fi
+    say "ready: ./soroprove serve"
+    ;;
+  serve)
+    exec python3 prover/playground/server.py "${2:-8765}" "${3:-127.0.0.1}"
+    ;;
+  import)
+    w=${2:?usage: ./soroprove import X.wasm}
+    python3 -c "import sys; sys.path.insert(0, 'prover/playground'); import ingest, json
+r = ingest.ingest(sys.argv[1], open(sys.argv[1], 'rb').read())
+print(json.dumps({k: r[k] for k in ('key', 'title')}))" "$w"
+    ;;
+  test)
+    say "lifter: the examples' models typecheck, with their hand proofs"
+    lifter/lean-examples/check.sh
+    say "lifter/prove: locked invariants, reference agent proofs, cheats rejected"
+    for c in $(ls lifter/prove/contracts); do lifter/prove/gen.sh "$c" | tail -1; done
+    lifter/prove/tests/run.sh
+    say "prover: the full pipeline through the editor's server"
+    python3 tests/pipeline.py ${2:+"$2"}
+    say "prover: every permalink in the README opens and checks"
+    python3 tests/permalinks.py README.md
+    if [ -x runtime/.lake/build/bin/sl ] && [ -x runtime/difftest/target/release/e2e_lp_oracle ]; then
+      say "runtime: the Lean host against the production host, 200 liquidity-pool calls"
+      tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+      (cd runtime/difftest && ./target/release/e2e_lp_oracle 200 7 2>/dev/null) > "$tmp/lp.txt"
+      (cd runtime/difftest-prod && ./target/release/e2e_replay "$tmp/lp.txt") | grep -vE '^(upload|create)' > "$tmp/prod.txt"
+      runtime/.lake/build/bin/sl e2e-batch runtime/vendor/network/mainnet_settings.xdr "$tmp/lp.txt" > "$tmp/lean.txt"
+      diff -q "$tmp/prod.txt" "$tmp/lean.txt" && echo "identical: $(grep -c 'output budget' "$tmp/prod.txt") invocations"
+      lifter/prove/conform/conform.sh liquidity_pool "$tmp/lp.txt" | tail -1
+    else
+      echo "(runtime not built: ./soroprove setup --runtime for the host difftest and model conformance)"
+    fi
+    ;;
+  *)
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac
