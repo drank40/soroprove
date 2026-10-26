@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Theorem Blocks</title>
+  <title>SoroProve</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -22,7 +22,7 @@
     </filter>
   </svg>
   <header class="menu">
-    <div class="logo"><span class="logo-mark">⊨</span><span class="logo-text">THEOREM BLOCKS</span></div>
+    <div class="logo"><span class="logo-mark">⊨</span><span class="logo-text">SOROPROVE</span></div>
     <label class="menu-item">Contract
       <select id="contract"></select>
     </label>
@@ -33,6 +33,8 @@
     <button class="menu-item" id="open-import">Import Lean…</button>
     <button class="menu-item" id="tidy">Clean up</button>
     <button class="menu-item" id="share" title="Copy a link that opens these theorems as blocks">Share</button>
+    <button class="menu-item" id="upload" title="Model a contract from its compiled .wasm (or drop the file on the page)">Upload WASM…</button>
+    <input type="file" id="upload-file" accept=".wasm,application/wasm" hidden>
     <span class="spacer"></span>
     <label class="menu-item" id="budget-box" title="How long the vibe prover may search, per theorem">Vibe budget
       <input id="budget" type="number" min="10" max="1800" step="10" value="120"> s</label>
@@ -74,6 +76,14 @@
     </aside>
   </main>
 
+  <div id="dropzone" hidden><div>Drop a contract <b>.wasm</b> to model it</div></div>
+  <dialog id="ingest">
+    <h2>Modelling <span id="ingest-name"></span></h2>
+    <ol id="ingest-steps"></ol>
+    <pre id="ingest-error"></pre>
+    <div class="actions"><button id="ingest-close">Close</button></div>
+  </dialog>
+
   <dialog id="import">
     <h2>Import Lean</h2>
     <p>Paste theorem statements (the part before <code>:=</code> is enough), for example
@@ -88,6 +98,7 @@
 
   <script src="node_modules/blockly/blockly.min.js"></script>
   <script src="vocab.js"></script>
+  <script src="uploads.js"></script>
   <script src="lean.js"></script>
   <script src="vibe.js"></script>
   <script src="app.js"></script>

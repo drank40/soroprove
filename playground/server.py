@@ -7,12 +7,16 @@ GET  /          the playground (files of this folder)
 GET  /health    {"lean": true} when `lake` is on the PATH, {"vibe": …} when `claude` is
 POST /check     {"contract": key, "theorems": [{"name", "target", "stmt", "tactic"}]}
                 -> {"results": [{"name", "status", "messages"}], "elapsed"}
+POST /upload?name=F.wasm   the wasm as the body: lift it, emit its Lean model, build it,
+                and add the contract (ingest.py) -> {"key", "title", "steps"}
+GET  /uploads.js   adds the uploaded contracts to the page's vocabulary
 POST /vibe      {"contract", "theorem": {"name", "target", "stmt"}, "reading", "budget"}
                 -> {"id"}: a Claude agent looks for a proof or a counterexample (vibe.py)
 GET  /vibe/ID/events   the job's events, as server-sent events
 POST /vibe/ID/stop
 
-Vibe jobs run on the Claude subscription of whoever runs the server, so they need
+Uploads run tools on the uploaded file, and vibe jobs run on the Claude subscription of
+whoever runs the server, so both need
 the token in $VIBE_TOKEN (header X-Vibe-Token or ?token=), or, when it is unset, a
 direct request from this machine (not through a proxy such as ngrok).
 
@@ -35,6 +39,7 @@ import threading
 import time
 import urllib.parse
 
+import ingest
 import vibe
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -44,7 +49,9 @@ LOCK = vibe.LEAN_LOCK   # one Lean at a time, shared with the vibe checker
 
 def load_vocab():
     src = (HERE / "vocab.js").read_text()
-    return json.loads(src[src.index("{"):src.rindex("}") + 1])
+    V = json.loads(src[src.index("{"):src.rindex("}") + 1])
+    V["contracts"].update(ingest.uploaded_contracts())   # contracts made from uploaded wasm
+    return V
 
 
 TOKEN = re.compile(r'\s+|"[a-z_]+"|\d+|∀ₛ|∧ₛ|∨ₛ|=>|\.[A-Za-z_]+|[A-Za-z_][A-Za-z0-9_\']*|[()\[\],·+\-*]')
@@ -256,6 +263,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                     "vibe": {"available": shutil.which("claude") is not None,
                                              "token": bool(os.environ.get("VIBE_TOKEN")),
                                              "allowed": self.vibe_ok()}})
+        if url.path == "/uploads.js":
+            body = ("window.VOCAB && Object.assign(window.VOCAB.contracts, "
+                    + json.dumps(ingest.uploaded_contracts(), ensure_ascii=False) + ");\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/javascript; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            return self.wfile.write(body)
         m = re.fullmatch(r"/vibe/([0-9a-f]{12})/events", url.path)
         if m:
             if not self.vibe_ok():
@@ -292,6 +307,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         url = urllib.parse.urlparse(self.path)
+        if url.path == "/upload":
+            if not self.vibe_ok():
+                return self.reply(403, {"error": "uploads need the token"})
+            n = int(self.headers.get("Content-Length", "0"))
+            if n > ingest.MAX_WASM:
+                return self.reply(413, {"error": "the file is too large"})
+            data = self.rfile.read(n)
+            name = urllib.parse.parse_qs(url.query).get("name", ["contract.wasm"])[0]
+            try:
+                return self.reply(200, ingest.ingest(name, data))
+            except ingest.IngestError as e:
+                return self.reply(422, {"error": str(e), "steps": e.steps})
+            except ValueError as e:
+                return self.reply(400, {"error": str(e)})
         m = re.fullmatch(r"/vibe/([0-9a-f]{12})/stop", url.path)
         if url.path == "/vibe" or m:
             if not self.vibe_ok():

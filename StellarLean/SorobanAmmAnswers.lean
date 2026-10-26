@@ -101,8 +101,11 @@ theorem swap_pays_out :
     contract ⊨ (changesBy BalanceA[caller] out).given (calls "swap" ∧ₛ buysA) := by
   answer
 
-theorem swap_swaps :
-    contract ⊨ (changesBy BalanceA[pool] out).given (calls "swap" ∧ₛ buysB) := by
+/-- When swapping for token B, does the signer get exactly `out` of B? Yes. (This replaces
+    `swap_swaps`, which claimed the pool's token-A balance changes by `out`: it changes by the
+    amount paid in, so `answer` rightly could not prove it.) -/
+theorem swap_pays_out_b :
+    contract ⊨ (changesBy BalanceB[caller] out).given (calls "swap" ∧ₛ buysB) := by
   answer
 
 /-- Does a swap ever take more than `in_max` from the signer? No, in either direction. -/

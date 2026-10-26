@@ -3,10 +3,12 @@
 playground, untouched, and derive its block vocabulary from the model itself.
 
     python3 scripts/import_diver.py CONTRACT.ll Name key [--slice PATH] [--storage X.storage.json]
+                                    [--dir Diver] [--vocab playground/vocab.js] [--title T]
 
-writes StellarLean/Diver/<Name>.lean (byte for byte what `slice` printed, with the
-provenance in StellarLean/Diver/<Name>.json), builds it, and adds or replaces the
-contract `key` in playground/vocab.js.
+writes StellarLean/<dir>/<Name>.lean (byte for byte what `slice` printed, with the
+provenance in StellarLean/<dir>/<Name>.json), builds it, and adds or replaces the
+contract `key` in the vocabulary: playground/vocab.js, or a JSON file of contracts
+(how uploads are kept, out of the tracked vocab.js).
 """
 
 import argparse
@@ -20,7 +22,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 DIVER = pathlib.Path.home() / "doc/work/stellar/stellar-diver"
 
 
-def vocabulary(src, name, key, storage):
+def vocabulary(src, name, key, storage, mod="Diver", title=None):
     """Blocks for everything the model names: storage keys, maps, token ledgers, entry
     points, arguments, and the values each entry point derives."""
     vars_ = re.findall(r'^@\[simp\] def (\w+) : Key := \.var "(\w+)"', src, re.M)
@@ -47,10 +49,14 @@ def vocabulary(src, name, key, storage):
         elif ns and (m := re.match(r"^@\[simp\] def (\w+) \(st : Step\) : (Int|Addr) :=\s*(.*)$", line)):
             body = m[3] or (lines[i + 1].strip() if i + 1 < len(lines) else "")
             defs.append((ns, m[1], m[2], body))
+    # Each entry point's own arguments, for showing one of its calls.
+    entry_args = {}
     for entry, nm, ty, body in defs:
         m = re.match(r'st\.call\.(arg|argA) "([\w.]+)"$', body.strip())
         if m:
             (args if m[1] == "arg" else addr_args)[m[2]] = ty
+            e = entry_args.setdefault(entry, {"amounts": [], "addrs": []})
+            e["amounts" if m[1] == "arg" else "addrs"].append(m[2])
         elif ty == "Int" and entry in entries:
             derived.append(f"{entry}.{nm}")
     # An address argument the contract moves tokens of: that token's ledger, `bal (argA a) s w`.
@@ -63,14 +69,14 @@ def vocabulary(src, name, key, storage):
     map_rows += [[f, f"{f.replace('.', ' ')} of"] for f in fields]
     map_rows += [[b, f"the `{a}` token balance of"] for b, a in arg_ledger.items()]
     C = {
-        "title": f"{name} (stellar-diver model, untouched)",
+        "title": title or f"{name} (stellar-diver model, untouched)",
         "kind": "diver",
-        "source": f"StellarLean/Diver/{name}.lean",
+        "source": f"StellarLean/{mod}/{name}.lean",
         "namespace": "Contract",
-        "prelude": [f"import StellarLean.Diver.{name}", "import StellarLean.DiverAnswer", "",
-                    f"namespace Diver.{name}.Playground", "", "open Contract"],
-        "epilogue": [f"end Diver.{name}.Playground"],
-        "header": [f"import StellarLean.Diver.{name}", "import StellarLean.DiverAnswer", "", "open Contract"],
+        "prelude": [f"import StellarLean.{mod}.{name}", "import StellarLean.DiverAnswer", "",
+                    f"namespace {mod}.{name}.Playground", "", "open Contract"],
+        "epilogue": [f"end {mod}.{name}.Playground"],
+        "header": [f"import StellarLean.{mod}.{name}", "import StellarLean.DiverAnswer", "", "open Contract"],
         "footer": [],
         "targets": [["contract", "each call"], ["history", "every history"]],
         "tactics": ["vibe", "answer", "sorry"],
@@ -85,6 +91,7 @@ def vocabulary(src, name, key, storage):
         "invariants": [],
         "features": ["calls", "compare"],
         "diver": {"ledgers": ledger, "maps": [m for m, _ in maps], "fields": fields, "argLedgers": arg_ledger,
+                  "entryArgs": entry_args,
                   "addrArgs": list(addr_args),
                   "derived": derived},
         "examples": [],
@@ -99,27 +106,36 @@ def main():
     ap.add_argument("ll"); ap.add_argument("name"); ap.add_argument("key")
     ap.add_argument("--slice", default=str(DIVER / "target/release/slice"))
     ap.add_argument("--storage")
+    ap.add_argument("--dir", default="Diver")
+    ap.add_argument("--vocab", default=str(ROOT / "playground/vocab.js"))
+    ap.add_argument("--title")
     a = ap.parse_args()
     out = subprocess.run([a.slice, a.ll, "--lean", "model"], capture_output=True, text=True, check=True).stdout
-    dst = ROOT / "StellarLean/Diver" / f"{a.name}.lean"
+    dst = ROOT / "StellarLean" / a.dir / f"{a.name}.lean"
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(out)
     rev = subprocess.run(["git", "-C", str(DIVER), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
     (dst.with_suffix(".json")).write_text(json.dumps({
         "source": str(pathlib.Path(a.ll).resolve()), "slice": rev,
         "sha256": hashlib.sha256(out.encode()).hexdigest()}, indent=2) + "\n")
-    subprocess.run(["lake", "build", f"StellarLean.Diver.{a.name}"], cwd=ROOT, check=True)
+    subprocess.run(["lake", "build", f"StellarLean.{a.dir}.{a.name}", "StellarLean.DiverAnswer"], cwd=ROOT, check=True)
     storage = None
     if a.storage:
         storage = {}
         for sl in json.load(open(a.storage))["slots"]:
             ty = sl["value_type"] if not sl["key_params"] else f'{", ".join(sl["key_params"])} → {sl["value_type"]}'
             storage[sl["key"]] = [sl["durability"], ty]
-    C = vocabulary(out, a.name, a.key, storage)
+    C = vocabulary(out, a.name, a.key, storage, a.dir, a.title)
     if storage:
         for b in C["diver"]["ledgers"]:
             storage[b] = [f"{C['diver']['ledgers'][b]} ledger (SEP-41)", "Address → i128"]
-    vp = ROOT / "playground/vocab.js"
+    vp = pathlib.Path(a.vocab)
+    if vp.suffix == ".json":   # a plain {key: contract} file
+        V = json.loads(vp.read_text()) if vp.exists() else {}
+        V[a.key] = C
+        vp.write_text(json.dumps(V, ensure_ascii=False, indent=1) + "\n")
+        print(f"{dst} ({len(out)} bytes, slice {rev}); {vp.name}: {a.key}")
+        return
     text = vp.read_text()
     V = json.loads(text[text.index("{"):text.rindex("}") + 1])
     V["contracts"][a.key] = C

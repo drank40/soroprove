@@ -16,5 +16,4 @@ import StellarLean.SorobanAmmFacts
 import StellarLean.SorobanAmmAnswers
 import StellarLean.LiquidityPool
 import StellarLean.LiquidityPoolFacts
-import StellarLean.LiquidityPool_2
-import StellarLean.LiquidityPool_2Facts
+import StellarLean.DiverAnswer

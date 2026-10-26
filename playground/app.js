@@ -414,6 +414,14 @@
   /** Open the theorems of a permalink; the workspace they replace is kept as a backup. */
   function openPermalink() {
     const h = new URLSearchParams(location.hash.slice(1));
+    if (h.get('c') && !h.get('t') && !h.get('w') && V.contracts[h.get('c')]) {
+      // `#c=<contract>` alone: open that contract (its saved blocks, or a new theorem).
+      contract = h.get('c'); sel.value = contract; store.set('pg.contract', contract);
+      ws.updateToolbox(toolbox()); $('#source').textContent = C().source;
+      history.replaceState(null, '', location.pathname);
+      load(store.get(key(), null));
+      return true;
+    }
     if (!h.get('c') || !(h.get('t') || h.get('w')) || !V.contracts[h.get('c')]) return false;
     let lines = [], tops = null;
     try {
@@ -442,6 +450,67 @@
     catch { flash('#share', 'Link in the address bar'); }
   });
   window.addEventListener('hashchange', () => { if (openPermalink()) clearResults(); });
+
+  /* --------------------------------------------------------------- Uploads
+     Drop a contract's .wasm anywhere (or "Upload WASM…"): the server lifts it, emits its
+     Lean model with stellar-diver and builds it; the page then opens the new contract. */
+
+  const STEPS = ['lift the wasm to LLVM IR (stellar-diver)', 'recover the storage interface (slice --storage-schema)',
+                 'emit the Lean model (slice --lean model) and build it'];
+  async function upload(file) {
+    const dlg = $('#ingest');
+    $('#ingest-name').textContent = file.name;
+    $('#ingest-error').textContent = '';
+    const t0 = Date.now();
+    const show = (done = [], failed = null) => {
+      $('#ingest-steps').innerHTML = STEPS.map((st, i) => {
+        const d = done[i];
+        const cls = d ? (d.ok ? 'ok' : 'bad') : (i === done.length && !failed ? 'busy' : '');
+        return `<li class="${cls}">${esc(st)}${d ? ` <small>${d.seconds}s</small>` : ''}</li>`;
+      }).join('');
+    };
+    show();
+    if (!dlg.open) dlg.showModal();
+    const tick = setInterval(() => { $('#ingest-name').textContent = `${file.name} · ${((Date.now() - t0) / 1000).toFixed(0)}s`; }, 500);
+    try {
+      const body = await file.arrayBuffer();
+      let res, out;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        res = await fetch(`/upload?name=${encodeURIComponent(file.name)}`, { method: 'POST', body,
+          headers: { 'Content-Type': 'application/wasm', 'X-Vibe-Token': store.get('pg.vibeToken', '') } });
+        out = await res.json().catch(() => ({}));
+        if (res.status !== 403) break;
+        const tk = prompt('This server takes uploads only with its token (VIBE_TOKEN). Token:');
+        if (!tk) break;
+        store.set('pg.vibeToken', tk);
+      }
+      show(out.steps || [], !res.ok);
+      if (!res.ok) {
+        const last = (out.steps || []).filter((x) => !x.ok).pop();
+        $('#ingest-error').textContent = `${out.error || res.statusText}${last ? `\n\n${last.log}` : ''}`;
+        return;
+      }
+      // The vocabulary now has the new contract: reload onto it.
+      location.hash = new URLSearchParams({ c: out.key }).toString();
+      location.reload();
+    } catch (e) {
+      $('#ingest-error').textContent = String(e.message || e);
+    } finally { clearInterval(tick); }
+  }
+  $('#upload').addEventListener('click', () => $('#upload-file').click());
+  $('#upload-file').addEventListener('change', (e) => { if (e.target.files[0]) upload(e.target.files[0]); e.target.value = ''; });
+  $('#ingest-close').addEventListener('click', () => $('#ingest').close());
+  let dragDepth = 0;
+  const isFile = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+  window.addEventListener('dragenter', (e) => { if (isFile(e)) { dragDepth++; $('#dropzone').hidden = false; } });
+  window.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('#dropzone').hidden = true; } });
+  window.addEventListener('dragover', (e) => { if (isFile(e)) e.preventDefault(); });
+  window.addEventListener('drop', (e) => {
+    if (!isFile(e)) return;
+    e.preventDefault(); dragDepth = 0; $('#dropzone').hidden = true;
+    const f = [...e.dataTransfer.files].find((x) => /\.wasm$/i.test(x.name)) || e.dataTransfer.files[0];
+    if (f) upload(f);
+  });
 
   Vibe.init({ ws, contractKey: () => contract, C, showTab, store });
   clearResults();

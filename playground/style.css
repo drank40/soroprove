@@ -269,3 +269,22 @@ dialog textarea {
 .cex-store tr.chg .arrow { color: #A1271E; font-weight: bold; }
 .cex-claim { margin-top: 6px; font-size: 11px; color: #555; }
 .cex-holders { margin-top: 5px; font-size: 11px; color: #555; }
+
+/* Uploads */
+#dropzone {
+  position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; pointer-events: none;
+  background: rgba(44,165,226,.18); border: 4px dashed #2CA5E2;
+}
+#dropzone div { padding: 18px 28px; background: #fff; border: 1px solid #A7A9AC; border-radius: 8px; font-size: 16px; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+#ingest { min-width: 460px; }
+#ingest ol { padding-left: 20px; line-height: 1.9; }
+#ingest li { color: #888; }
+#ingest li.busy { color: #8A6A00; font-weight: bold; }
+#ingest li.busy::after { content: " …"; }
+#ingest li.ok { color: #1F6E1C; }
+#ingest li.ok::before { content: "✓ "; }
+#ingest li.bad { color: #A1271E; font-weight: bold; }
+#ingest li.bad::before { content: "✗ "; }
+#ingest li small { color: #888; font-weight: normal; }
+#ingest-error { max-height: 260px; overflow: auto; white-space: pre-wrap; font: 11px var(--mono); color: #A1271E; }
+#dropzone[hidden] { display: none; }
