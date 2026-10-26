@@ -4,7 +4,8 @@
 set -u
 cd "$(dirname "$0")"
 SLICE=../target/release/slice
-LEAN=${LEAN:-$HOME/.elan/bin/lean}
+# The lifter's Lean (prove/lean-toolchain), whatever elan's default is.
+LEAN=${LEAN:-"$HOME/.elan/bin/lean +$(cat ../prove/lean-toolchain)"}
 tmp=$(mktemp -d)
 status=0
 for ll in *.ll; do
@@ -14,7 +15,7 @@ for ll in *.ll; do
   f="$tmp/$n.lean"
   cp "$n.lean" "$f"
   [ -f "proofs/$n.lean" ] && cat "proofs/$n.lean" >> "$f"
-  if out=$("$LEAN" "$f" 2>&1) && ! grep -q ': error' <<<"$out"; then
+  if out=$($LEAN "$f" 2>&1) && ! grep -q ': error' <<<"$out"; then
     printf "%-15s ok   (%s theorems)\n" "$n" "$(grep -c '^theorem' "$f")"
   else
     printf "%-15s FAIL\n" "$n"; grep ': error' -A3 <<<"$out" | head -12; status=1
