@@ -33,7 +33,7 @@ inductive Key where
   | fld   (base : Key) (f : String)
   | has   (k : Key)
   | bal   (t : Addr) (a : Addr)
-  deriving DecidableEq, Inhabited
+  deriving DecidableEq, Inhabited, Repr
 
 abbrev Storage := Key → Int
 def Storage.set (s : Storage) (k : Key) (v : Int) : Storage := fun k' => if k' = k then v else s k'
@@ -62,6 +62,9 @@ structure Unk where
   k : Nat → Key      -- storage keys
   s : Nat → Storage  -- storage after an effect the model doesn't interpret
 
+/-- the contract's own address (`e.current_contract_address()`). -/
+@[simp] def pool (st : Step) : Addr := st.call.self
+
 /-- token `t`'s balance of `a`. -/
 def bal (t : Addr) (s : Storage) (a : Addr) : Int := s (.bal t a)
 /-- storage after token `t` moves `amt` from `src` to `dst` (a self-transfer nets to zero). -/
@@ -77,8 +80,43 @@ def havoc (s h : Storage) : Storage := fun k => match k with
 /-- `get(k).unwrap_or(0)`: the value at `k`, or 0 when `base` (k's struct) is absent. -/
 def getOr0 (s : Storage) (k : Key) (base : Key := k) : Int := if s (.has base) = 1 then s k else 0
 
+namespace swap
+@[simp] def a (st : Step) : Addr := st.call.argA "a"
+@[simp] def amount_a (st : Step) : Int := st.call.arg "amount_a"
+@[simp] def amount_b (st : Step) : Int := st.call.arg "amount_b"
+@[simp] def b (st : Step) : Addr := st.call.argA "b"
+@[simp] def min_a_for_b (st : Step) : Int := st.call.arg "min_a_for_b"
+@[simp] def min_b_for_a (st : Step) : Int := st.call.arg "min_b_for_a"
+@[simp] def token_a (st : Step) : Addr := st.call.argA "token_a"
+@[simp] def token_b (st : Step) : Addr := st.call.argA "token_b"
+@[simp] def amt1 (st : Step) : Int :=
+  (swap.amount_a st)
+@[simp] def s1 (st : Step) : Storage :=
+  xfer (swap.token_a st) st.pre (swap.a st) (pool st) (swap.amt1 st)
+@[simp] def amt2 (st : Step) : Int :=
+  (swap.min_a_for_b st)
+@[simp] def s2 (st : Step) : Storage :=
+  xfer (swap.token_a st) (swap.s1 st) (pool st) (swap.b st) (swap.amt2 st)
+@[simp] def amt3 (st : Step) : Int :=
+  ((swap.amount_a st) - (swap.min_a_for_b st))
+@[simp] def s3 (st : Step) : Storage :=
+  xfer (swap.token_a st) (swap.s2 st) (pool st) (swap.a st) (swap.amt3 st)
+@[simp] def amt4 (st : Step) : Int :=
+  (swap.amount_b st)
+@[simp] def s4 (st : Step) : Storage :=
+  xfer (swap.token_b st) (swap.s3 st) (swap.b st) (pool st) (swap.amt4 st)
+@[simp] def amt5 (st : Step) : Int :=
+  (swap.min_b_for_a st)
+@[simp] def s5 (st : Step) : Storage :=
+  xfer (swap.token_b st) (swap.s4 st) (pool st) (swap.a st) (swap.amt5 st)
+@[simp] def amt6 (st : Step) : Int :=
+  ((swap.amount_b st) - (swap.min_b_for_a st))
+@[simp] def s6 (st : Step) : Storage :=
+  xfer (swap.token_b st) (swap.s5 st) (pool st) (swap.b st) (swap.amt6 st)
+end swap
+
 /-- `swap(a: Address, b: Address, token_a: Address, token_b: Address, amount_a: i128, min_b_for_a: i128, amount_b: i128, min_a_for_b: i128)`
-    effects, in execution order:
+    effects, in execution order (states `swap.s1`, `swap.s2`, …; amounts `swap.amt1`, …):
       transfer token_a: a -> @pool : amount_a
       transfer token_a: @pool -> b : min_a_for_b
       transfer token_a: @pool -> a : (amount_a - min_a_for_b)
@@ -92,22 +130,14 @@ def getOr0 (s : Storage) (k : Key) (base : Key := k) : Int := if s (.has base) =
       gate: amount_a ≥ min_a_for_b
 -/
 def swap : Step → Prop := fun st =>
-  let c := st.call.caller
-  let pool := st.call.self
-  let s1 := xfer (st.call.argA "token_a") st.pre (st.call.argA "a") (pool) (st.call.arg "amount_a")
-  let s2 := xfer (st.call.argA "token_a") s1 (pool) (st.call.argA "b") (st.call.arg "min_a_for_b")
-  let s3 := xfer (st.call.argA "token_a") s2 (pool) (st.call.argA "a") ((st.call.arg "amount_a" - st.call.arg "min_a_for_b"))
-  let s4 := xfer (st.call.argA "token_b") s3 (st.call.argA "b") (pool) (st.call.arg "amount_b")
-  let s5 := xfer (st.call.argA "token_b") s4 (pool) (st.call.argA "a") (st.call.arg "min_b_for_a")
-  let s6 := xfer (st.call.argA "token_b") s5 (pool) (st.call.argA "b") ((st.call.arg "amount_b" - st.call.arg "min_b_for_a"))
   st.call.fn = "swap" ∧
-  c ≠ pool ∧
-  st.call.argA "a" ∈ st.call.signers ∧   -- require_auth a
-  st.call.argA "b" ∈ st.call.signers ∧   -- require_auth b
-  st.call.arg "min_b_for_a" ≤ st.call.arg "amount_b" ∧   -- gate
-  st.call.arg "amount_a" ≥ st.call.arg "min_a_for_b" ∧   -- gate
-  st.post = s6 ∧
-  st.writes = [.bal (st.call.argA "token_a") (st.call.argA "a"), .bal (st.call.argA "token_a") (pool), .bal (st.call.argA "token_a") (st.call.argA "b"), .bal (st.call.argA "token_b") (st.call.argA "b"), .bal (st.call.argA "token_b") (pool), .bal (st.call.argA "token_b") (st.call.argA "a")] ∧
+  st.call.caller ≠ pool st ∧
+  (swap.a st) ∈ st.call.signers ∧   -- require_auth a
+  (swap.b st) ∈ st.call.signers ∧   -- require_auth b
+  (swap.min_b_for_a st) ≤ (swap.amount_b st) ∧   -- gate
+  (swap.amount_a st) ≥ (swap.min_a_for_b st) ∧   -- gate
+  st.post = (swap.s6 st) ∧
+  st.writes = [.bal (swap.token_a st) (swap.a st), .bal (swap.token_a st) (pool st), .bal (swap.token_a st) (swap.b st), .bal (swap.token_b st) (swap.b st), .bal (swap.token_b st) (pool st), .bal (swap.token_b st) (swap.a st)] ∧
   st.ret = 2
 
 /-- the contract's entry points (each a `Step → Prop`). -/

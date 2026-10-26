@@ -1,6 +1,6 @@
 -- Proofs over the generated `timelock.lean` model (appended to it by check.sh).
--- `ClaimableBalance` (with its nested `TimeBound`) is stored field by field;
--- `.has k` is the presence bit `has()` reads and `set`/`remove` write.
+-- `ClaimableBalance` (with its nested `TimeBound`) is stored field by field
+-- under `Balance`; `.has k` is the presence bit `has()` reads.
 open Contract
 
 /-- The contract can be funded only once. -/
@@ -16,8 +16,9 @@ theorem claim_once (a b : Step) (ha : claim a) (hb : claim b) (hseq : b.pre = a.
   rw [hseq, hpost] at hhas; simp [Storage.set] at hhas
 
 /-- `claim` pays the claimant exactly the recorded amount, in the recorded token. -/
-theorem claim_pays_recorded (st : Step) (h : claim st) (hne : st.call.argA "claimant" ≠ st.call.self) :
-    bal (st.pre (.fld (.var "Balance") "token")) st.post (st.call.argA "claimant")
-      = bal (st.pre (.fld (.var "Balance") "token")) st.pre (st.call.argA "claimant") + st.pre (.fld (.var "Balance") "amount") := by
+theorem claim_pays_recorded (st : Step) (h : claim st) (hne : claim.claimant st ≠ pool st) :
+    bal (st.pre Balance.token) st.post (claim.claimant st)
+      = bal (st.pre Balance.token) st.pre (claim.claimant st) + st.pre Balance.amount := by
   obtain ⟨_, _, _, _, _, _, hpost, _⟩ := h
+  simp at hne
   rw [hpost]; simp [xfer, bal, Storage.set, hne]

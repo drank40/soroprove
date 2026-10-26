@@ -33,7 +33,7 @@ inductive Key where
   | fld   (base : Key) (f : String)
   | has   (k : Key)
   | bal   (t : Addr) (a : Addr)
-  deriving DecidableEq, Inhabited
+  deriving DecidableEq, Inhabited, Repr
 
 abbrev Storage := Key → Int
 def Storage.set (s : Storage) (k : Key) (v : Int) : Storage := fun k' => if k' = k then v else s k'
@@ -62,6 +62,9 @@ structure Unk where
   k : Nat → Key      -- storage keys
   s : Nat → Storage  -- storage after an effect the model doesn't interpret
 
+/-- the contract's own address (`e.current_contract_address()`). -/
+@[simp] def pool (st : Step) : Addr := st.call.self
+
 /-- token `t`'s balance of `a`. -/
 def bal (t : Addr) (s : Storage) (a : Addr) : Int := s (.bal t a)
 /-- storage after token `t` moves `amt` from `src` to `dst` (a self-transfer nets to zero). -/
@@ -77,19 +80,25 @@ def havoc (s h : Storage) : Storage := fun k => match k with
 /-- `get(k).unwrap_or(0)`: the value at `k`, or 0 when `base` (k's struct) is absent. -/
 def getOr0 (s : Storage) (k : Key) (base : Key := k) : Int := if s (.has base) = 1 then s k else 0
 
+/-! ## Storage layout -/
+
+@[simp] def COUNTER : Key := .var "COUNTER"
+
+namespace increment
+@[simp] def s1 (st : Step) : Storage :=
+  ((st.pre).set COUNTER ((getOr0 st.pre COUNTER) + 1)).set (.has COUNTER) 1
+end increment
+
 /-- `increment()`
-    effects, in execution order:
+    effects, in execution order (states `increment.s1`, `increment.s2`, …):
       write storage.COUNTER/5 := (Select(ICmp_EQ(@has(storage.COUNTER/2), 1), storage.COUNTER/1, 0) + 1)
 -/
 def increment : Step → Prop := fun st =>
-  let c := st.call.caller
-  let pool := st.call.self
-  let s1 := ((st.pre).set (.var "COUNTER") (((getOr0 st.pre (.var "COUNTER")) + 1))).set (.has (.var "COUNTER")) (1)
   st.call.fn = "increment" ∧
-  c ≠ pool ∧
-  st.post = s1 ∧
-  st.writes = [.var "COUNTER", .has (.var "COUNTER")] ∧
-  st.ret = ((getOr0 st.pre (.var "COUNTER")) + 1)
+  st.call.caller ≠ pool st ∧
+  st.post = (increment.s1 st) ∧
+  st.writes = [COUNTER, .has COUNTER] ∧
+  st.ret = ((getOr0 st.pre COUNTER) + 1)
 
 /-- the contract's entry points (each a `Step → Prop`). -/
 def entries : List (Step → Prop) := [increment]

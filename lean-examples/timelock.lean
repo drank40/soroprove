@@ -33,7 +33,7 @@ inductive Key where
   | fld   (base : Key) (f : String)
   | has   (k : Key)
   | bal   (t : Addr) (a : Addr)
-  deriving DecidableEq, Inhabited
+  deriving DecidableEq, Inhabited, Repr
 
 abbrev Storage := Key → Int
 def Storage.set (s : Storage) (k : Key) (v : Int) : Storage := fun k' => if k' = k then v else s k'
@@ -62,6 +62,9 @@ structure Unk where
   k : Nat → Key      -- storage keys
   s : Nat → Storage  -- storage after an effect the model doesn't interpret
 
+/-- the contract's own address (`e.current_contract_address()`). -/
+@[simp] def pool (st : Step) : Addr := st.call.self
+
 /-- token `t`'s balance of `a`. -/
 def bal (t : Addr) (s : Storage) (a : Addr) : Int := s (.bal t a)
 /-- storage after token `t` moves `amt` from `src` to `dst` (a self-transfer nets to zero). -/
@@ -77,8 +80,29 @@ def havoc (s h : Storage) : Storage := fun k => match k with
 /-- `get(k).unwrap_or(0)`: the value at `k`, or 0 when `base` (k's struct) is absent. -/
 def getOr0 (s : Storage) (k : Key) (base : Key := k) : Int := if s (.has base) = 1 then s k else 0
 
+/-! ## Storage layout -/
+
+@[simp] def Balance : Key := .var "Balance"
+@[simp] def Balance.token : Key := .fld Balance "token"
+@[simp] def Balance.amount : Key := .fld Balance "amount"
+@[simp] def Balance.time_bound : Key := .fld Balance "time_bound"
+@[simp] def Balance.time_bound.timestamp : Key := .fld Balance.time_bound "timestamp"
+@[simp] def Balance.claimants : Key := .fld Balance "claimants"
+@[simp] def Balance.time_bound.kind : Key := .fld Balance.time_bound "kind"
+@[simp] def Init : Key := .var "Init"
+
+namespace claim
+@[simp] def claimant (st : Step) : Addr := st.call.argA "claimant"
+@[simp] def amt1 (st : Step) : Int :=
+  (st.pre Balance.amount)
+@[simp] def s1 (st : Step) : Storage :=
+  xfer (st.pre Balance.token) st.pre (pool st) (claim.claimant st) (claim.amt1 st)
+@[simp] def s2 (st : Step) : Storage :=
+  (claim.s1 st).set (.has Balance) 0
+end claim
+
 /-- `claim(claimant: Address)`
-    effects, in execution order:
+    effects, in execution order (states `claim.s1`, `claim.s2`, …; amounts `claim.amt1`, …):
       transfer @field:token(storage.Balance/2): @pool -> claimant : @field:amount(storage.Balance/2)
       write storage.Balance/12 := @del
     conditions to succeed:
@@ -87,21 +111,34 @@ def getOr0 (s : Storage) (k : Key) (base : Key := k) : Int := if s (.has base) =
       gate: ¬Select(ICmp_EQ(And(ICmp_UGT(buf_symbol_index_in_linear_memory, 4294967295), 1), 0), ICmp_ULT(Select(@not(ICmp_EQ(And((@len(@field:kind(@field:time_bound(storage.Balance/2))) + 4294967295), 4294967295), 0)), 0, Select(@and(ICmp_EQ(And((@len(@field:kind(@field:time_bound(storage.Balance/2))) + 4294967295), 4294967295), 0), @and(ICmp_NE(And(@field:timestamp(@field:time_bound(storage.Balance/2)), 255), 64), ICmp_NE(And(@field:timestamp(@field:time_bound(storage.Balance/2)), 255), 6))), 0, @field:timestamp(@field:time_bound(storage.Balance/2)))), @env:timestamp), ICmp_UGT(Select(@not(ICmp_EQ(And((@len(@field:kind(@field:time_bound(storage.Balance/2))) + 4294967295), 4294967295), 0)), 0, Select(@and(ICmp_EQ(And((@len(@field:kind(@field:time_bound(storage.Balance/2))) + 4294967295), 4294967295), 0), @and(ICmp_NE(And(@field:timestamp(@field:time_bound(storage.Balance/2)), 255), 64), ICmp_NE(And(@field:timestamp(@field:time_bound(storage.Balance/2)), 255), 6))), 0, @field:timestamp(@field:time_bound(storage.Balance/2)))), @env:timestamp))
 -/
 def claim : Step → Prop := fun st => ∃ u : Unk,
-  let c := st.call.caller
-  let pool := st.call.self
-  let s1 := xfer ((st.pre (.fld (.var "Balance") "token"))) st.pre (pool) (st.call.argA "claimant") ((st.pre (.fld (.var "Balance") "amount")))
-  let s2 := (s1).set (.has (.var "Balance")) (0)
   st.call.fn = "claim" ∧
-  c ≠ pool ∧
-  st.call.argA "claimant" ∈ st.call.signers ∧   -- require_auth claimant
-  (st.pre (.has (.var "Balance"))) = 1 ∧   -- gate
-  ¬(if (u.g 1) = 0 then (if ¬((u.g 2) = 0) then 0 else (if ((u.g 3) = 0) ∧ (((u.g 4) ≠ 64) ∧ ((u.g 5) ≠ 6)) then 0 else (st.pre (.fld (.fld (.var "Balance") "time_bound") "timestamp")))) < (st.call.env "timestamp") else (if ¬((u.g 6) = 0) then 0 else (if ((u.g 7) = 0) ∧ (((u.g 8) ≠ 64) ∧ ((u.g 9) ≠ 6)) then 0 else (st.pre (.fld (.fld (.var "Balance") "time_bound") "timestamp")))) > (st.call.env "timestamp")) ∧   -- gate
-  st.post = s2 ∧
-  st.writes = [.bal ((st.pre (.fld (.var "Balance") "token"))) (pool), .bal ((st.pre (.fld (.var "Balance") "token"))) (st.call.argA "claimant"), .has (.var "Balance")] ∧
+  st.call.caller ≠ pool st ∧
+  (claim.claimant st) ∈ st.call.signers ∧   -- require_auth claimant
+  (st.pre (.has Balance)) = 1 ∧   -- gate
+  ¬(if (u.g 1) = 0 then (if ¬((u.g 2) = 0) then 0 else (if ((u.g 3) = 0) ∧ (((u.g 4) ≠ 64) ∧ ((u.g 5) ≠ 6)) then 0 else (st.pre Balance.time_bound.timestamp))) < (st.call.env "timestamp") else (if ¬((u.g 6) = 0) then 0 else (if ((u.g 7) = 0) ∧ (((u.g 8) ≠ 64) ∧ ((u.g 9) ≠ 6)) then 0 else (st.pre Balance.time_bound.timestamp))) > (st.call.env "timestamp")) ∧   -- gate
+  st.post = (claim.s2 st) ∧
+  st.writes = [.bal (st.pre Balance.token) (pool st), .bal (st.pre Balance.token) (claim.claimant st), .has Balance] ∧
   st.ret = 2
 
+namespace deposit
+@[simp] def amount (st : Step) : Int := st.call.arg "amount"
+@[simp] def claimants (st : Step) : Int := st.call.arg "claimants"
+@[simp] def claimants.len (st : Step) : Int := st.call.arg "claimants.len"
+@[simp] def «from» (st : Step) : Addr := st.call.argA "from"
+@[simp] def time_bound.timestamp (st : Step) : Int := st.call.arg "time_bound.timestamp"
+@[simp] def token (st : Step) : Addr := st.call.argA "token"
+@[simp] def amt1 (st : Step) : Int :=
+  (deposit.amount st)
+@[simp] def s1 (st : Step) : Storage :=
+  xfer (deposit.token st) st.pre (deposit.«from» st) (pool st) (deposit.amt1 st)
+@[simp] def s2 (st : Step) (u : Unk) : Storage :=
+  ((((((deposit.s1 st).set Balance.amount (deposit.amount st)).set Balance.claimants (deposit.claimants st)).set Balance.time_bound.kind (u.i 1)).set Balance.time_bound.timestamp (if ¬((u.i 2) = 0) then 1 else (deposit.time_bound.timestamp st))).set Balance.token (deposit.token st)).set (.has Balance) 1
+@[simp] def s3 (st : Step) (u : Unk) : Storage :=
+  ((deposit.s2 st u).set Init 2).set (.has Init) 1
+end deposit
+
 /-- `deposit(from: Address, token: Address, amount: i128, claimants: Vec<Address>, time_bound: TimeBound)`
-    effects, in execution order:
+    effects, in execution order (states `deposit.s1`, `deposit.s2`, …; amounts `deposit.amt1`, …):
       transfer token: from -> @pool : amount
       write storage.Balance/18 := @struct:amount,claimants,time_bound,token(amount, claimants, @struct:kind,timestamp(@vec(Select(@not(ICmp_EQ(And(ICmp_UGT(buf_symbol_index_in_linear_memory, 4294967295), 1), 0)), phi(buf_symbol_new_from_linear_memory, 14, Or(And(phi(1, And((@load(phi(And((cyc + 1), 4294967295), 1048621)) + 4294967250), 4294967295), And((@load(phi(And((cyc + 1), 4294967295), 1048621)) + 4294967243), 4294967295), And((@load(phi(And((cyc + 1), 4294967295), 1048621)) + 4294967237), 4294967295)), 255), Shl(phi(cyc, 0), 6))), phi(buf_symbol_new_from_linear_memory, 14, Or(And(phi(1, And((@load(phi(And((cyc + 1), 4294967295), 1048615)) + 4294967250), 4294967295), And((@load(phi(And((cyc + 1), 4294967295), 1048615)) + 4294967243), 4294967295), And((@load(phi(And((cyc + 1), 4294967295), 1048615)) + 4294967237), 4294967295)), 255), Shl(phi(cyc, 0), 6))))), Select(@not(ICmp_EQ(And((@len(@field:kind(time_bound)) + 4294967295), 4294967295), 0)), 1, @field:timestamp(time_bound))), token)
       write storage.Init/19 := 2
@@ -111,18 +148,13 @@ def claim : Step → Prop := fun st => ∃ u : Unk,
       gate: @has(storage.Init/13) ≠ 1
 -/
 def deposit : Step → Prop := fun st => ∃ u : Unk,
-  let c := st.call.caller
-  let pool := st.call.self
-  let s1 := xfer (st.call.argA "token") st.pre (st.call.argA "from") (pool) (st.call.arg "amount")
-  let s2 := ((((((s1).set (.fld (.var "Balance") "amount") (st.call.arg "amount")).set (.fld (.var "Balance") "claimants") (st.call.arg "claimants")).set (.fld (.fld (.var "Balance") "time_bound") "kind") ((u.i 1))).set (.fld (.fld (.var "Balance") "time_bound") "timestamp") ((if ¬((u.i 2) = 0) then 1 else st.call.arg "time_bound.timestamp"))).set (.fld (.var "Balance") "token") (st.call.argA "token")).set (.has (.var "Balance")) (1)
-  let s3 := ((s2).set (.var "Init") (2)).set (.has (.var "Init")) (1)
   st.call.fn = "deposit" ∧
-  c ≠ pool ∧
-  st.call.argA "from" ∈ st.call.signers ∧   -- require_auth from
-  st.call.arg "claimants.len" < 11 ∧   -- gate
-  (st.pre (.has (.var "Init"))) ≠ 1 ∧   -- gate
-  st.post = s3 ∧
-  st.writes = [.bal (st.call.argA "token") (st.call.argA "from"), .bal (st.call.argA "token") (pool), .fld (.var "Balance") "amount", .fld (.var "Balance") "claimants", .fld (.fld (.var "Balance") "time_bound") "kind", .fld (.fld (.var "Balance") "time_bound") "timestamp", .fld (.var "Balance") "token", .has (.var "Balance"), .var "Init", .has (.var "Init")] ∧
+  st.call.caller ≠ pool st ∧
+  (deposit.«from» st) ∈ st.call.signers ∧   -- require_auth from
+  (deposit.claimants.len st) < 11 ∧   -- gate
+  (st.pre (.has Init)) ≠ 1 ∧   -- gate
+  st.post = (deposit.s3 st u) ∧
+  st.writes = [.bal (deposit.token st) (deposit.«from» st), .bal (deposit.token st) (pool st), Balance.amount, Balance.claimants, Balance.time_bound.kind, Balance.time_bound.timestamp, Balance.token, .has Balance, Init, .has Init] ∧
   st.ret = 2
 
 /-- the contract's entry points (each a `Step → Prop`). -/

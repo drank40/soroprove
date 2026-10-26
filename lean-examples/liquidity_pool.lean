@@ -33,7 +33,7 @@ inductive Key where
   | fld   (base : Key) (f : String)
   | has   (k : Key)
   | bal   (t : Addr) (a : Addr)
-  deriving DecidableEq, Inhabited
+  deriving DecidableEq, Inhabited, Repr
 
 abbrev Storage := Key → Int
 def Storage.set (s : Storage) (k : Key) (v : Int) : Storage := fun k' => if k' = k then v else s k'
@@ -62,6 +62,9 @@ structure Unk where
   k : Nat → Key      -- storage keys
   s : Nat → Storage  -- storage after an effect the model doesn't interpret
 
+/-- the contract's own address (`e.current_contract_address()`). -/
+@[simp] def pool (st : Step) : Addr := st.call.self
+
 /-- token `t`'s balance of `a`. -/
 def bal (t : Addr) (s : Storage) (a : Addr) : Int := s (.bal t a)
 /-- storage after token `t` moves `amt` from `src` to `dst` (a self-transfer nets to zero). -/
@@ -77,44 +80,87 @@ def havoc (s h : Storage) : Storage := fun k => match k with
 /-- `get(k).unwrap_or(0)`: the value at `k`, or 0 when `base` (k's struct) is absent. -/
 def getOr0 (s : Storage) (k : Key) (base : Key := k) : Int := if s (.has base) = 1 then s k else 0
 
+/-! ## Storage layout -/
+
+@[simp] def TokenA : Key := .var "TokenA"
+@[simp] def TokenB : Key := .var "TokenB"
+@[simp] def TotalShares : Key := .var "TotalShares"
+@[simp] def ReserveA : Key := .var "ReserveA"
+@[simp] def ReserveB : Key := .var "ReserveB"
+@[simp] def Shares (k1 : Addr) : Key := .entry "Shares" k1
+
+namespace __constructor
+@[simp] def token_a (st : Step) : Addr := st.call.argA "token_a"
+@[simp] def token_b (st : Step) : Addr := st.call.argA "token_b"
+@[simp] def s1 (st : Step) : Storage :=
+  ((st.pre).set TokenA (__constructor.token_a st)).set (.has TokenA) 1
+@[simp] def s2 (st : Step) : Storage :=
+  ((__constructor.s1 st).set TokenB (__constructor.token_b st)).set (.has TokenB) 1
+@[simp] def s3 (st : Step) : Storage :=
+  ((__constructor.s2 st).set TotalShares 0).set (.has TotalShares) 1
+@[simp] def s4 (st : Step) : Storage :=
+  ((__constructor.s3 st).set ReserveA 0).set (.has ReserveA) 1
+@[simp] def s5 (st : Step) : Storage :=
+  ((__constructor.s4 st).set ReserveB 0).set (.has ReserveB) 1
+end __constructor
+
 /-- `__constructor(token_a: Address, token_b: Address)`
-    effects, in execution order:
+    effects, in execution order (states `__constructor.s1`, `__constructor.s2`, …):
       write storage.TokenA/1 := token_a
       write storage.TokenB/2 := token_b
-      write storage.TotalShares/3 := 11
-      write storage.ReserveA/4 := 11
-      write storage.ReserveB/5 := 11
+      write storage.TotalShares/3 := 0
+      write storage.ReserveA/4 := 0
+      write storage.ReserveB/5 := 0
     conditions to succeed:
       gate: token_a < token_b
 -/
 def __constructor : Step → Prop := fun st =>
-  let c := st.call.caller
-  let pool := st.call.self
-  let s1 := ((st.pre).set (.var "TokenA") (st.call.argA "token_a")).set (.has (.var "TokenA")) (1)
-  let s2 := ((s1).set (.var "TokenB") (st.call.argA "token_b")).set (.has (.var "TokenB")) (1)
-  let s3 := ((s2).set (.var "TotalShares") (11)).set (.has (.var "TotalShares")) (1)
-  let s4 := ((s3).set (.var "ReserveA") (11)).set (.has (.var "ReserveA")) (1)
-  let s5 := ((s4).set (.var "ReserveB") (11)).set (.has (.var "ReserveB")) (1)
   st.call.fn = "__constructor" ∧
-  c ≠ pool ∧
-  st.call.argA "token_a" < st.call.argA "token_b" ∧   -- gate
-  st.post = s5 ∧
-  st.writes = [.var "TokenA", .has (.var "TokenA"), .var "TokenB", .has (.var "TokenB"), .var "TotalShares", .has (.var "TotalShares"), .var "ReserveA", .has (.var "ReserveA"), .var "ReserveB", .has (.var "ReserveB")] ∧
+  st.call.caller ≠ pool st ∧
+  (__constructor.token_a st) < (__constructor.token_b st) ∧   -- gate
+  st.post = (__constructor.s5 st) ∧
+  st.writes = [TokenA, .has TokenA, TokenB, .has TokenB, TotalShares, .has TotalShares, ReserveA, .has ReserveA, ReserveB, .has ReserveB] ∧
   st.ret = 2
+
+namespace balance_shares
+@[simp] def user (st : Step) : Addr := st.call.argA "user"
+end balance_shares
 
 /-- `balance_shares(user: Address)`
 -/
 def balance_shares : Step → Prop := fun st =>
-  let c := st.call.caller
-  let pool := st.call.self
   st.call.fn = "balance_shares" ∧
-  c ≠ pool ∧
+  st.call.caller ≠ pool st ∧
   st.post = st.pre ∧
   st.writes = [] ∧
-  st.ret = (getOr0 st.pre (.entry "Shares" (st.call.argA "user")))
+  st.ret = (getOr0 st.pre (Shares (balance_shares.user st)))
+
+namespace deposit
+@[simp] def desired_a (st : Step) : Int := st.call.arg "desired_a"
+@[simp] def desired_b (st : Step) : Int := st.call.arg "desired_b"
+@[simp] def min_a (st : Step) : Int := st.call.arg "min_a"
+@[simp] def min_b (st : Step) : Int := st.call.arg "min_b"
+@[simp] def to (st : Step) : Addr := st.call.argA "to"
+@[simp] def amt1 (st : Step) : Int :=
+  (if (¬(((st.pre ReserveA) = 0) ∧ ((st.pre ReserveB) = 0))) ∧ ((Int.tdiv ((deposit.desired_a st) * (st.pre ReserveB)) (st.pre ReserveA)) > (deposit.desired_b st)) then (Int.tdiv ((deposit.desired_b st) * (st.pre ReserveA)) (st.pre ReserveB)) else (deposit.desired_a st))
+@[simp] def s1 (st : Step) : Storage :=
+  xfer (st.pre TokenA) st.pre (deposit.to st) (pool st) (deposit.amt1 st)
+@[simp] def amt2 (st : Step) : Int :=
+  (if (¬(((st.pre ReserveA) = 0) ∧ ((st.pre ReserveB) = 0))) ∧ ((Int.tdiv ((deposit.desired_a st) * (st.pre ReserveB)) (st.pre ReserveA)) > (deposit.desired_b st)) then (deposit.desired_b st) else (if ¬(((st.pre ReserveA) = 0) ∧ ((st.pre ReserveB) = 0)) then (Int.tdiv ((deposit.desired_a st) * (st.pre ReserveB)) (st.pre ReserveA)) else (deposit.desired_b st)))
+@[simp] def s2 (st : Step) : Storage :=
+  xfer (st.pre TokenB) (deposit.s1 st) (deposit.to st) (pool st) (deposit.amt2 st)
+@[simp] def s3 (st : Step) (u : Unk) : Storage :=
+  ((deposit.s2 st).set (Shares (deposit.to st)) ((getOr0 (deposit.s2 st) (Shares (deposit.to st))) + ((u.i 1) - ((deposit.s2 st) TotalShares)))).set (.has (Shares (deposit.to st))) 1
+@[simp] def s4 (st : Step) (u : Unk) : Storage :=
+  ((deposit.s3 st u).set TotalShares (((deposit.s2 st) TotalShares) + ((u.i 2) - ((deposit.s2 st) TotalShares)))).set (.has TotalShares) 1
+@[simp] def s5 (st : Step) (u : Unk) : Storage :=
+  ((deposit.s4 st u).set ReserveA (bal (st.pre TokenA) (deposit.s2 st) (pool st))).set (.has ReserveA) 1
+@[simp] def s6 (st : Step) (u : Unk) : Storage :=
+  ((deposit.s5 st u).set ReserveB (bal (st.pre TokenB) (deposit.s2 st) (pool st))).set (.has ReserveB) 1
+end deposit
 
 /-- `deposit(to: Address, desired_a: i128, min_a: i128, desired_b: i128, min_b: i128)`
-    effects, in execution order:
+    effects, in execution order (states `deposit.s1`, `deposit.s2`, …; amounts `deposit.amt1`, …):
       transfer storage.TokenA/6: to -> @pool : Select(@and(@not(@and(ICmp_EQ(storage.ReserveA/14, 0), ICmp_EQ(storage.ReserveB/16, 0))), ICmp_SGT(((desired_a * storage.ReserveB/16) / storage.ReserveA/14), desired_b)), ((desired_b * storage.ReserveA/14) / storage.ReserveB/16), desired_a)
       transfer storage.TokenB/6: to -> @pool : Select(@and(@not(@and(ICmp_EQ(storage.ReserveA/14, 0), ICmp_EQ(storage.ReserveB/16, 0))), ICmp_SGT(((desired_a * storage.ReserveB/16) / storage.ReserveA/14), desired_b)), desired_b, Select(@not(@and(ICmp_EQ(storage.ReserveA/14, 0), ICmp_EQ(storage.ReserveB/16, 0))), ((desired_a * storage.ReserveB/16) / storage.ReserveA/14), desired_b))
       write @map:Shares(to, @at(20)) := (Select(@not(ICmp_EQ(@has(@map:Shares(to, @at(22))), 1)), 0, @map:Shares(to, @at(23))) + (big - storage.TotalShares/36))
@@ -123,42 +169,51 @@ def balance_shares : Step → Prop := fun st =>
       write storage.ReserveB/43 := @call:balance(storage.TokenB/6, @vec(@pool), @at(28))
     conditions to succeed:
       require_auth to
-      gate: ((desired_a * storage.ReserveB/16) / storage.ReserveA/14) ≥ min_b   [when ¬(((st.pre (.var "ReserveA")) = 0) ∧ ((st.pre (.var "ReserveB")) = 0)) ∧ ¬((Int.tdiv (st.call.arg "desired_a" * (st.pre (.var "ReserveB"))) (st.pre (.var "ReserveA"))) > st.call.arg "desired_b")]
-      gate: desired_a ≥ ((desired_b * storage.ReserveA/14) / storage.ReserveB/16)   [when ¬(((st.pre (.var "ReserveA")) = 0) ∧ ((st.pre (.var "ReserveB")) = 0)) ∧ (Int.tdiv (st.call.arg "desired_a" * (st.pre (.var "ReserveB"))) (st.pre (.var "ReserveA"))) > st.call.arg "desired_b"]
-      gate: ((desired_b * storage.ReserveA/14) / storage.ReserveB/16) ≥ min_a   [when ¬(((st.pre (.var "ReserveA")) = 0) ∧ ((st.pre (.var "ReserveB")) = 0)) ∧ (Int.tdiv (st.call.arg "desired_a" * (st.pre (.var "ReserveB"))) (st.pre (.var "ReserveA"))) > st.call.arg "desired_b"]
+      gate: ((desired_a * storage.ReserveB/16) / storage.ReserveA/14) ≥ min_b   [when ¬(((st.pre (ReserveA)) = 0) ∧ ((st.pre (ReserveB)) = 0)) ∧ ¬((Int.tdiv ((deposit.desired_a st) * (st.pre (ReserveB))) (st.pre (ReserveA))) > (deposit.desired_b st))]
+      gate: desired_a ≥ ((desired_b * storage.ReserveA/14) / storage.ReserveB/16)   [when ¬(((st.pre (ReserveA)) = 0) ∧ ((st.pre (ReserveB)) = 0)) ∧ (Int.tdiv ((deposit.desired_a st) * (st.pre (ReserveB))) (st.pre (ReserveA))) > (deposit.desired_b st)]
+      gate: ((desired_b * storage.ReserveA/14) / storage.ReserveB/16) ≥ min_a   [when ¬(((st.pre (ReserveA)) = 0) ∧ ((st.pre (ReserveB)) = 0)) ∧ (Int.tdiv ((deposit.desired_a st) * (st.pre (ReserveB))) (st.pre (ReserveA))) > (deposit.desired_b st)]
 -/
 def deposit : Step → Prop := fun st => ∃ u : Unk,
-  let c := st.call.caller
-  let pool := st.call.self
-  let s1 := xfer ((st.pre (.var "TokenA"))) st.pre (st.call.argA "to") (pool) ((if (¬(((st.pre (.var "ReserveA")) = 0) ∧ ((st.pre (.var "ReserveB")) = 0))) ∧ ((Int.tdiv (st.call.arg "desired_a" * (st.pre (.var "ReserveB"))) (st.pre (.var "ReserveA"))) > st.call.arg "desired_b") then (Int.tdiv (st.call.arg "desired_b" * (st.pre (.var "ReserveA"))) (st.pre (.var "ReserveB"))) else st.call.arg "desired_a"))
-  let s2 := xfer ((st.pre (.var "TokenB"))) s1 (st.call.argA "to") (pool) ((if (¬(((st.pre (.var "ReserveA")) = 0) ∧ ((st.pre (.var "ReserveB")) = 0))) ∧ ((Int.tdiv (st.call.arg "desired_a" * (st.pre (.var "ReserveB"))) (st.pre (.var "ReserveA"))) > st.call.arg "desired_b") then st.call.arg "desired_b" else (if ¬(((st.pre (.var "ReserveA")) = 0) ∧ ((st.pre (.var "ReserveB")) = 0)) then (Int.tdiv (st.call.arg "desired_a" * (st.pre (.var "ReserveB"))) (st.pre (.var "ReserveA"))) else st.call.arg "desired_b")))
-  let s3 := ((s2).set (.entry "Shares" (st.call.argA "to")) (((getOr0 s2 (.entry "Shares" (st.call.argA "to"))) + ((u.i 1) - (s2 (.var "TotalShares")))))).set (.has (.entry "Shares" (st.call.argA "to"))) (1)
-  let s4 := ((s3).set (.var "TotalShares") (((s2 (.var "TotalShares")) + ((u.i 2) - (s2 (.var "TotalShares")))))).set (.has (.var "TotalShares")) (1)
-  let s5 := ((s4).set (.var "ReserveA") ((bal (st.pre (.var "TokenA")) s2 pool))).set (.has (.var "ReserveA")) (1)
-  let s6 := ((s5).set (.var "ReserveB") ((bal (st.pre (.var "TokenB")) s2 pool))).set (.has (.var "ReserveB")) (1)
   st.call.fn = "deposit" ∧
-  c ≠ pool ∧
-  st.call.argA "to" ∈ st.call.signers ∧   -- require_auth to
-  ((¬(((st.pre (.var "ReserveA")) = 0) ∧ ((st.pre (.var "ReserveB")) = 0)) ∧ ¬((Int.tdiv (st.call.arg "desired_a" * (st.pre (.var "ReserveB"))) (st.pre (.var "ReserveA"))) > st.call.arg "desired_b")) → (Int.tdiv (st.call.arg "desired_a" * (st.pre (.var "ReserveB"))) (st.pre (.var "ReserveA"))) ≥ st.call.arg "min_b") ∧   -- gate
-  ((¬(((st.pre (.var "ReserveA")) = 0) ∧ ((st.pre (.var "ReserveB")) = 0)) ∧ (Int.tdiv (st.call.arg "desired_a" * (st.pre (.var "ReserveB"))) (st.pre (.var "ReserveA"))) > st.call.arg "desired_b") → st.call.arg "desired_a" ≥ (Int.tdiv (st.call.arg "desired_b" * (st.pre (.var "ReserveA"))) (st.pre (.var "ReserveB")))) ∧   -- gate
-  ((¬(((st.pre (.var "ReserveA")) = 0) ∧ ((st.pre (.var "ReserveB")) = 0)) ∧ (Int.tdiv (st.call.arg "desired_a" * (st.pre (.var "ReserveB"))) (st.pre (.var "ReserveA"))) > st.call.arg "desired_b") → (Int.tdiv (st.call.arg "desired_b" * (st.pre (.var "ReserveA"))) (st.pre (.var "ReserveB"))) ≥ st.call.arg "min_a") ∧   -- gate
-  st.post = s6 ∧
-  st.writes = [.bal ((st.pre (.var "TokenA"))) (st.call.argA "to"), .bal ((st.pre (.var "TokenA"))) (pool), .bal ((st.pre (.var "TokenB"))) (st.call.argA "to"), .bal ((st.pre (.var "TokenB"))) (pool), .entry "Shares" (st.call.argA "to"), .has (.entry "Shares" (st.call.argA "to")), .var "TotalShares", .has (.var "TotalShares"), .var "ReserveA", .has (.var "ReserveA"), .var "ReserveB", .has (.var "ReserveB")] ∧
+  st.call.caller ≠ pool st ∧
+  (deposit.to st) ∈ st.call.signers ∧   -- require_auth to
+  ((¬(((st.pre ReserveA) = 0) ∧ ((st.pre ReserveB) = 0)) ∧ ¬((Int.tdiv ((deposit.desired_a st) * (st.pre ReserveB)) (st.pre ReserveA)) > (deposit.desired_b st))) → (Int.tdiv ((deposit.desired_a st) * (st.pre ReserveB)) (st.pre ReserveA)) ≥ (deposit.min_b st)) ∧   -- gate
+  ((¬(((st.pre ReserveA) = 0) ∧ ((st.pre ReserveB) = 0)) ∧ (Int.tdiv ((deposit.desired_a st) * (st.pre ReserveB)) (st.pre ReserveA)) > (deposit.desired_b st)) → (deposit.desired_a st) ≥ (Int.tdiv ((deposit.desired_b st) * (st.pre ReserveA)) (st.pre ReserveB))) ∧   -- gate
+  ((¬(((st.pre ReserveA) = 0) ∧ ((st.pre ReserveB) = 0)) ∧ (Int.tdiv ((deposit.desired_a st) * (st.pre ReserveB)) (st.pre ReserveA)) > (deposit.desired_b st)) → (Int.tdiv ((deposit.desired_b st) * (st.pre ReserveA)) (st.pre ReserveB)) ≥ (deposit.min_a st)) ∧   -- gate
+  st.post = (deposit.s6 st u) ∧
+  st.writes = [.bal (st.pre TokenA) (deposit.to st), .bal (st.pre TokenA) (pool st), .bal (st.pre TokenB) (deposit.to st), .bal (st.pre TokenB) (pool st), (Shares (deposit.to st)), .has (Shares (deposit.to st)), TotalShares, .has TotalShares, ReserveA, .has ReserveA, ReserveB, .has ReserveB] ∧
   st.ret = 2
 
 /-- `get_rsrvs()`
 -/
 def get_rsrvs : Step → Prop := fun st => ∃ u : Unk,
-  let c := st.call.caller
-  let pool := st.call.self
   st.call.fn = "get_rsrvs" ∧
-  c ≠ pool ∧
+  st.call.caller ≠ pool st ∧
   st.post = st.pre ∧
   st.writes = [] ∧
   st.ret = (u.i 0)
 
+namespace swap
+@[simp] def buy_a (st : Step) : Int := st.call.arg "buy_a"
+@[simp] def in_max (st : Step) : Int := st.call.arg "in_max"
+@[simp] def out (st : Step) : Int := st.call.arg "out"
+@[simp] def to (st : Step) : Addr := st.call.argA "to"
+@[simp] def amt1 (st : Step) : Int :=
+  ((Int.tdiv (((if (swap.buy_a st) = 0 then (st.pre ReserveA) else (st.pre ReserveB)) * (swap.out st)) * 1000) (((if (swap.buy_a st) = 0 then (st.pre ReserveB) else (st.pre ReserveA)) - (swap.out st)) * 997)) + 1)
+@[simp] def s1 (st : Step) : Storage :=
+  xfer (if ¬((swap.buy_a st) = 0) then (st.pre TokenB) else (st.pre TokenA)) st.pre (swap.to st) (pool st) (swap.amt1 st)
+@[simp] def amt2 (st : Step) : Int :=
+  (swap.out st)
+@[simp] def s2 (st : Step) : Storage :=
+  xfer (if (swap.buy_a st) = 0 then (st.pre TokenB) else (st.pre TokenA)) (swap.s1 st) (pool st) (swap.to st) (swap.amt2 st)
+@[simp] def s3 (st : Step) : Storage :=
+  ((swap.s2 st).set ReserveA ((bal (st.pre TokenA) (swap.s1 st) (pool st)) - (if ¬((swap.buy_a st) = 0) then (swap.out st) else 0))).set (.has ReserveA) 1
+@[simp] def s4 (st : Step) : Storage :=
+  ((swap.s3 st).set ReserveB ((bal (st.pre TokenB) (swap.s1 st) (pool st)) - (if ¬((swap.buy_a st) = 0) then 0 else (swap.out st)))).set (.has ReserveB) 1
+end swap
+
 /-- `swap(to: Address, buy_a: bool, out: i128, in_max: i128)`
-    effects, in execution order:
+    effects, in execution order (states `swap.s1`, `swap.s2`, …; amounts `swap.amt1`, …):
       transfer Select(@not(@isfalse(buy_a)), storage.TokenB/6, storage.TokenA/6): to -> @pool : ((((Select(@isfalse(buy_a), storage.ReserveA/59, storage.ReserveB/61) * out) * 1000) / ((Select(@isfalse(buy_a), storage.ReserveB/61, storage.ReserveA/59) - out) * 997)) + 1)
       transfer Select(@isfalse(buy_a), storage.TokenB/6, storage.TokenA/6): @pool -> to : out
       write storage.ReserveA/78 := (@call:balance(storage.TokenA/6, @vec(@pool), @at(72)) - Select(@not(@isfalse(buy_a)), out, 0))
@@ -170,24 +225,41 @@ def get_rsrvs : Step → Prop := fun st => ∃ u : Unk,
       gate: (((1000 * storage.ReserveA/59) + Select(@not(ICmp_SLE(((@call:balance(storage.TokenA/6, @vec(@pool), @at(72)) - storage.ReserveA/59) - Select(@not(@isfalse(buy_a)), out, 0)), 0)), (997 * ((@call:balance(storage.TokenA/6, @vec(@pool), @at(72)) - storage.ReserveA/59) - Select(@not(@isfalse(buy_a)), out, 0))), (1000 * ((@call:balance(storage.TokenA/6, @vec(@pool), @at(72)) - storage.ReserveA/59) - Select(@not(@isfalse(buy_a)), out, 0))))) * ((1000 * storage.ReserveB/61) + Select(@not(ICmp_SLE(((@call:balance(storage.TokenB/6, @vec(@pool), @at(76)) - storage.ReserveB/61) - Select(@not(@isfalse(buy_a)), 0, out)), 0)), (997 * ((@call:balance(storage.TokenB/6, @vec(@pool), @at(76)) - storage.ReserveB/61) - Select(@not(@isfalse(buy_a)), 0, out))), (1000 * ((@call:balance(storage.TokenB/6, @vec(@pool), @at(76)) - storage.ReserveB/61) - Select(@not(@isfalse(buy_a)), 0, out)))))) ≥ ((storage.ReserveA/59 * 1000) * (storage.ReserveB/61 * 1000))
 -/
 def swap : Step → Prop := fun st =>
-  let c := st.call.caller
-  let pool := st.call.self
-  let s1 := xfer ((if ¬(st.call.arg "buy_a" = 0) then (st.pre (.var "TokenB")) else (st.pre (.var "TokenA")))) st.pre (st.call.argA "to") (pool) (((Int.tdiv (((if st.call.arg "buy_a" = 0 then (st.pre (.var "ReserveA")) else (st.pre (.var "ReserveB"))) * st.call.arg "out") * 1000) (((if st.call.arg "buy_a" = 0 then (st.pre (.var "ReserveB")) else (st.pre (.var "ReserveA"))) - st.call.arg "out") * 997)) + 1))
-  let s2 := xfer ((if st.call.arg "buy_a" = 0 then (st.pre (.var "TokenB")) else (st.pre (.var "TokenA")))) s1 (pool) (st.call.argA "to") (st.call.arg "out")
-  let s3 := ((s2).set (.var "ReserveA") (((bal (st.pre (.var "TokenA")) s1 pool) - (if ¬(st.call.arg "buy_a" = 0) then st.call.arg "out" else 0)))).set (.has (.var "ReserveA")) (1)
-  let s4 := ((s3).set (.var "ReserveB") (((bal (st.pre (.var "TokenB")) s1 pool) - (if ¬(st.call.arg "buy_a" = 0) then 0 else st.call.arg "out")))).set (.has (.var "ReserveB")) (1)
   st.call.fn = "swap" ∧
-  c ≠ pool ∧
-  st.call.argA "to" ∈ st.call.signers ∧   -- require_auth to
-  (if st.call.arg "buy_a" = 0 then (st.pre (.var "ReserveB")) else (st.pre (.var "ReserveA"))) ≥ st.call.arg "out" ∧   -- gate
-  ((Int.tdiv (((if st.call.arg "buy_a" = 0 then (st.pre (.var "ReserveA")) else (st.pre (.var "ReserveB"))) * st.call.arg "out") * 1000) (((if st.call.arg "buy_a" = 0 then (st.pre (.var "ReserveB")) else (st.pre (.var "ReserveA"))) - st.call.arg "out") * 997)) + 1) ≤ st.call.arg "in_max" ∧   -- gate
-  (((1000 * (st.pre (.var "ReserveA"))) + (if ¬((((bal (st.pre (.var "TokenA")) s1 pool) - (st.pre (.var "ReserveA"))) - (if ¬(st.call.arg "buy_a" = 0) then st.call.arg "out" else 0)) ≤ 0) then (997 * (((bal (st.pre (.var "TokenA")) s1 pool) - (st.pre (.var "ReserveA"))) - (if ¬(st.call.arg "buy_a" = 0) then st.call.arg "out" else 0))) else (1000 * (((bal (st.pre (.var "TokenA")) s1 pool) - (st.pre (.var "ReserveA"))) - (if ¬(st.call.arg "buy_a" = 0) then st.call.arg "out" else 0))))) * ((1000 * (st.pre (.var "ReserveB"))) + (if ¬((((bal (st.pre (.var "TokenB")) s1 pool) - (st.pre (.var "ReserveB"))) - (if ¬(st.call.arg "buy_a" = 0) then 0 else st.call.arg "out")) ≤ 0) then (997 * (((bal (st.pre (.var "TokenB")) s1 pool) - (st.pre (.var "ReserveB"))) - (if ¬(st.call.arg "buy_a" = 0) then 0 else st.call.arg "out"))) else (1000 * (((bal (st.pre (.var "TokenB")) s1 pool) - (st.pre (.var "ReserveB"))) - (if ¬(st.call.arg "buy_a" = 0) then 0 else st.call.arg "out")))))) ≥ (((st.pre (.var "ReserveA")) * 1000) * ((st.pre (.var "ReserveB")) * 1000)) ∧   -- gate
-  st.post = s4 ∧
-  st.writes = [.bal ((if ¬(st.call.arg "buy_a" = 0) then (st.pre (.var "TokenB")) else (st.pre (.var "TokenA")))) (st.call.argA "to"), .bal ((if ¬(st.call.arg "buy_a" = 0) then (st.pre (.var "TokenB")) else (st.pre (.var "TokenA")))) (pool), .bal ((if st.call.arg "buy_a" = 0 then (st.pre (.var "TokenB")) else (st.pre (.var "TokenA")))) (pool), .bal ((if st.call.arg "buy_a" = 0 then (st.pre (.var "TokenB")) else (st.pre (.var "TokenA")))) (st.call.argA "to"), .var "ReserveA", .has (.var "ReserveA"), .var "ReserveB", .has (.var "ReserveB")] ∧
+  st.call.caller ≠ pool st ∧
+  (swap.to st) ∈ st.call.signers ∧   -- require_auth to
+  (if (swap.buy_a st) = 0 then (st.pre ReserveB) else (st.pre ReserveA)) ≥ (swap.out st) ∧   -- gate
+  ((Int.tdiv (((if (swap.buy_a st) = 0 then (st.pre ReserveA) else (st.pre ReserveB)) * (swap.out st)) * 1000) (((if (swap.buy_a st) = 0 then (st.pre ReserveB) else (st.pre ReserveA)) - (swap.out st)) * 997)) + 1) ≤ (swap.in_max st) ∧   -- gate
+  (((1000 * (st.pre ReserveA)) + (if ¬((((bal (st.pre TokenA) (swap.s1 st) (pool st)) - (st.pre ReserveA)) - (if ¬((swap.buy_a st) = 0) then (swap.out st) else 0)) ≤ 0) then (997 * (((bal (st.pre TokenA) (swap.s1 st) (pool st)) - (st.pre ReserveA)) - (if ¬((swap.buy_a st) = 0) then (swap.out st) else 0))) else (1000 * (((bal (st.pre TokenA) (swap.s1 st) (pool st)) - (st.pre ReserveA)) - (if ¬((swap.buy_a st) = 0) then (swap.out st) else 0))))) * ((1000 * (st.pre ReserveB)) + (if ¬((((bal (st.pre TokenB) (swap.s1 st) (pool st)) - (st.pre ReserveB)) - (if ¬((swap.buy_a st) = 0) then 0 else (swap.out st))) ≤ 0) then (997 * (((bal (st.pre TokenB) (swap.s1 st) (pool st)) - (st.pre ReserveB)) - (if ¬((swap.buy_a st) = 0) then 0 else (swap.out st)))) else (1000 * (((bal (st.pre TokenB) (swap.s1 st) (pool st)) - (st.pre ReserveB)) - (if ¬((swap.buy_a st) = 0) then 0 else (swap.out st))))))) ≥ (((st.pre ReserveA) * 1000) * ((st.pre ReserveB) * 1000)) ∧   -- gate
+  st.post = (swap.s4 st) ∧
+  st.writes = [.bal (if ¬((swap.buy_a st) = 0) then (st.pre TokenB) else (st.pre TokenA)) (swap.to st), .bal (if ¬((swap.buy_a st) = 0) then (st.pre TokenB) else (st.pre TokenA)) (pool st), .bal (if (swap.buy_a st) = 0 then (st.pre TokenB) else (st.pre TokenA)) (pool st), .bal (if (swap.buy_a st) = 0 then (st.pre TokenB) else (st.pre TokenA)) (swap.to st), ReserveA, .has ReserveA, ReserveB, .has ReserveB] ∧
   st.ret = 2
 
+namespace withdraw
+@[simp] def min_a (st : Step) : Int := st.call.arg "min_a"
+@[simp] def min_b (st : Step) : Int := st.call.arg "min_b"
+@[simp] def share_amount (st : Step) : Int := st.call.arg "share_amount"
+@[simp] def to (st : Step) : Addr := st.call.argA "to"
+@[simp] def s1 (st : Step) : Storage :=
+  ((st.pre).set (Shares (withdraw.to st)) ((getOr0 st.pre (Shares (withdraw.to st))) - (withdraw.share_amount st))).set (.has (Shares (withdraw.to st))) 1
+@[simp] def s2 (st : Step) : Storage :=
+  ((withdraw.s1 st).set TotalShares ((st.pre TotalShares) - (withdraw.share_amount st))).set (.has TotalShares) 1
+@[simp] def amt1 (st : Step) : Int :=
+  (Int.tdiv ((bal (st.pre TokenA) st.pre (pool st)) * (withdraw.share_amount st)) (st.pre TotalShares))
+@[simp] def s3 (st : Step) : Storage :=
+  xfer (st.pre TokenA) (withdraw.s2 st) (pool st) (withdraw.to st) (withdraw.amt1 st)
+@[simp] def amt2 (st : Step) : Int :=
+  (Int.tdiv ((bal (st.pre TokenB) st.pre (pool st)) * (withdraw.share_amount st)) (st.pre TotalShares))
+@[simp] def s4 (st : Step) : Storage :=
+  xfer (st.pre TokenB) (withdraw.s3 st) (pool st) (withdraw.to st) (withdraw.amt2 st)
+@[simp] def s5 (st : Step) : Storage :=
+  ((withdraw.s4 st).set ReserveA ((bal (st.pre TokenA) st.pre (pool st)) - (Int.tdiv ((bal (st.pre TokenA) st.pre (pool st)) * (withdraw.share_amount st)) (st.pre TotalShares)))).set (.has ReserveA) 1
+@[simp] def s6 (st : Step) : Storage :=
+  ((withdraw.s5 st).set ReserveB ((bal (st.pre TokenB) st.pre (pool st)) - (Int.tdiv ((bal (st.pre TokenB) st.pre (pool st)) * (withdraw.share_amount st)) (st.pre TotalShares)))).set (.has ReserveB) 1
+end withdraw
+
 /-- `withdraw(to: Address, share_amount: i128, min_a: i128, min_b: i128)`
-    effects, in execution order:
+    effects, in execution order (states `withdraw.s1`, `withdraw.s2`, …; amounts `withdraw.amt1`, …):
       write @map:Shares(to, @at(91)) := (Select(@not(ICmp_EQ(@has(@map:Shares(to, @at(92))), 1)), 0, @map:Shares(to, @at(93))) - share_amount)
       write storage.TotalShares/95 := (storage.TotalShares/97 - share_amount)
       transfer storage.TokenA/6: @pool -> to : ((@call:balance(storage.TokenA/6, @vec(@pool), @at(85)) * share_amount) / storage.TotalShares/88)
@@ -202,22 +274,14 @@ def swap : Step → Prop := fun st =>
       gate: Select(@not(ICmp_EQ(@has(@map:Shares(to, @at(92))), 1)), 0, @map:Shares(to, @at(93))) ≥ share_amount
 -/
 def withdraw : Step → Prop := fun st => ∃ u : Unk,
-  let c := st.call.caller
-  let pool := st.call.self
-  let s1 := ((st.pre).set (.entry "Shares" (st.call.argA "to")) (((getOr0 st.pre (.entry "Shares" (st.call.argA "to"))) - st.call.arg "share_amount"))).set (.has (.entry "Shares" (st.call.argA "to"))) (1)
-  let s2 := ((s1).set (.var "TotalShares") (((st.pre (.var "TotalShares")) - st.call.arg "share_amount"))).set (.has (.var "TotalShares")) (1)
-  let s3 := xfer ((st.pre (.var "TokenA"))) s2 (pool) (st.call.argA "to") ((Int.tdiv ((bal (st.pre (.var "TokenA")) st.pre pool) * st.call.arg "share_amount") (st.pre (.var "TotalShares"))))
-  let s4 := xfer ((st.pre (.var "TokenB"))) s3 (pool) (st.call.argA "to") ((Int.tdiv ((bal (st.pre (.var "TokenB")) st.pre pool) * st.call.arg "share_amount") (st.pre (.var "TotalShares"))))
-  let s5 := ((s4).set (.var "ReserveA") (((bal (st.pre (.var "TokenA")) st.pre pool) - (Int.tdiv ((bal (st.pre (.var "TokenA")) st.pre pool) * st.call.arg "share_amount") (st.pre (.var "TotalShares")))))).set (.has (.var "ReserveA")) (1)
-  let s6 := ((s5).set (.var "ReserveB") (((bal (st.pre (.var "TokenB")) st.pre pool) - (Int.tdiv ((bal (st.pre (.var "TokenB")) st.pre pool) * st.call.arg "share_amount") (st.pre (.var "TotalShares")))))).set (.has (.var "ReserveB")) (1)
   st.call.fn = "withdraw" ∧
-  c ≠ pool ∧
-  st.call.argA "to" ∈ st.call.signers ∧   -- require_auth to
-  (getOr0 st.pre (.entry "Shares" (st.call.argA "to"))) ≥ st.call.arg "share_amount" ∧   -- gate
-  (Int.tdiv ((bal (st.pre (.var "TokenA")) st.pre pool) * st.call.arg "share_amount") (st.pre (.var "TotalShares"))) ≥ st.call.arg "min_a" ∧   -- gate
-  (Int.tdiv ((bal (st.pre (.var "TokenB")) st.pre pool) * st.call.arg "share_amount") (st.pre (.var "TotalShares"))) ≥ st.call.arg "min_b" ∧   -- gate
-  st.post = s6 ∧
-  st.writes = [.entry "Shares" (st.call.argA "to"), .has (.entry "Shares" (st.call.argA "to")), .var "TotalShares", .has (.var "TotalShares"), .bal ((st.pre (.var "TokenA"))) (pool), .bal ((st.pre (.var "TokenA"))) (st.call.argA "to"), .bal ((st.pre (.var "TokenB"))) (pool), .bal ((st.pre (.var "TokenB"))) (st.call.argA "to"), .var "ReserveA", .has (.var "ReserveA"), .var "ReserveB", .has (.var "ReserveB")] ∧
+  st.call.caller ≠ pool st ∧
+  (withdraw.to st) ∈ st.call.signers ∧   -- require_auth to
+  (getOr0 st.pre (Shares (withdraw.to st))) ≥ (withdraw.share_amount st) ∧   -- gate
+  (Int.tdiv ((bal (st.pre TokenA) st.pre (pool st)) * (withdraw.share_amount st)) (st.pre TotalShares)) ≥ (withdraw.min_a st) ∧   -- gate
+  (Int.tdiv ((bal (st.pre TokenB) st.pre (pool st)) * (withdraw.share_amount st)) (st.pre TotalShares)) ≥ (withdraw.min_b st) ∧   -- gate
+  st.post = (withdraw.s6 st) ∧
+  st.writes = [(Shares (withdraw.to st)), .has (Shares (withdraw.to st)), TotalShares, .has TotalShares, .bal (st.pre TokenA) (pool st), .bal (st.pre TokenA) (withdraw.to st), .bal (st.pre TokenB) (pool st), .bal (st.pre TokenB) (withdraw.to st), ReserveA, .has ReserveA, ReserveB, .has ReserveB] ∧
   st.ret = (u.i 0)
 
 /-- the contract's entry points (each a `Step → Prop`). -/

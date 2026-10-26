@@ -2830,6 +2830,7 @@ fn value_expr_raw<'c>(
                 .map(|k| {
                     let mut seen = MemCtx::default();
                     mem_before(ins.get_previous_instruction(), blk, &(at.0.clone(), at.1 + 8 * k as i64), g, &cfg, module, memo, depth - 1, &mut seen)
+                        .map(val_literal)
                         .unwrap_or_else(|| Expr::Opaque("?".into(), vec![]))
                 })
                 .collect();
@@ -4493,6 +4494,7 @@ fn gate_vals(cond: BasicValueEnum) -> Option<(RelOp, BasicValueEnum, BasicValueE
 /// the low-level plumbing (Val tag checks, i128 sign/overflow checks, and the
 /// uninterpreted arithmetic internals) that every entrypoint is full of.
 fn entry_guards<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> GuardSet {
+    CUR_ENTRY.with(|e| *e.borrow_mut() = f.get_name().to_string_lossy().chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect());
     let cfg = Cfg::build(f);
     let args = arg_table(f);
     let structs = spec_structs(module);
@@ -4716,6 +4718,103 @@ fn lean_cond(
     }
 }
 
+thread_local! {
+    /// The entrypoint being rendered (its inputs are `<entry>.<arg> st`).
+    static CUR_ENTRY: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    /// Per entrypoint, the inputs the model refers to: accessor -> is an address.
+    static INPUTS: std::cell::RefCell<BTreeMap<String, BTreeMap<String, bool>>> = const { std::cell::RefCell::new(BTreeMap::new()) };
+    /// The storage layout: named keys, in definition order (name, params, body).
+    static LAYOUT: std::cell::RefCell<Vec<(String, Vec<String>, String)>> = const { std::cell::RefCell::new(vec![]) };
+}
+
+/// A Lean identifier for `s` (Lean keywords quoted with «»).
+fn lean_ident(s: &str) -> String {
+    const KW: &[&str] = &["from", "fun", "at", "by", "have", "show", "let", "in", "do", "then", "else", "if", "match", "with",
+        "end", "open", "namespace", "def", "theorem", "where", "deriving", "instance", "structure", "class", "mut", "return",
+        "for", "unless", "try", "catch", "finally", "break", "continue", "Type", "Prop", "Sort", "import", "section",
+        "variable", "universe", "example", "abbrev", "axiom", "opaque", "inductive", "local", "private", "protected",
+        "partial", "unsafe", "noncomputable", "calc", "suffices", "obtain", "nomatch", "forall", "exists", "this"];
+    if KW.contains(&s) { format!("«{s}»") } else { s.to_string() }
+}
+
+/// An input of the entrypoint being rendered: `(<entry>.<name> st)`.
+fn input_ref(name: &str, is_addr: bool) -> String {
+    let entry = CUR_ENTRY.with(|e| e.borrow().clone());
+    INPUTS.with(|m| { m.borrow_mut().entry(entry.clone()).or_default().insert(name.to_string(), is_addr); });
+    let path: Vec<String> = name.split('.').map(lean_ident).collect();
+    format!("({}.{} st)", lean_ident(&entry), path.join("."))
+}
+
+/// A storage key, named after the contract's layout: a slot `Offer`, a map
+/// entry `(Balance a)`, a tuple key `(Minter c m)`, a struct field
+/// `Offer.seller` / `(Minter.limit c m)`. Each name is defined once (`LAYOUT`).
+#[derive(Clone)]
+enum KeyT {
+    Var(String),
+    Entry(String, String),
+    Tup(String, Vec<String>),
+    Fld(Box<KeyT>, String),
+}
+
+impl KeyT {
+    /// (name, parameter kinds, arguments) of the named form.
+    fn head(&self) -> (String, Vec<&'static str>, Vec<String>) {
+        match self {
+            KeyT::Var(n) => (lean_ident(n), vec![], vec![]),
+            KeyT::Entry(n, x) => (lean_ident(n), vec!["Addr"], vec![x.clone()]),
+            KeyT::Tup(n, xs) => (lean_ident(n), vec!["Int"; xs.len()], xs.clone()),
+            KeyT::Fld(b, f) => {
+                let (n, ps, xs) = b.head();
+                (format!("{n}.{}", lean_ident(f)), ps, xs)
+            }
+        }
+    }
+    /// The definition of the named form, over parameters `k1 … kn`.
+    fn body(&self, ks: &[String]) -> String {
+        match self {
+            KeyT::Var(n) => format!(".var \"{n}\""),
+            KeyT::Entry(n, _) => format!(".entry \"{n}\" {}", ks[0]),
+            KeyT::Tup(n, _) => format!(".tup \"{n}\" [{}]", ks.join(", ")),
+            KeyT::Fld(b, f) => {
+                let (bn, _, _) = b.head();
+                let base = if ks.is_empty() { bn } else { format!("({bn} {})", ks.join(" ")) };
+                format!(".fld {base} \"{f}\"")
+            }
+        }
+    }
+    fn render(&self) -> String {
+        if let KeyT::Fld(b, _) = self {
+            b.render(); // the base is defined first
+        }
+        let (name, ps, xs) = self.head();
+        let ks: Vec<String> = (1..=ps.len()).map(|k| format!("k{k}")).collect();
+        let params: Vec<String> = ps.iter().zip(&ks).map(|(t, k)| format!("({k} : {t})")).collect();
+        let body = self.body(&ks);
+        let ok = LAYOUT.with(|l| {
+            let mut l = l.borrow_mut();
+            match l.iter().find(|(n, _, _)| *n == name) {
+                Some((_, p, b)) => *p == params && *b == body,
+                None => {
+                    l.push((name.clone(), params.clone(), body.clone()));
+                    true
+                }
+            }
+        });
+        if !ok {
+            return self.raw(); // a clashing shape: written out in full
+        }
+        if xs.is_empty() { name } else { format!("({name} {})", xs.iter().map(|x| format!("({x})")).collect::<Vec<_>>().join(" ")) }
+    }
+    fn raw(&self) -> String {
+        match self {
+            KeyT::Var(n) => format!(".var \"{n}\""),
+            KeyT::Entry(n, x) => format!(".entry \"{n}\" ({x})"),
+            KeyT::Tup(n, xs) => format!(".tup \"{n}\" [{}]", xs.join(", ")),
+            KeyT::Fld(b, f) => format!(".fld ({}) \"{f}\"", b.raw()),
+        }
+    }
+}
+
 /// The storage `Key` a read/write addresses — a named slot (`.var`), a map
 /// entry (`.entry`), or a field of a `#[contracttype]` struct stored in one
 /// (`.fld`) — with the state a read of it sees (from its `@at` program point).
@@ -4727,9 +4826,25 @@ fn lean_key(
     decls: &mut Vec<String>,
     fnid: &str,
 ) -> Option<(String, String)> {
+    let (k, st) = key_t(e, args, opmap, oc, decls, fnid)?;
+    Some((k.render(), st))
+}
+
+fn key_t(
+    e: &Expr,
+    args: &Args,
+    opmap: &mut HashMap<String, String>,
+    oc: &mut usize,
+    decls: &mut Vec<String>,
+    fnid: &str,
+) -> Option<(KeyT, String)> {
+    let at = |x: Option<&Expr>| match x {
+        Some(Expr::Opaque(a, k)) if a == "@at" => match k.first() { Some(Expr::Const(t)) => state_at(*t as usize), _ => "st.pre".into() },
+        _ => "st.pre".into(),
+    };
     match e {
         Expr::Slot(n, t) if !matches!(n.as_str(), "instance" | "persistent" | "temporary" | "?") => {
-            Some((format!(".var \"{n}\""), if *t > 0 { state_at(*t - 1) } else { "st.pre".into() }))
+            Some((KeyT::Var(n.clone()), if *t > 0 { state_at(*t - 1) } else { "st.pre".into() }))
         }
         // a variant whose payload is a struct (`Allowance(AllowanceDataKey { from,
         // spender })`): keyed by the struct's fields.
@@ -4739,27 +4854,20 @@ fn lean_key(
             let Expr::Opaque(_, fs) = &xs[0] else { unreachable!() };
             let mut v = vec![Expr::Opaque("@ks".into(), fs.clone())];
             v.extend(xs.get(1).cloned());
-            lean_key(&Expr::Opaque(format!("@tup:{}", &l["@map:".len()..]), v), args, opmap, oc, decls, fnid)
+            key_t(&Expr::Opaque(format!("@tup:{}", &l["@map:".len()..]), v), args, opmap, oc, decls, fnid)
         }
         Expr::Opaque(l, xs) if l.starts_with("@map:") && (xs.len() == 1 || xs.len() == 2) => {
-            let st = match xs.get(1) {
-                Some(Expr::Opaque(a, k)) if a == "@at" => match k.first() { Some(Expr::Const(t)) => state_at(*t as usize), _ => "st.pre".into() },
-                _ => "st.pre".into(),
-            };
-            Some((format!(".entry \"{}\" ({})", &l["@map:".len()..], lean_guard_term(&xs[0], args, opmap, oc, decls, fnid)), st))
+            let k = lean_guard_term(&xs[0], args, opmap, oc, decls, fnid);
+            Some((KeyT::Entry(l["@map:".len()..].to_string(), k), at(xs.get(1))))
         }
         Expr::Opaque(l, xs) if l.starts_with("@tup:") && (xs.len() == 1 || xs.len() == 2) => {
             let Expr::Opaque(_, ks) = &xs[0] else { return None };
-            let st = match xs.get(1) {
-                Some(Expr::Opaque(a, k)) if a == "@at" => match k.first() { Some(Expr::Const(t)) => state_at(*t as usize), _ => "st.pre".into() },
-                _ => "st.pre".into(),
-            };
             let ks: Vec<String> = ks.iter().map(|k| lean_guard_term(k, args, opmap, oc, decls, fnid)).collect();
-            Some((format!(".tup \"{}\" [{}]", &l["@tup:".len()..], ks.join(", ")), st))
+            Some((KeyT::Tup(l["@tup:".len()..].to_string(), ks), at(xs.get(1))))
         }
         Expr::Opaque(l, xs) if l.starts_with("@field:") && xs.len() == 1 => {
-            let (k, st) = lean_key(&xs[0], args, opmap, oc, decls, fnid)?;
-            Some((format!(".fld ({k}) \"{}\"", &l["@field:".len()..]), st))
+            let (k, st) = key_t(&xs[0], args, opmap, oc, decls, fnid)?;
+            Some((KeyT::Fld(Box::new(k), l["@field:".len()..].to_string()), st))
         }
         _ => None,
     }
@@ -4863,8 +4971,8 @@ fn lean_guard_term(
 ) -> String {
     match e {
         Expr::Param(i) => match args.get(*i) {
-            Some((_, n, t)) if t == "Address" => format!("st.call.argA \"{n}\""),
-            Some((_, n, _)) => format!("st.call.arg \"{n}\""),
+            Some((_, n, t)) if t == "Address" => input_ref(n, true),
+            Some((_, n, _)) => input_ref(n, false),
             None => format!("st.call.arg \"p{i}\""),
         },
         Expr::Const(k) => k.to_string(),
@@ -4887,7 +4995,7 @@ fn lean_guard_term(
             let (k, st) = lean_key(e, args, opmap, oc, decls, fnid).unwrap();
             format!("({st} ({k}))")
         }
-        Expr::Opaque(l, xs) if l == "@pool" && xs.is_empty() => "pool".into(),
+        Expr::Opaque(l, xs) if l == "@pool" && xs.is_empty() => "(pool st)".into(),
         // `has(k)`: k's presence bit, as a Soroban bool (1 = present).
         Expr::Opaque(l, xs) if l == "@has" && xs.len() == 1 && lean_key(&xs[0], args, &mut HashMap::new(), &mut 0, &mut vec![], fnid).is_some() => {
             let (k, st) = lean_key(&xs[0], args, opmap, oc, decls, fnid).unwrap();
@@ -4897,16 +5005,16 @@ fn lean_guard_term(
         // the length of a Vec argument: `claimants.len`.
         Expr::Opaque(l, xs) if l == "@len" && matches!(xs.as_slice(), [Expr::Param(i)] if args.get(*i).is_some()) => {
             let Expr::Param(i) = &xs[0] else { unreachable!() };
-            format!("st.call.arg \"{}.len\"", args[*i].1)
+            input_ref(&format!("{}.len", args[*i].1), false)
         }
         // a field of a struct ARGUMENT: `config.limit`.
         Expr::Opaque(l, xs) if l.starts_with("@field:") && matches!(xs.as_slice(), [Expr::Param(i)] if args.get(*i).is_some()) => {
             let Expr::Param(i) = &xs[0] else { unreachable!() };
-            format!("st.call.arg \"{}.{}\"", args[*i].1, &l["@field:".len()..])
+            input_ref(&format!("{}.{}", args[*i].1, &l["@field:".len()..]), false)
         }
         // the address carried by an address-like argument (MuxedAddress etc.)
         Expr::Opaque(l, xs) if l == "@addrof" && xs.len() == 1 => match &xs[0] {
-            Expr::Param(i) => args.get(*i).map(|(_, n, _)| format!("st.call.argA \"{n}\"")).unwrap_or_else(|| "pool".into()),
+            Expr::Param(i) => args.get(*i).map(|(_, n, _)| input_ref(n, true)).unwrap_or_else(|| "(pool st)".into()),
             x => lean_guard_term(x, args, opmap, oc, decls, fnid),
         },
         // SEP-41 `token.balance(who)` on a named token slot: that token's ledger.
@@ -5135,7 +5243,7 @@ fn annotate_at(e: &Expr, site: usize) -> Expr {
 fn state_at(site: usize) -> String {
     let at = path_of(site);
     let n = TX_SITES.with(|t| t.borrow().iter().filter(|&&s| path_of(s) < at).count());
-    if n == 0 { "st.pre".into() } else { format!("s{n}") }
+    if n == 0 { "st.pre".into() } else { format!("@D:s{n}@") }
 }
 
 /// One path's branch decisions: `(block, successor taken)` pairs.
@@ -5337,6 +5445,22 @@ type Wr = (Expr, Expr);
 /// The SEP-41 transfers and storage writes `h` performs (transitively), in
 /// program order, over `h`'s params. `site` maps a call/put in `h` to its
 /// ordinal when `h` is the entrypoint (so each event knows where it happens).
+/// A constant where a Val is expected (a stored value, a struct field, a
+/// transfer argument, a return) is a literal Val payload: the value it encodes
+/// (`0i128` is `11`, `7u32` is `7 << 32 | 4`); Void / bools stay as payloads.
+fn val_literal(e: Expr) -> Expr {
+    match e {
+        Expr::Const(c) => Expr::Const(match c & 0xff {
+            4 => ((c as u64) >> 32) as i64,
+            5 => ((c >> 32) as i32) as i64,
+            6 | 10 => ((c as u64) >> 8) as i64,
+            7 | 11 => c >> 8,
+            _ => c,
+        }),
+        e => e,
+    }
+}
+
 /// A cross-contract call the model does not interpret: anything but a SEP-41
 /// `transfer` (modeled) or one of its read-only queries.
 fn foreign_effect(i: InstructionValue) -> bool {
@@ -5423,7 +5547,8 @@ fn effects<'c>(
                 .map(|x| value_expr(x, h, module, memo, 40))
                 .collect();
             if parts.len() == 3 {
-                out.push((i, at, Some((tok, parts[0].clone(), parts[1].clone(), parts[2].clone())), None));
+                let p = |k: usize| val_literal(parts[k].clone());
+                out.push((i, at, Some((tok, p(0), p(1), p(2))), None));
             } else {
                 out.push((i, at, None, havoc("ledgers")));
             }
@@ -5442,7 +5567,7 @@ fn effects<'c>(
         if cn.contains("put_contract_data") {
             let dur = op(2).map(durability).unwrap_or_else(|| "?".into());
             let key = op(0).map(|x| key_expr(x, h, module, memo, 40)).unwrap_or(Expr::Opaque("?".into(), vec![]));
-            let val = op(1).map(|x| value_expr(x, h, module, memo, 40)).unwrap_or(Expr::Opaque("?".into(), vec![]));
+            let val = op(1).map(|x| val_literal(value_expr(x, h, module, memo, 40))).unwrap_or(Expr::Opaque("?".into(), vec![]));
             out.push((i, at, None, Some((Expr::Opaque(format!("@slot:{dur}"), vec![key]), val))));
             continue;
         }
@@ -5462,7 +5587,7 @@ fn effects<'c>(
 /// The rendered Lean body of one entrypoint: the state chain, its conjuncts
 /// (auth, Ok), post state, the keys its effects name, and the returned value.
 struct RichBody {
-    lets: Vec<String>,
+    defs: Vec<(String, &'static str, String)>, // named (name, type, body): amounts `amtN`, states `sN`; refs `@D:name@`
     post: String,
     writes: Vec<String>,
     events: Vec<String>,           // human-readable, for the doc comment
@@ -5474,6 +5599,7 @@ struct RichBody {
 /// Build the rich body of entrypoint `f` (call inside `with_entry(f, …)`).
 fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> RichBody {
     let args = arg_table(f);
+    CUR_ENTRY.with(|e| *e.borrow_mut() = f.get_name().to_string_lossy().chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect());
     let kbf = datakey_builder(module);
     let usage = kbf.map(kb_field_usage);
     let kb = kbf.zip(usage.as_ref());
@@ -5537,7 +5663,7 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
             .collect();
         Some(parts.join(" ∧ "))
     };
-    let (mut lets, mut writes, mut events) = (vec![], vec![], vec![]);
+    let (mut defs, mut writes, mut events): (Vec<(String, &'static str, String)>, Vec<String>, Vec<String>) = (vec![], vec![], vec![]);
     let mut unk_key = false;
     let mut cur = "st.pre".to_string();
     let mut nstate = 0;
@@ -5553,7 +5679,9 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
                 lean_guard_term(amt, &args, &mut opmap, &mut oc, &mut decls, &tid),
             );
             nstate += 1;
-            lets.push(format!("let s{nstate} := {}", next(format!("xfer ({ledger}) {cur} ({fr}) ({tr}) ({ar})"), &cur)));
+            let aname = format!("amt{}", defs.iter().filter(|d: &&(String, &str, String)| d.0.starts_with("amt")).count() + 1);
+            defs.push((aname.clone(), "Int", ar.clone()));
+            defs.push((format!("s{nstate}"), "Storage", next(format!("xfer ({ledger}) {cur} ({fr}) ({tr}) @D:{aname}@"), &cur)));
             for p in [&fr, &tr] {
                 let k = format!(".bal ({ledger}) ({p})");
                 if !writes.contains(&k) {
@@ -5561,7 +5689,7 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
                 }
             }
             events.push(format!("transfer {}: {} -> {} : {}{when}", render_expr(tok, &args), render_expr(from, &args), render_expr(to, &args), render_expr(amt, &args)));
-            cur = format!("s{nstate}");
+            cur = format!("@D:s{nstate}@");
         }
         let Some((k, v)) = wr else { continue };
         // an effect the model doesn't interpret: what it could touch is open.
@@ -5571,13 +5699,14 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
             let h = if all { format!("(u.s {oc})") } else { format!("havoc {cur} (u.s {oc})") };
             events.push(format!("{}{when}", if all { "unmodeled effect: all storage open" } else { "call into another contract: token ledgers open" }));
             nstate += 1;
-            lets.push(format!("let s{nstate} := {}", next(h, &cur)));
-            cur = format!("s{nstate}");
+            defs.push((format!("s{nstate}"), "Storage", next(h, &cur)));
+            cur = format!("@D:s{nstate}@");
             continue;
         }
         // an unnameable key is still a write — to SOME key (open), never dropped.
-        let key = match lean_key(k, &args, &mut opmap, &mut oc, &mut decls, &tid) {
-            Some((k, _)) => k,
+        let kt = key_t(k, &args, &mut opmap, &mut oc, &mut decls, &tid).map(|(k, _)| k);
+        let key = match &kt {
+            Some(k) => k.render(),
             None => {
                 oc += 1;
                 unk_key = true;
@@ -5585,21 +5714,24 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
             }
         };
         events.push(format!("write {} := {}{when}", render_expr(k, &args), render_expr(v, &args)));
-        // a struct value is stored field by field (nested structs recursively).
-        fn flatten(key: String, v: &Expr, out: &mut Vec<(String, Expr)>) {
+        // a struct value is stored field by field (nested structs recursively),
+        // each field a named key of the layout.
+        fn flatten(key: Option<KeyT>, raw: String, v: &Expr, out: &mut Vec<(String, Expr)>) {
             match v {
                 Expr::Opaque(l, xs) if l.starts_with("@struct:") && l["@struct:".len()..].split(',').count() == xs.len() => {
                     for (f, x) in l["@struct:".len()..].split(',').zip(xs) {
-                        flatten(format!(".fld ({key}) \"{f}\""), x, out);
+                        let fk = key.clone().map(|k| KeyT::Fld(Box::new(k), f.to_string()));
+                        let fr = fk.as_ref().map(|k| k.render()).unwrap_or_else(|| format!(".fld ({raw}) \"{f}\""));
+                        flatten(fk, fr, x, out);
                     }
                 }
-                _ => out.push((key, v.clone())),
+                _ => out.push((raw, v.clone())),
             }
         }
         let mut sets = vec![];
         let del = matches!(v, Expr::Opaque(l, x) if l == "@del" && x.is_empty());
         if !del {
-            flatten(key.clone(), v, &mut sets);
+            flatten(kt.clone(), key.clone(), v, &mut sets);
         }
         // the key's presence: set → 1, remove → 0.
         sets.push((format!(".has ({key})"), Expr::Const(if del { 0 } else { 1 })));
@@ -5612,8 +5744,8 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
             }
         }
         nstate += 1;
-        lets.push(format!("let s{nstate} := {}", next(upd, &cur)));
-        cur = format!("s{nstate}");
+        defs.push((format!("s{nstate}"), "Storage", next(upd, &cur)));
+        cur = format!("@D:s{nstate}@");
     }
     let post = cur;
     // the returned value, read in the state at the return.
@@ -5622,7 +5754,7 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
         let mut vals: Vec<Expr> = vec![];
         for r in all_instrs(f).into_iter().filter(|i| i.get_opcode() == InstructionOpcode::Return) {
             let Some(Operand::Value(v)) = r.get_operand(0) else { return None };
-            let e = named(&fold_rich(simplify(value_expr(v, f, module, &mut memo, 40))));
+            let e = named(&val_literal(fold_rich(simplify(value_expr(v, f, module, &mut memo, 40)))));
             if !vals.contains(&e) {
                 vals.push(e);
             }
@@ -5668,7 +5800,7 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
         .filter(|e| !matches!(e, Expr::Opaque(l, _) if l == "@vec" || l == "big"))
         .map(|e| lean_guard_term(&e, &args, &mut opmap, &mut oc, &mut decls, &tid))
         .unwrap_or_else(|| "(u.i 0)".into());
-    RichBody { lets, post, writes, events, ret, conjs, unk_key }
+    RichBody { defs, post, writes, events, ret, conjs, unk_key }
 }
 
 /// Emit a relational abstraction of the contract: one `Step → Prop` per
@@ -5681,13 +5813,81 @@ fn rich_body<'c>(f: FunctionValue<'c>, module: &inkwell::module::Module<'c>) -> 
 fn emit_lean_model(entries: &[ModelEntry], check: bool) {
     let san = |s: &str| s.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect::<String>();
     print!("{}", LEAN_PRELUDE);
+    // the storage layout every entrypoint names its keys by.
+    let layout = LAYOUT.with(|l| l.borrow().clone());
+    if !layout.is_empty() {
+        println!("/-! ## Storage layout -/\n");
+        for (name, params, body) in &layout {
+            let ps = if params.is_empty() { String::new() } else { format!(" {}", params.join(" ")) };
+            println!("@[simp] def {name}{ps} : Key := {}", tidy(body));
+        }
+        println!();
+    }
     for e in entries {
         let fn_id = san(&e.name);
+        let ns = lean_ident(&fn_id);
         let rb = &e.rich;
+        // named defs: which depend on the open values `u` (directly or through earlier ones).
+        let mut open: Vec<(String, bool)> = vec![];
+        for (n, _, body) in &rb.defs {
+            let o = body.contains("(u.") || open.iter().any(|(m, o)| *o && body.contains(&format!("@D:{m}@")));
+            open.push((n.clone(), o));
+        }
+        let resolve = |t: &str| {
+            let mut t = t.to_string();
+            for (n, o) in &open {
+                t = t.replace(&format!("@D:{n}@"), &if *o { format!("({ns}.{n} st u)") } else { format!("({ns}.{n} st)") });
+            }
+            tidy(&t)
+        };
+        // the conjuncts, labelled (the checker evaluates exactly these).
+        let mut conjs: Vec<(String, String)> = vec![
+            ("fn".into(), format!("st.call.fn = \"{}\"", e.name)),
+            ("not re-entrant".into(), "st.call.caller ≠ pool st".into()),
+        ];
+        conjs.extend(rb.conjs.iter().cloned());
+        for g in &e.guards {
+            if !conjs.iter().any(|(_, p)| *p == g.lean) {
+                conjs.push((format!("gate: {}", g.comment), g.lean.clone()));
+            }
+        }
+        let conjs: Vec<(String, String)> = conjs.into_iter().map(|(l, p)| (l, resolve(&p))).collect();
+        let (post, ret) = (resolve(&rb.post), resolve(&rb.ret));
+        let writes = resolve(&format!("[{}]", rb.writes.join(", ")));
+        // inputs: the scalar ABI args, and every input the model refers to.
+        let mut inputs: BTreeMap<String, bool> = INPUTS.with(|m| m.borrow().get(&fn_id).cloned().unwrap_or_default());
+        for (n, t) in &e.args {
+            if matches!(t.as_str(), "Address" | "MuxedAddress") {
+                inputs.entry(n.clone()).or_insert(true);
+            } else if matches!(t.as_str(), "u32" | "i32" | "u64" | "i64" | "u128" | "i128" | "bool") {
+                inputs.entry(n.clone()).or_insert(false);
+            }
+        }
+        if !inputs.is_empty() || !rb.defs.is_empty() {
+            println!("namespace {ns}");
+            for (n, addr) in &inputs {
+                let path: Vec<String> = n.split('.').map(lean_ident).collect();
+                let (ty, get) = if *addr { ("Addr", "argA") } else { ("Int", "arg") };
+                println!("@[simp] def {} (st : Step) : {ty} := st.call.{get} \"{n}\"", path.join("."));
+            }
+            for ((n, ty, body), (_, o)) in rb.defs.iter().zip(&open) {
+                let u = if *o { " (u : Unk)" } else { "" };
+                let b = resolve(body);
+                // `st` as a whole word (an open value alone doesn't read it).
+                let uses_st = b.match_indices("st").any(|(i, _)| {
+                    let ok = |c: Option<char>| !c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+                    ok(b[..i].chars().last()) && ok(b[i + 2..].chars().next())
+                });
+                let st = if uses_st { "st" } else { "_st" };
+                println!("@[simp] def {n} ({st} : Step){u} : {ty} :=\n  {b}");
+            }
+            println!("end {ns}\n");
+        }
         let sig: Vec<String> = e.args.iter().map(|(n, t)| format!("{n}: {t}")).collect();
         println!("/-- `{}({})`", e.name, sig.join(", "));
         if !rb.events.is_empty() {
-            println!("    effects, in execution order:");
+            let amts = if rb.defs.iter().any(|d| d.0.starts_with("amt")) { format!("; amounts `{ns}.amt1`, …") } else { String::new() };
+            println!("    effects, in execution order (states `{ns}.s1`, `{ns}.s2`, …{amts}):");
             for ev in &rb.events {
                 println!("      {ev}");
             }
@@ -5702,43 +5902,23 @@ fn emit_lean_model(entries: &[ModelEntry], check: bool) {
             }
         }
         println!("-/");
-        // the conjuncts, labelled (the checker evaluates exactly these).
-        let mut conjs: Vec<(String, String)> = vec![
-            ("fn".into(), format!("st.call.fn = \"{}\"", e.name)),
-            ("not re-entrant".into(), "c ≠ pool".into()),
-        ];
-        conjs.extend(rb.conjs.iter().cloned());
-        for g in &e.guards {
-            if !conjs.iter().any(|(_, p)| *p == g.lean) {
-                conjs.push((format!("gate: {}", g.comment), g.lean.clone()));
-            }
-        }
-        let mut body: Vec<String> = vec!["let c := st.call.caller".into(), "let pool := st.call.self".into()];
-        body.extend(rb.lets.iter().cloned());
-        let writes = format!("[{}]", rb.writes.join(", "));
-        let text = format!("{} {} {} {} {}", body.join(" "), conjs.iter().map(|c| c.1.clone()).collect::<Vec<_>>().join(" "), rb.post, writes, rb.ret);
-        let open = text.contains("(u.");
+        let text = format!("{} {post} {writes} {ret}", conjs.iter().map(|c| c.1.clone()).collect::<Vec<_>>().join(" "));
+        let open = text.contains("(u.") || text.contains(" st u)");
         println!("def {fn_id} : Step → Prop := fun st =>{}", if open { " ∃ u : Unk," } else { "" });
-        for l in &body {
-            println!("  {l}");
-        }
         for (k, (label, p)) in conjs.iter().enumerate() {
             let tag = if k < 2 { String::new() } else if label.starts_with("gate") { "   -- gate".into() } else { format!("   -- {label}") };
             println!("  {p} ∧{tag}");
         }
-        println!("  st.post = {} ∧", rb.post);
+        println!("  st.post = {post} ∧");
         println!("  st.writes = {writes} ∧");
-        println!("  st.ret = {}\n", rb.ret);
+        println!("  st.ret = {ret}\n");
         if check {
             // the same terms, evaluated: (labelled conjuncts, post, writes, open key?).
             println!("def {fn_id}.check (st : Step) (u : Unk) : List (String × Bool) × Storage × List Key × Bool :=");
             println!("  let _ := u");
-            for l in &body {
-                println!("  {l}");
-            }
             let mut items: Vec<String> = conjs.iter().map(|(l, p)| format!("({:?}, decide ({p}))", l)).collect();
-            items.push(format!("(\"ret\", decide (st.ret = {}))", rb.ret));
-            println!("  ([{}],\n   {}, {writes}, {})\n", items.join(",\n    "), rb.post, rb.unk_key);
+            items.push(format!("(\"ret\", decide (st.ret = {ret}))"));
+            println!("  ([{}],\n   {post}, {writes}, {})\n", items.join(",\n    "), rb.unk_key);
         }
     }
     let names: Vec<String> = entries.iter().map(|e| san(&e.name)).collect();
@@ -5749,6 +5929,48 @@ fn emit_lean_model(entries: &[ModelEntry], check: bool) {
         println!("def checkers : List (String × (Step → Unk → List (String × Bool) × Storage × List Key × Bool)) :=\n  [{}]\n", cs.join(",\n   "));
     }
     println!("end Contract");
+}
+
+/// Drop redundant parentheses from a rendered Lean term: around an atom
+/// (`(Offer)`, `(st.pre)`), and doubled ones (`((f x))`). Kept: `(-5)`, and a
+/// group followed by `.` (`(s).set`).
+fn tidy(t: &str) -> String {
+    let b: Vec<char> = t.chars().collect();
+    let mut close = vec![usize::MAX; b.len()];
+    let mut stack = vec![];
+    for (i, &c) in b.iter().enumerate() {
+        match c {
+            '(' => stack.push(i),
+            ')' => {
+                if let Some(o) = stack.pop() {
+                    close[o] = i;
+                }
+            }
+            '"' => {}
+            _ => {}
+        }
+    }
+    let mut drop = vec![false; b.len()];
+    for o in 0..b.len() {
+        let c = close[o];
+        if b[o] != '(' || c == usize::MAX || drop[o] {
+            continue;
+        }
+        let inner: String = b[o + 1..c].iter().collect();
+        let atom = !inner.is_empty() && !inner.starts_with('-') && !inner.contains(' ') && !inner.contains('"') && !inner.contains('(');
+        let doubled = b[o + 1] == '(' && close[o + 1] == c - 1;
+        let dotted = b.get(c + 1) == Some(&'.');
+        if doubled {
+            // `((x))`: one pair goes — the inner one when the group is dotted.
+            let (a, z) = if dotted { (o + 1, c - 1) } else { (o, c) };
+            drop[a] = true;
+            drop[z] = true;
+        } else if atom && !dotted {
+            drop[o] = true;
+            drop[c] = true;
+        }
+    }
+    b.iter().enumerate().filter(|(i, _)| !drop[*i]).map(|(_, c)| c).collect()
 }
 
 /// The fixed part of every emitted model.
@@ -5787,7 +6009,7 @@ inductive Key where
   | fld   (base : Key) (f : String)
   | has   (k : Key)
   | bal   (t : Addr) (a : Addr)
-  deriving DecidableEq, Inhabited
+  deriving DecidableEq, Inhabited, Repr
 
 abbrev Storage := Key → Int
 def Storage.set (s : Storage) (k : Key) (v : Int) : Storage := fun k' => if k' = k then v else s k'
@@ -5815,6 +6037,9 @@ structure Unk where
   b : Nat → Bool     -- branch conditions
   k : Nat → Key      -- storage keys
   s : Nat → Storage  -- storage after an effect the model doesn't interpret
+
+/-- the contract's own address (`e.current_contract_address()`). -/
+@[simp] def pool (st : Step) : Addr := st.call.self
 
 /-- token `t`'s balance of `a`. -/
 def bal (t : Addr) (s : Storage) (a : Addr) : Int := s (.bal t a)
