@@ -17,7 +17,8 @@ to the freshly generated model and typechecks the result.
 
 ## Regenerating the inputs
 
-The `.ll` files are the decompiled IR. To rebuild one from source:
+`check.sh` reads the decompiled IR, `<contract>.ll`. The repo gitignores `*.ll`
+as generated output, so regenerate them first:
 
 ```
 cd soroban-examples/<contract> && stellar contract build
