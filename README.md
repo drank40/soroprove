@@ -43,7 +43,7 @@ And some peripheral ones:
 
 ### Code abstraction
 
-After we model the runtime, we need to understand what we can realistically keep and abstract out of the contract's logic. all formal verification requires some level of abstraction if we wanna avoid running into a never ending execution loop
+After we model the runtime, we need to understand what we can realistically keep and abstract out of the contract's logic. all formal verification requires some level of abstraction if we wanna avoid running into a never ending execution loop.
 
 [image from the abstract analysis paper with the multiplications becoming + and -]
 
@@ -56,6 +56,10 @@ It's more interesting to focus on the sematic operations that we run on the LLVM
 #### Abstractions
 
 At one point we considered transpiling the entire contract to Lean, but then we realized that's currently a bit too computationally complex, and it also requires devs to be very skilled in Lean to make use of that properly
+
+This means that we will aim for a final model that is **sound** but not **complete** : everything that we prove on the model will necessarly also hold in the contract, but disproving something doesn't necessarly mean that we found a bug in our contract. This is a necessary tradeoff that we need to make, and in this case we're interested about fully securing a protocol, and not finding particular bugs.
+
+Essentially, we derive an over-approximation of our contract that we can easily reason and prove properties on.
 
 So we decided to abstract away the kind of information that can prevent loss of fund and bricking bugs by backtracing from any kind of token transfer
 
@@ -105,17 +109,6 @@ Insert mapping
 ===
 
 
-#### roles
-
-Role are based off of storage keys, and either be classified automatically or manually
-
-===
-
-Insert role mapping
-
-===
-
-
 ## Lean prover
 
 Since Lean is an prove assistant and not an automatic theorem prover 
@@ -135,7 +128,7 @@ This kind of proof can be handled well by the `answer` strategy that we implemen
 
 Suppose that we wanna prove the reserve solvency of an AMM. This is pretty simple to express in Soroprove, and can be checked automatically in a very fast manner.
 
-You can play around with the proof using the [permalink here](https://soroprove.marziano.top/#c=lpDiver&w=W3sidHlwZSI6ImxwRGl2ZXIudGhlb3JlbSIsImZpZWxkcyI6eyJOQU1FIjoicmVzZXJ2ZXNfc3RheV9iYWNrZWQiLCJUQVJHRVQiOiJoaXN0b3J5IiwiVEFDVElDIjoidmliZSJ9LCJpbnB1dHMiOnsiUSI6eyJibG9jayI6eyJ0eXBlIjoiYW5kIiwiaW5wdXRzIjp7IlAiOnsiYmxvY2siOnsidHlwZSI6ImNtcC5hbmUiLCJpbnB1dHMiOnsiTCI6eyJibG9jayI6eyJ0eXBlIjoibHBEaXZlci52YXIuVG9rZW5BIn19LCJSIjp7ImJsb2NrIjp7InR5cGUiOiJscERpdmVyLnZhci5Ub2tlbkIifX19fX0sIlIiOnsiYmxvY2siOnsidHlwZSI6ImFuZCIsImlucHV0cyI6eyJQIjp7ImJsb2NrIjp7InR5cGUiOiJjbXAubGUiLCJpbnB1dHMiOnsiTCI6eyJibG9jayI6eyJ0eXBlIjoibHBEaXZlci52YXIuUmVzZXJ2ZUEifX0sIlIiOnsiYmxvY2siOnsidHlwZSI6ImxwRGl2ZXIubWFwLkJhbGFuY2VBIiwiaW5wdXRzIjp7IlciOnsiYmxvY2siOnsidHlwZSI6ImxwRGl2ZXIuYWRkci5wb29sIn19fX19fX19LCJSIjp7ImJsb2NrIjp7InR5cGUiOiJjbXAubGUiLCJpbnB1dHMiOnsiTCI6eyJibG9jayI6eyJ0eXBlIjoibHBEaXZlci52YXIuUmVzZXJ2ZUIifX0sIlIiOnsiYmxvY2siOnsidHlwZSI6ImxwRGl2ZXIubWFwLkJhbGFuY2VCIiwiaW5wdXRzIjp7IlciOnsiYmxvY2siOnsidHlwZSI6ImxwRGl2ZXIuYWRkci5wb29sIn19fX19fX19fX19fX19fX1d)
+You can play around with the proof using the [permalink here](https://soroprove.marziano.top/#c=lpDiver&w=W3sidHlwZSI6ImxwRGl2ZXIudGhlb3JlbSIsImZpZWxkcyI6eyJOQU1FIjoicmVzZXJ2ZXNfc3RheV9iYWNrZWQiLCJUQVJHRVQiOiJoaXN0b3J5IiwiVEFDVElDIjoiYW5zd2VyIn0sImlucHV0cyI6eyJRIjp7ImJsb2NrIjp7InR5cGUiOiJhbmQiLCJpbnB1dHMiOnsiUCI6eyJibG9jayI6eyJ0eXBlIjoiY21wLmFuZSIsImlucHV0cyI6eyJMIjp7ImJsb2NrIjp7InR5cGUiOiJscERpdmVyLnZhci5Ub2tlbkEifX0sIlIiOnsiYmxvY2siOnsidHlwZSI6ImxwRGl2ZXIudmFyLlRva2VuQiJ9fX19fSwiUiI6eyJibG9jayI6eyJ0eXBlIjoiYW5kIiwiaW5wdXRzIjp7IlAiOnsiYmxvY2siOnsidHlwZSI6ImNtcC5sZSIsImlucHV0cyI6eyJMIjp7ImJsb2NrIjp7InR5cGUiOiJscERpdmVyLnZhci5SZXNlcnZlQSJ9fSwiUiI6eyJibG9jayI6eyJ0eXBlIjoibHBEaXZlci5tYXAuQmFsYW5jZUEiLCJpbnB1dHMiOnsiVyI6eyJibG9jayI6eyJ0eXBlIjoibHBEaXZlci5hZGRyLnBvb2wifX19fX19fX0sIlIiOnsiYmxvY2siOnsidHlwZSI6ImNtcC5sZSIsImlucHV0cyI6eyJMIjp7ImJsb2NrIjp7InR5cGUiOiJscERpdmVyLnZhci5SZXNlcnZlQiJ9fSwiUiI6eyJibG9jayI6eyJ0eXBlIjoibHBEaXZlci5tYXAuQmFsYW5jZUIiLCJpbnB1dHMiOnsiVyI6eyJibG9jayI6eyJ0eXBlIjoibHBEaXZlci5hZGRyLnBvb2wifX19fX19fX19fX19fX19fV0)
 
 [image of the simple property](./amm.png)
 
@@ -175,12 +168,43 @@ Back in August, the Comet protocol was hacked: the bug was pretty simple: `execu
 
 Let's see if we can find the counterexample that led to the hack by trying to prove book–balance consistency.
 
+Book–balance consistency asks that the pool's accounting moves with its money: on every swap, the book of the token the pool receives, AllRecordData[token_in].balance, changes by exactly as much as the pool's real balance of that token. The pool computes every price from these books, never from its real holdings, so this is the property its pricing silently relies on.
+
+We state it as a change over one call (books after minus before, equal to balance after minus before), not as "books equal balances". Anyone can send tokens to the pool without calling it, so its real balance can sit above its books without anything being wrong. What must never happen is a swap that moves the two by different amounts. Comparing changes is also what makes the statement about a single call, so a refutation points at one transaction.
+
 [screenshot of the property](./comet.png)
 
+Of course, this model is not **complete** , so any counterexample should be checked against the original program to be confirmed, but we can know for sure that if there is a hole in terms of token handling, we will also find it in our abstract Lean model.
 
+Ultimately, we find a counterexample, which we can analyze to discover that no constraint in the system prevents us from setting `token_in = token_out` , which is exactly what happens in the counterexample
 
+---
 
+## Repository
 
+| Directory | What | Language |
+|---|---|---|
+| [`lifter/`](lifter) | **stellar-diver**: lifts a contract's WASM to typed LLVM IR (`stellar-diver X.wasm --inline`), recovers its storage interface (`slice --storage-schema`) and emits the Lean model (`slice X.ll --lean model`). Also the batch prover (`lifter/prove/`: locked invariants, the agent loop, the checker and its cheat tests, conformance against real executions) and `lifter/lean-examples/` (the soroban-examples contracts and Comet, with hand proofs). | Rust, Lean |
+| [`prover/`](prover) | **the editor**: the Lean library (`StellarLean/`, including `DiverAnswer.lean`, the `answer` tactic for emitted models), the Scratch-style block editor (`playground/`), WASM upload (`playground/ingest.py`) and proofs by vibe (`playground/vibe.py`). | Lean, JS, Python |
+| [`runtime/`](runtime) | **soroban-lean**: a Lean model of the Soroban runtime (Wasm VM and host, metered), differential tests against the real host (`difftest/`, `difftest-prod/`). | Lean, Rust |
+| [`examples/`](examples) | The contracts used throughout: the soroban-examples builds (`03d42aa`) and Comet from mainnet. | WASM |
+| [`tests/`](tests) | `pipeline.py` (upload → model → `answer` → sandbox → vibe) and `permalinks.py` (every link in this README opens and checks). | Python |
 
+## Running
 
+```
+./soroprove setup              # lifter, Lean libraries and models, editor (+ --runtime for the runtime)
+./soroprove serve              # http://localhost:8765: drop a .wasm, build invariants, prove
+./soroprove test [--vibe]      # everything below; --vibe adds a live agent run
+./soroprove import X.wasm      # model a contract without the editor
+```
 
+Requirements: Rust and LLVM 18 (`lifter/shell.nix` provides them under Nix), [elan](https://github.com/leanprover/elan) (Lean 4.35 for `prover/`, 4.30 for `lifter/prove/` and `runtime/`, fetched automatically), Python 3, Node, and for vibe the [`claude`](https://claude.com/claude-code) CLI, logged in: agents run on the subscription of whoever runs the server, so behind a proxy (or anywhere public) start it with `VIBE_TOKEN=…`, which uploads and vibe jobs then require.
+
+## What `./soroprove test` checks
+
+1. **Models.** Every example's emitted model typechecks with its hand proofs (`lifter/lean-examples/check.sh`).
+2. **Locked invariants.** For each of the 8 contracts, the reference agent proofs settle every locked invariant (proved, or disproved by a kernel-checked counterexample), and nine standard ways of cheating are rejected (`lifter/prove/tests/run.sh`).
+3. **The pipeline.** A WASM uploaded through the editor's server is lifted, modelled and built; `answer` proves a per-call property and the cross-transaction solvency invariant and declines a false claim; the server's check rejects `sorry`, new axioms, `native_decide`, `#eval`, a weaker statement and a redefined name; with `--vibe`, an agent refutes the false claim and the counterexample comes back as a concrete call (`tests/pipeline.py`).
+4. **Permalinks.** Every link in this README opens: its blocks exist, print to Lean, and check (`tests/permalinks.py`).
+5. **The runtime** (after `setup --runtime`). 200 random liquidity-pool calls replayed on the Lean host give byte-identical results, ledger changes, events and CPU/memory metering to the production host; and every real call is admitted by the emitted model (`lifter/prove/conform/`).
