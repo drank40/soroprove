@@ -1,0 +1,9 @@
+.lake/
+vendor/
+*.olean
+corpus/
+vendor-traced/
+scratch/
+difftest/target/
+difftest-trace/target/
+difftest-prod/target/

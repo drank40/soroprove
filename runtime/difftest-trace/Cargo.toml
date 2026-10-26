@@ -1,0 +1,20 @@
+[package]
+name = "sl-difftest-trace"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+soroban-env-common = { path = "../vendor-traced/rs-soroban-env/soroban-env-common", features = ["std", "wasmi"] }
+wasmi = { package = "soroban-wasmi", version = "=29.0.0" }
+rand = "0.8"
+rand_chacha = "0.3"
+wasmparser = { package = "wasmparser-nostd", version = "=0.100.2" }
+serde_json = "1"
+stellar-xdr = { version = "=30.0.0", features = ["std", "type_enum", "arbitrary"] }
+arbitrary = "1"
+soroban-env-host = { path = "../vendor-traced/rs-soroban-env/soroban-env-host" }
+sha2v = { package = "sha2", version = "0.10" }
+base64 = "0.22"

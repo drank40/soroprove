@@ -1,0 +1,12 @@
+[package]
+name = "sl-difftest-prod"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The production build of the host (no `recording_mode`, which changes enforcing-mode
+# metering), for replaying oracle inputs.
+[workspace]
+
+[dependencies]
+soroban-env-host = { path = "../vendor/rs-soroban-env/soroban-env-host" }
