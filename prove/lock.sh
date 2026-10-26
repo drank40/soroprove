@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
-# Re-lock the trusted tree after a reviewed change to the model, spec or checker.
-cd "$(dirname "$0")" && sha256sum lean-toolchain lakefile.lean Check.lean Gen/*.lean Spec/*.lean > spec.lock
+# lock.sh CONTRACT: re-lock after a reviewed change to the model, spec or checker.
+source "$(dirname "$0")/lib.sh"
+cd "$here" && sha256sum $(trusted) > "$cdir/spec.lock"
